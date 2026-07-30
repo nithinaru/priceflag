@@ -791,24 +791,27 @@ export class DemoAdapter implements StoreAdapter {
     const wanted = variantGids ? new Set(variantGids) : null;
     const latest = new Map<string, ElasticityFitRow>();
 
-    // REQ-A-006: demo mode could never reach the `fitted` tier, so the fitted
-    // range and its band could not be seen without a database. These come from a
-    // real run of Lane C's fitter over the demo store's OBSERVABLE columns
-    // (scripts/seed-demo-fits.ts) — never from `generateDemoStore().truth`, which
-    // would be the ground-truth leak CLAUDE.md forbids. Some are `assumption`,
-    // and none of them match the true elasticity, because that is what honestly
-    // happens.
-    for (const fit of demoFits(shopId)) {
-      if (wanted && !wanted.has(fit.variant_gid)) continue;
-      latest.set(fit.variant_gid, fit);
-    }
-
     for (const fit of this.state.fits) {
       if (fit.shop_id !== shopId) continue;
       if (wanted && !wanted.has(fit.variant_gid)) continue;
       const current = latest.get(fit.variant_gid);
       if (!current || fit.fitted_at > current.fitted_at) latest.set(fit.variant_gid, clone(fit));
     }
+
+    // REQ-A-006: demo mode could never reach a fitted range, so the band A3
+    // renders could not be seen without a database. These come from a real run of
+    // Lane C's fitter over the demo store's OBSERVABLE columns
+    // (scripts/seed-demo-fits.ts) — never from `generateDemoStore().truth`, which
+    // would be the ground-truth leak CLAUDE.md forbids.
+    //
+    // Applied only where nothing was written explicitly: a fit that a caller
+    // stored is real intent and must always win over the built-in fixture,
+    // regardless of timestamps.
+    for (const fit of demoFits(shopId)) {
+      if (wanted && !wanted.has(fit.variant_gid)) continue;
+      if (!latest.has(fit.variant_gid)) latest.set(fit.variant_gid, fit);
+    }
+
     return latest;
   }
 
