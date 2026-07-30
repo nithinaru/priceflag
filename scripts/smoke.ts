@@ -77,6 +77,7 @@ import {
   applyPercent,
   applyRounding,
   formatCentsAsShopifyMoney,
+  type Cents,
   parseMoneyToCents,
   roundCents,
 } from '../lib/money';
@@ -96,6 +97,13 @@ import {
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
 import { AdminGraphqlClient } from '../lib/shopify/client';
 import { runSync, syncOrderDays, syncProducts, syncProgressFromRun } from '../lib/sync';
+import {
+  applyStage,
+  describeApply,
+  reconcileRollout,
+  rollbackRollout,
+  verifyRollback,
+} from '../lib/pricing/writer';
 import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
 import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
@@ -1196,6 +1204,399 @@ async function testSync(): Promise<void> {
 
     const progress = syncProgressFromRun(await adapter.getLatestSyncRun(shop.id));
     assertEqual(progress.stage, 'error', 'progress reports the failure');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// price writer (Sprint B4) — can a partial failure leave a rollout half-applied?
+// ---------------------------------------------------------------------------
+
+/** A fake Shopify that holds prices, so writes can be observed and made to fail. */
+function fakeShopifyStore(seed: { variant: string; product: string; price: Cents; compareAt?: Cents | null }[]) {
+  const prices = new Map<string, { price: Cents; compareAt: Cents | null; product: string }>();
+  for (const row of seed) {
+    prices.set(row.variant, { price: row.price, compareAt: row.compareAt ?? null, product: row.product });
+  }
+
+  const state = {
+    prices,
+    /** Product gid whose writes should fail, simulating a throttle or outage. */
+    failProduct: null as string | null,
+    writeCount: 0,
+    /** Applies the write at Shopify but reports failure — the crash window. */
+    silentSuccess: false,
+  };
+
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { query: string; variables: Record<string, unknown> };
+
+    if (body.query.includes('PriceflagVariantPrices')) {
+      const ids = body.variables.ids as string[];
+      return json({
+        nodes: ids.map((id) => {
+          const row = prices.get(id);
+          return row === undefined
+            ? null
+            : {
+                id,
+                price: formatCentsAsShopifyMoney(row.price),
+                compareAtPrice: row.compareAt === null ? null : formatCentsAsShopifyMoney(row.compareAt),
+                product: { id: row.product },
+              };
+        }),
+      });
+    }
+
+    if (body.query.includes('PriceflagVariantsBulkUpdate')) {
+      state.writeCount += 1;
+      const productId = body.variables.productId as string;
+      const variants = body.variables.variants as { id: string; price: string; compareAtPrice?: string | null }[];
+
+      const applyAll = (): void => {
+        for (const variant of variants) {
+          const row = prices.get(variant.id);
+          if (row === undefined) continue;
+          row.price = parseMoneyToCents(variant.price);
+          if (variant.compareAtPrice !== undefined) {
+            row.compareAt = variant.compareAtPrice === null ? null : parseMoneyToCents(variant.compareAtPrice);
+          }
+        }
+      };
+
+      if (state.failProduct === productId) {
+        if (state.silentSuccess) {
+          // The write lands, the acknowledgement does not. This is the gap that
+          // could leave the database believing a price was never changed.
+          applyAll();
+        }
+        return json({
+          productVariantsBulkUpdate: {
+            productVariants: null,
+            userErrors: [{ code: 'THROTTLED', field: null, message: 'Reduced the request rate' }],
+          },
+        });
+      }
+
+      applyAll();
+      return json({
+        productVariantsBulkUpdate: {
+          productVariants: variants.map((variant) => ({
+            id: variant.id,
+            price: variant.price,
+            compareAtPrice: variant.compareAtPrice ?? null,
+          })),
+          userErrors: [],
+        },
+      });
+    }
+
+    throw new Error(`fake store got an unexpected query: ${body.query.slice(0, 80)}`);
+  }) as unknown as typeof fetch;
+
+  function json(data: unknown): Response {
+    return new Response(
+      JSON.stringify({
+        data,
+        extensions: {
+          cost: {
+            requestedQueryCost: 10,
+            actualQueryCost: 10,
+            throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1990, restoreRate: 100 },
+          },
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  return { state, fetchImpl };
+}
+
+/** A rollout over `count` products, one variant each, +25%. */
+async function seedRollout(
+  adapter: DemoAdapter,
+  shopId: string,
+  count: number,
+): Promise<{ rollout: Rollout; seed: { variant: string; product: string; price: Cents }[] }> {
+  const products: Product[] = [];
+  const seed: { variant: string; product: string; price: Cents }[] = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const product = makeProduct({
+      id: `p${i}`,
+      shop_id: shopId,
+      product_gid: toGid('Product', 9000 + i),
+      variant_gid: toGid('ProductVariant', 9500 + i),
+      title: `Writer product ${i}`,
+      price_cents: 1000 + i * 100,
+      compare_at_cents: null,
+    });
+    products.push(product);
+    seed.push({ variant: product.variant_gid, product: product.product_gid, price: product.price_cents });
+  }
+
+  await adapter.upsertProducts(shopId, products as never);
+
+  const stages = normalizeStages(undefined, products.length);
+  const rollout = await adapter.createRollout({
+    shop_id: shopId,
+    name: 'Writer test',
+    status: 'running',
+    change_type: 'percent',
+    change_pct: 25,
+    change_absolute_cents: null,
+    rounding: 'none',
+    horizon_days: 90,
+    stages,
+    // Final stage, so the whole selection is due and `reconcileRollout` — which
+    // correctly works from `current_stage` — covers the same set the tests apply.
+    current_stage: stages.length - 1,
+    stage_entered_at: NOW.toISOString(),
+    guardrails: defaultGuardrails(),
+    forecast: null,
+    scheduled_start_at: null,
+    started_at: NOW.toISOString(),
+    ended_at: null,
+    ended_reason: null,
+    paused_reason: null,
+    notify_emails: [],
+    created_by: 'smoke',
+  });
+
+  await adapter.insertRolloutVariants(
+    planRolloutVariants({
+      rolloutId: rollout.id,
+      shopId,
+      products,
+      change: { type: 'percent', percent: 25 },
+      stages,
+    }),
+  );
+
+  return { rollout, seed };
+}
+
+async function testWriter(): Promise<void> {
+  section('price writer — partial failure and self-healing');
+
+  const credentials = {
+    shopDomain: 'acme-dev.myshopify.com',
+    accessToken: 'shpat_test',
+    apiVersion: '2026-07',
+    source: 'static_env' as const,
+  };
+
+  await test('a clean stage applies every due variant and journals each one', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 4);
+    const fake = fakeShopifyStore(seed);
+
+    const client = new AdminGraphqlClient(credentials, { fetchImpl: fake.fetchImpl, sleepImpl: async () => {} });
+    const result = await applyStage({ adapter, client, shop }, rollout, 2);
+
+    assertEqual(result.failed, 0, 'nothing failed');
+    assertEqual(result.fully_applied, true, 'the stage is fully applied');
+    assertEqual(result.applied, 4, 'four prices changed');
+
+    // 1000 -> 1250 at +25%
+    assertEqual(fake.state.prices.get(seed[0]!.variant)?.price, 1250, 'the store really changed');
+
+    const journal = await adapter.listJournalEntries(shop.id, { rollout_id: rollout.id });
+    assertEqual(journal.total, 4, 'one journal entry per price');
+  });
+
+  await test('a mid-stage failure leaves the stage NOT fully applied — and says so', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 4);
+    const fake = fakeShopifyStore(seed);
+
+    // The third product is throttled. The first two have already been written.
+    fake.state.failProduct = seed[2]!.product;
+
+    const client = new AdminGraphqlClient(credentials, {
+      fetchImpl: fake.fetchImpl,
+      sleepImpl: async () => {},
+      maxRetries: 1,
+    });
+    const context = { adapter, client, shop };
+    const first = await applyStage(context, rollout, 2);
+
+    assertEqual(first.failed, 1, 'one variant failed');
+    assertEqual(first.applied, 3, 'the other three were written');
+    assertEqual(first.fully_applied, false, 'so the stage is NOT fully applied');
+    assert(first.failures.length === 1, 'and the failure is reported, not swallowed');
+
+    // The store is genuinely half-applied at this point — that is the hazard.
+    assertEqual(fake.state.prices.get(seed[2]!.variant)?.price, seed[2]!.price, 'the failed price is unchanged');
+    assertEqual(fake.state.prices.get(seed[0]!.variant)?.price, 1250, 'the others did change');
+
+    const failedJournal = await adapter.listJournalEntries(shop.id, { rollout_id: rollout.id });
+    assert(
+      failedJournal.items.some((entry) => entry.status === 'failed'),
+      'the failure is journalled, not merely logged',
+    );
+
+    // --- self-heal ---------------------------------------------------------
+    fake.state.failProduct = null;
+    const second = await reconcileRollout(context, rollout);
+
+    assertEqual(second.fully_applied, true, 'reconcile converges');
+    assertEqual(second.applied, 1, 'and re-applies exactly the one that was missing');
+    assertEqual(second.skipped_noop, 3, 'the three already correct are no-ops, not rewrites');
+    assertEqual(fake.state.prices.get(seed[2]!.variant)?.price, seed[2]!.price * 1.25, 'the store is now whole');
+  });
+
+  await test('the crash window self-heals: Shopify applied it, we never heard back', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 3);
+    const fake = fakeShopifyStore(seed);
+
+    // The write lands at Shopify but reports failure — the dangerous gap.
+    fake.state.failProduct = seed[1]!.product;
+    fake.state.silentSuccess = true;
+
+    const client = new AdminGraphqlClient(credentials, {
+      fetchImpl: fake.fetchImpl,
+      sleepImpl: async () => {},
+      maxRetries: 0,
+    });
+    const context = { adapter, client, shop };
+
+    const first = await applyStage(context, rollout, 2);
+    assertEqual(first.fully_applied, false, 'we believe it failed');
+    assertEqual(fake.state.prices.get(seed[1]!.variant)?.price, seed[1]!.price * 1.25, 'but Shopify actually applied it');
+
+    const variantsAfterFirst = await adapter.getRolloutVariants(rollout.id);
+    const stranded = variantsAfterFirst.find((row) => row.variant_gid === seed[1]!.variant);
+    assertEqual(stranded?.applied_at, null, 'and the database does not claim it was applied');
+
+    // Reconcile: live already equals target, so this is the skipped_noop branch.
+    fake.state.failProduct = null;
+    const writesBefore = fake.state.writeCount;
+    const second = await reconcileRollout(context, rollout);
+
+    assertEqual(second.fully_applied, true, 'it converges');
+    assertEqual(second.skipped_noop, 3, 'every variant is recognised as already correct');
+    assertEqual(fake.state.writeCount, writesBefore, 'and NO price was written a second time');
+
+    const healed = (await adapter.getRolloutVariants(rollout.id)).find((row) => row.variant_gid === seed[1]!.variant);
+    assert(healed?.applied_at !== null, 'the database catches up to reality');
+
+    const journal = await adapter.listJournalEntries(shop.id, { rollout_id: rollout.id });
+    const applied = journal.items.filter((entry) => entry.status !== 'failed');
+    const keys = new Set(applied.map((entry) => entry.idempotency_key));
+    assertEqual(keys.size, applied.length, 'no duplicate journal entries — the idempotency key held');
+  });
+
+  await test('a price changed outside Priceflag is never overwritten (R4)', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 3);
+    const fake = fakeShopifyStore(seed);
+
+    // Somebody ran a sale by hand while the rollout was live.
+    const meddled = seed[1]!;
+    fake.state.prices.get(meddled.variant)!.price = 777;
+
+    const client = new AdminGraphqlClient(credentials, { fetchImpl: fake.fetchImpl, sleepImpl: async () => {} });
+    const result = await applyStage({ adapter, client, shop }, rollout, 2);
+
+    assertEqual(result.external_changes.length, 1, 'the external change is detected');
+    assertEqual(result.external_changes[0]?.found_cents, 777, 'with the price we actually found');
+    assertEqual(result.fully_applied, false, 'so the stage is not considered applied');
+    assertEqual(fake.state.prices.get(meddled.variant)?.price, 777, "and we did NOT overwrite the merchant's change");
+
+    assert(
+      describeApply(result, 'USD').toLowerCase().includes('outside priceflag'),
+      'and the merchant-facing message says what happened',
+    );
+  });
+
+  await test('rollback restores every baseline and is verified against Shopify', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 4);
+    const fake = fakeShopifyStore(seed);
+
+    const client = new AdminGraphqlClient(credentials, { fetchImpl: fake.fetchImpl, sleepImpl: async () => {} });
+    const context = { adapter, client, shop };
+
+    await applyStage(context, rollout, 2);
+    assertEqual(fake.state.prices.get(seed[0]!.variant)?.price, 1250, 'prices moved');
+
+    const undo = await rollbackRollout(context, rollout, { reason: 'Guardrail breached.' });
+    assertEqual(undo.failed, 0, 'rollback had no failures');
+    assertEqual(undo.applied, 4, 'four prices restored');
+
+    for (const row of seed) {
+      assertEqual(fake.state.prices.get(row.variant)?.price, row.price, `${row.variant} is back to its baseline`);
+    }
+
+    const verified = await verifyRollback(context, rollout);
+    assertEqual(verified.mismatched.length, 0, 'verified against Shopify, not just against our own belief');
+    assertEqual(verified.verified, 4, 'all four confirmed');
+
+    // R18: the journal is the audit trail a merchant (or a runbook) reads.
+    const journal = await adapter.listJournalEntries(shop.id, { sources: ['rollback'] });
+    assertEqual(journal.total, 4, 'each restore is journalled');
+    assert(
+      journal.items.every((entry) => entry.after_price_cents === seed.find((s) => s.variant === entry.variant_gid)?.price),
+      'and each entry records the restored price',
+    );
+  });
+
+  await test('rollback is idempotent — calling it twice restores once', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 3);
+    const fake = fakeShopifyStore(seed);
+
+    const client = new AdminGraphqlClient(credentials, { fetchImpl: fake.fetchImpl, sleepImpl: async () => {} });
+    const context = { adapter, client, shop };
+
+    await applyStage(context, rollout, 2);
+    await rollbackRollout(context, rollout, { reason: 'first' });
+    const writesAfterFirst = fake.state.writeCount;
+
+    const second = await rollbackRollout(context, rollout, { reason: 'second' });
+    assertEqual(second.applied, 0, 'nothing to write the second time');
+    assertEqual(second.skipped_noop, 3, 'all three already at baseline');
+    assertEqual(fake.state.writeCount, writesAfterFirst, 'and no extra write was issued');
+
+    const journal = await adapter.listJournalEntries(shop.id, { sources: ['rollback'] });
+    assertEqual(journal.total, 3, 'still exactly one journal entry per variant');
+  });
+
+  await test('the kill switch stops the writer, but never blocks a rollback', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({ shop_domain: 'acme-dev.myshopify.com', currency: 'USD', mode: 'real' });
+    const { rollout, seed } = await seedRollout(adapter, shop.id, 2);
+    const fake = fakeShopifyStore(seed);
+    const client = new AdminGraphqlClient(credentials, { fetchImpl: fake.fetchImpl, sleepImpl: async () => {} });
+
+    await applyStage({ adapter, client, shop }, rollout, 2);
+
+    const engaged = await adapter.updateShop(shop.id, { kill_switch_engaged_at: NOW.toISOString() });
+
+    let blocked = false;
+    try {
+      await applyStage({ adapter, client, shop: engaged }, rollout, 2);
+    } catch {
+      blocked = true;
+    }
+    assert(blocked, 'no new price can be written while the kill switch is engaged');
+
+    // The kill switch exists *because* the store is in a bad state, so the undo
+    // path must still work.
+    const undo = await rollbackRollout({ adapter, client, shop: engaged }, rollout, {
+      reason: 'Kill switch',
+      source: 'kill_switch',
+    });
+    assertEqual(undo.failed, 0, 'the kill switch can still restore prices');
+    assertEqual(fake.state.prices.get(seed[0]!.variant)?.price, seed[0]!.price, 'and it did');
   });
 }
 
@@ -3073,6 +3474,7 @@ async function main(): Promise<void> {
   await testPrimitives();
   await testShopifyAuth();
   await testSync();
+  await testWriter();
   await testGoldenData();
   await testContracts();
   await testForecast();

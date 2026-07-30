@@ -28,7 +28,8 @@ export const DEFAULT_SHOPIFY_API_VERSION = '2026-07';
  * When the Partner app exists, add it back here and re-check `missingScopes`.
  * Until then, order history beyond 60 days comes from the static-token path.
  */
-export const DEFAULT_SHOPIFY_SCOPES = 'read_products,write_products,read_orders';
+export const DEFAULT_SHOPIFY_SCOPES =
+  'read_products,write_products,read_orders,write_orders,write_draft_orders';
 
 export function env(name: string): string | undefined {
   const value = process.env[name];
