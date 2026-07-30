@@ -1,0 +1,33 @@
+{
+  "golden_config": {
+    "n_skus": 24,
+    "days": 180,
+    "seed": 7,
+    "end_date": "2026-07-01"
+  },
+  "incumbents": {
+    "seasonal_naive_backtest": {
+      "n_skus": 24,
+      "n_scored_days": 1336,
+      "median_wape": 0.5911538461538461,
+      "median_mape": 0.6392483684525616,
+      "pooled_coverage_80": 0.7844311377245509,
+      "pooled_pinball_q10": 0.8441841317365268,
+      "pooled_pinball_q90": 1.3339240269461077
+    },
+    "bracket_elasticity_recovery": {
+      "all_skus": {
+        "n": 24,
+        "mae": 0.5194050060337996,
+        "rmse": 0.6633803387011291,
+        "pct_within_0.3": 0.2916666666666667
+      },
+      "identifiable_skus": {
+        "n": 19,
+        "mae": 0.463735915582569,
+        "rmse": 0.5918236303652729,
+        "pct_within_0.3": 0.3157894736842105
+      }
+    }
+  }
+}
