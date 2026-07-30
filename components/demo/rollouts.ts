@@ -103,10 +103,18 @@ const SPECS: RolloutSpec[] = [
     change: { type: "percent", percent: 6 },
     status: "running",
     startDay: "2026-07-21" as DayString,
-    demandFactor: 0.97,
-    // One low day that recovers: below the expected range, but nowhere near the
-    // line the merchant set. The distinction is the whole point of the band.
-    demandOverrides: { "2026-07-25": 0.72 },
+    // Unmodified demand, deliberately: actuals are the store's own history, so
+    // this rollout stays healthy even when Lane B changes the generator. Hand-fit
+    // factors broke once already when B3 landed.
+    demandFactor: 1,
+    // No per-day overrides: the store's own trading already produces a day below
+    // the range that recovers, which is the exact distinction the band exists to
+    // draw. Manufacturing one on top of it is how this fixture broke last time.
+    // 45%: the bracket band on a 6-SKU selection is genuinely noisy (weekday
+    // seasonality against a flat 28-day mean), and a tighter limit would trip on
+    // ordinary trading. This is the forgiving first-rollout setting the PRD asks
+    // for, and it keeps the demo from whipsawing on a generator change.
+    guardrails: guardrailsWith(45, 2),
     createdAt: "2026-07-20T15:41:00.000Z",
   },
   {
@@ -167,7 +175,9 @@ const SPECS: RolloutSpec[] = [
     startDay: "2026-06-08" as DayString,
     endDay: "2026-06-24" as DayString,
     endedReason: "completed",
-    guardrails: guardrailsWith(35, 2),
+    // A clearance is a deliberate margin sacrifice to move stock, so the limit is
+    // set loose on purpose — the merchant expects the units, not the margin.
+    guardrails: guardrailsWith(55, 2),
     demandFactor: 1.16,
     createdAt: "2026-06-07T10:20:00.000Z",
   },

@@ -18,10 +18,73 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | **A1 — Design system foundation** | ✅ done |
 | **A2 — Catalog & COGS** | ✅ done |
 | **A3 — Propose flow v2 + migration onto `lib/`** | ✅ done |
-| A4 — Rollout monitoring v2 | next |
+| **A4 — Rollout monitoring v2** | ✅ done |
 | A5 — Onboarding & sync | not started |
 | A6 — Post-rollout report & journal v2 | not started |
 | A7 — Polish, a11y, responsive | not started |
+
+---
+
+## Sprint A4 — done
+
+A4's other deliverables — the stage timeline, breach states, the event log, the
+prominent one-click rollback and the paused-for-external-change state — landed
+with A1/A3 against real engine data. What was left was the chart and the kill
+switch.
+
+**The actual-vs-expected chart** — `components/rollout/orders-chart.tsx`,
+hand-authored SVG, no chart dependency on a page merchants open on phones.
+
+- The band is the point, so it is drawn first as a recessive fill with a defined
+  edge; the actual line reads on top of it; markers are ringed in the surface
+  colour so they stay legible against the band.
+- Two series, so the legend is always present, and only the most recent value is
+  direct-labelled — never a number on every point.
+- **`band_floored` days break every series.** There is no honest band to draw, so
+  the band and the expected line are segmented around them and the marker goes
+  hollow. The actual line still spans them, because orders happened even on days
+  the band cannot judge. A drawn range there would invite a reading the data
+  cannot support.
+- Stage boundaries are annotated in place ("Step 2 of 3") rather than being a
+  second series. One axis, units only.
+- Hover gives a crosshair-style tooltip carrying `readingSentence` verbatim; each
+  point is focusable with the same sentence as its accessible name; and the table
+  underneath is the table view, with the chart's own description pointing at it.
+
+**The store-level kill switch** (R21) — `components/domain/kill-switch.tsx`, on
+the overview, deliberately last on the page: findable, but never competing with
+the screen's primary action. Unlike a single rollback it cannot be scoped down
+afterwards, so the confirm button is armed by an explicit acknowledgement rather
+than being one click. Wired to `POST /api/kill-switch`'s
+`{ ok, affected_skus, message }`; disabled with a reason when nothing is live.
+
+### Cross-lane drift, and what it cost
+
+**Lane B changed `lib/demo/generator.ts` in B2 after A3 was built on it**, which
+moved every order-day number. The effect on Lane A was not a type error — it was
+a *narrative* break: the demo's healthy rollout started tripping its guardrail, so
+`/` and `/rollouts` showed an auto-rollback where the demo is supposed to show a
+change holding up. Caught in browser QA, not by the compiler.
+
+Fixed by making the fixture robust rather than re-fitting it:
+
+- the healthy rollout now runs on **unmodified demand** — actuals are the store's
+  own history, which by construction sits inside a band built from that history;
+- its deliberate "one low day that recovered" is gone, because the store's own
+  trading already produces one — manufacturing a dip on top of real noise is what
+  broke;
+- guardrail thresholds are set per rollout to survive ordinary seasonality (45%
+  on the 6-SKU selection, 55% on the clearance). Worth knowing for its own sake:
+  **the bracket band on a small selection is noisy enough that a 30% limit trips
+  on ordinary trading.** That is PRD risk #2 showing up in practice, and it is the
+  argument for Lane C's C5 breach probabilities replacing raw thresholds.
+
+**Also:** commit `432b5ae "Shopify integration"` (Lane B's session) contains two
+Lane A files — `components/demo/store.ts` and `components/demo/rollouts.ts` — and
+nothing else. They were untracked Lane A work-in-progress swept up by a broad
+`git add`. No content was lost and no history needs rewriting, but it is worth
+flagging: BUILD_BRIEF §2.3 asks everyone to stage their own paths explicitly,
+because all three sessions share one working tree.
 
 ---
 

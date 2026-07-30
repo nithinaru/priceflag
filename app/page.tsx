@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import { IconArrowRight, IconFlag, IconTag } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
+import { KillSwitch } from "@/components/domain/kill-switch";
 import { PriceMove, SourceBadge } from "@/components/domain/journal";
 import {
   HealthBadge,
@@ -286,6 +287,10 @@ export default function OverviewPage() {
           </Card>
         </div>
       </div>
+
+      {/* Last on the page on purpose: findable, never competing with the
+          screen's primary action (R21). */}
+      <KillSwitch affectedSkus={live.skus_holding_priceflag_price} />
     </div>
   );
 }

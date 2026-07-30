@@ -25,12 +25,9 @@ import {
 } from "@/components/ui";
 import { IconClock, IconInbox } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
+import { OrdersChart } from "@/components/rollout/orders-chart";
 import { StageTimeline } from "@/components/domain/stage-timeline";
-import {
-  ExpectedRangeLegend,
-  ExpectedRangeMark,
-  readingsDomainMax,
-} from "@/components/domain/expected-range";
+import { ExpectedRangeMark, readingsDomainMax } from "@/components/domain/expected-range";
 import { PriceMove, SourceBadge } from "@/components/domain/journal";
 import {
   ExclusionBadge,
@@ -205,8 +202,13 @@ export default async function RolloutPage({ params }: PageProps) {
           <Card>
             <CardHeader
               title="Orders, day by day"
-              description="Each day we compare the orders you actually got against the range we expected without a price change."
+              description="Each day we compare the orders you actually got against the range we expected without a price change. The table under the chart has the same numbers."
             />
+            {readings.length > 0 ? (
+              <CardBody>
+                <OrdersChart readings={readings} stageCount={rollout.stages.length} />
+              </CardBody>
+            ) : null}
             <CardBody flush>
               <Table caption="Daily orders against the expected range">
                 <THead>
@@ -264,7 +266,7 @@ export default async function RolloutPage({ params }: PageProps) {
             </CardBody>
             {readings.length > 0 ? (
               <CardFooter>
-                <ExpectedRangeLegend />
+                {/* The chart above carries the legend; repeating it here is noise. */}
                 <span>{readingSentence(readings[readings.length - 1]!)}</span>
               </CardFooter>
             ) : null}
