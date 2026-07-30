@@ -162,4 +162,23 @@ export function marginFraction(priceCents: Cents, cogsCents: Cents | null): numb
   return (priceCents - cogsCents) / priceCents;
 }
 
+/**
+ * Parses what a merchant types into a money field. Accepts `12`, `12.5`,
+ * `$12.50`, `1,299.99`. Returns integer cents, or `null` if there is no number
+ * in there at all — the caller decides whether that is an error or a clear.
+ */
+export function parseMoneyToCents(input: string): Cents | null {
+  const cleaned = input.replace(/[^0-9.-]/g, "");
+  if (cleaned === "" || cleaned === "-" || cleaned === "." || cleaned === "-.") return null;
+  const value = Number(cleaned);
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100);
+}
+
+/** Cents → the string a money input should hold. `1250` → `"12.50"`. */
+export function centsToInputValue(cents: Cents | null): string {
+  if (cents === null || !Number.isFinite(cents)) return "";
+  return (cents / 100).toFixed(2);
+}
+
 export { DASH, MINUS };

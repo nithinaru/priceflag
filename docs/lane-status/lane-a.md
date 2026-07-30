@@ -6,12 +6,107 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | Sprint | State |
 |---|---|
 | **A1 — Design system foundation** | ✅ done |
-| A2 — Catalog & COGS | next |
-| A3 — Propose flow v2 | not started |
+| **A2 — Catalog & COGS** | ✅ done |
+| A3 — Propose flow v2 | next |
 | A4 — Rollout monitoring v2 | not started |
 | A5 — Onboarding & sync | not started |
 | A6 — Post-rollout report & journal v2 | not started |
 | A7 — Polish, a11y, responsive | not started |
+
+---
+
+## Sprint A2 — done
+
+### What landed
+
+**The catalog is now a working tool** — `components/catalog/catalog-table.tsx`,
+a client component fed by the server page:
+
+- **Search** on title, variant and SKU, with `useDeferredValue` so typing stays
+  responsive at 500 rows.
+- **Filters**: product type, cost (has one / no cost yet), price (on a new price /
+  unchanged). "Clear filters" appears only when something is filtered.
+- **Sort** on every meaningful column, with `aria-sort` on the header and a
+  direction that defaults sensibly per column type (names A→Z, numbers
+  biggest-first). Products with **no cost sort last in both directions** — they
+  are the rows to act on, not to bury at the bottom of a descending sort.
+- **Multi-select** with a sticky action bar: count, the blended margin of the
+  selection, a warning when part of the selection has no cost, Clear, and one
+  primary action. Header checkbox selects all *matching* rows and goes
+  indeterminate on a partial selection.
+- **Inline cost editing** (`components/catalog/cost-cell.tsx`): click any cost,
+  type, Enter to save / Esc to cancel, with saving and failed-to-save states and
+  a toast that says what changed. Missing costs render an amber **Add cost**
+  button rather than a blank — the state is an invitation, not an absence. Saving
+  flips the source indicator to "Added by you".
+- Subscriptions and gift cards **stay in the list**, greyed, checkbox disabled,
+  reason on the row (R22). A product that silently vanishes from a catalog reads
+  as a bug.
+
+**Where the selection goes** — `/propose` (`components/catalog/propose-preview.tsx`).
+Deliberately a **calculator, not a wizard**: pick % or an amount, up or down, and
+it shows the breakeven sentence plus per-product new price, new profit and margin
+before→after. Every number on it is margin arithmetic that holds regardless of
+any model, and the page changes nothing. **The fitted forecast, the scenario
+table, the guardrail builder and actually creating a rollout are A3** — so this
+screen promises none of them and has no button that goes nowhere. It also
+surfaces the compare-at policy (R13) ahead of time: when a new price would reach
+or pass a crossed-out price, it says that price will be removed rather than show
+a fake discount.
+
+**A 500-SKU catalog to test against.** The mock now generates the catalog from a
+fixed seed (never `Math.random`, so server render, hydration and build agree):
+15 curated products the rollout/journal fixtures reference by id, plus 485
+generated ones across 11 product types, ~7% deliberately without a cost. Verified
+at 500 rows: no pagination, no virtualization, no page-level horizontal scroll,
+typing stays smooth.
+
+### For Lane B
+
+`contracts/requests-lane-a.md` → **REQ-A-004**, three items, all mocked behind a
+local seam so landing them is mechanical:
+
+1. **A cost-write server action.** Lane A calls a mocked
+   `saveProductCost(productId, cogsCents | null)` that already returns
+   `{ok:true, cogsCents} | {ok:false, message}`. Integer cents; `null` must be
+   allowed so a mistyped cost can go back to unknown; `message` is shown to the
+   merchant verbatim; set `cogs_source='manual'`; **do not reject a cost above the
+   price** — loss leaders are real, Lane A warns and saves.
+2. **`productType` on `Product`** (Shopify product type) — drives the type filter.
+3. **A server-side proposal draft** to replace the `sessionStorage` hand-off:
+   `createProposalDraft(productIds) → {id}` / `getProposalDraft(id)`. Worth having
+   before A3 builds the real propose flow on top of it.
+
+### Known limitation, stated rather than hidden
+
+The catalog→preview hand-off uses `sessionStorage`
+(`components/catalog/selection.ts`), because 400 selected ids in a query string
+is a 6 kB URL. Consequences: `/propose` is client-rendered, and a shared or
+bookmarked `/propose` URL has no selection — which is why that screen has a
+designed empty state pointing back at the catalog rather than an error. REQ-A-004
+item 3 is the fix.
+
+### Bugs found and fixed during A2 visual QA
+
+- Sorting by cost or profit put "no cost yet" rows at the **top** in descending
+  order, because the null ranking was inside the direction flip. Unknowns are now
+  ranked outside it and stay last either way.
+- The cost column jumped width when a cost went into edit mode, pushing the
+  Status column out of view. Reserved a min-width on that column.
+- The cost cell repeated the margin that the profit column already showed.
+- Generated products collided on name, producing three visually identical rows
+  after sorting — which reads as a rendering bug. The generator now re-draws and
+  falls back to a model number.
+
+### Verification
+
+`npx tsc --noEmit` clean, `next build` green (7 routes, 14 static pages) in the
+out-of-repo harness. Driven in a browser: search filters, type/cost/price filters,
+sort direction toggles, select → sticky bar → preview hand-off, inline cost edit
+saved by both Enter and the confirm button (the notice count drops and the row
+leaves the "no cost yet" filter), and the increase *and* decrease breakeven
+arithmetic checked by hand. Checked at 390px and 1440px, light and dark;
+`document.documentElement.scrollWidth === window.innerWidth` at 390px.
 
 ---
 

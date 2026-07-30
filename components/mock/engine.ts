@@ -36,6 +36,8 @@ export type Product = {
   cogsSource: CogsSource | null;
   /** Subscriptions and gift cards are excluded from price changes in v1 (R22). */
   kind: ProductKind;
+  /** Shopify's product type. Drives the catalog's type filter. */
+  productType: string;
   units30d: number;
   /** True when this product currently holds a price Priceflag set. */
   inLiveRollout: boolean;
@@ -181,6 +183,7 @@ const PRODUCTS: Product[] = [
     title: "Ridgeline Rain Jacket",
     variantTitle: "Slate / M",
     sku: "RG-JKT-01",
+    productType: "Outerwear",
     priceCents: 18900,
     compareAtCents: 21900,
     cogsCents: 7560,
@@ -193,6 +196,7 @@ const PRODUCTS: Product[] = [
     id: "p_trail",
     title: "Trailhead Daypack 22L",
     sku: "TH-BAG-22",
+    productType: "Packs",
     priceCents: 12400,
     compareAtCents: null,
     cogsCents: 5580,
@@ -206,6 +210,7 @@ const PRODUCTS: Product[] = [
     title: "Summit Vacuum Flask",
     variantTitle: "750 ml",
     sku: "SM-FLS-75",
+    productType: "Drinkware",
     priceCents: 3600,
     compareAtCents: null,
     cogsCents: 1280,
@@ -219,6 +224,7 @@ const PRODUCTS: Product[] = [
     title: "Merino Trail Socks",
     variantTitle: "3-pack",
     sku: "MR-SCK-03",
+    productType: "Socks",
     priceCents: 2800,
     compareAtCents: null,
     cogsCents: 950,
@@ -231,6 +237,7 @@ const PRODUCTS: Product[] = [
     id: "p_lamp",
     title: "Basecamp Lantern",
     sku: "BC-LMP-01",
+    productType: "Lighting",
     priceCents: 5900,
     compareAtCents: 6900,
     cogsCents: 2340,
@@ -243,6 +250,7 @@ const PRODUCTS: Product[] = [
     id: "p_stove",
     title: "Pocket Camp Stove",
     sku: "PK-STV-01",
+    productType: "Cookware",
     priceCents: 8400,
     compareAtCents: null,
     cogsCents: 3990,
@@ -255,6 +263,7 @@ const PRODUCTS: Product[] = [
     id: "p_mat",
     title: "Cloudbed Sleep Mat",
     sku: "CB-MAT-01",
+    productType: "Sleep",
     priceCents: 14900,
     compareAtCents: null,
     cogsCents: null,
@@ -267,6 +276,7 @@ const PRODUCTS: Product[] = [
     id: "p_chair",
     title: "Riverbank Folding Chair",
     sku: "RB-CHR-01",
+    productType: "Camp furniture",
     priceCents: 7200,
     compareAtCents: null,
     cogsCents: null,
@@ -280,6 +290,7 @@ const PRODUCTS: Product[] = [
     title: "Foghorn Tent",
     variantTitle: "2-person",
     sku: "FG-TNT-02",
+    productType: "Tents",
     priceCents: 32900,
     compareAtCents: 35900,
     cogsCents: 16400,
@@ -292,6 +303,7 @@ const PRODUCTS: Product[] = [
     id: "p_light",
     title: "Headlamp 400",
     sku: "HL-400",
+    productType: "Lighting",
     priceCents: 4200,
     compareAtCents: null,
     cogsCents: 1610,
@@ -305,6 +317,7 @@ const PRODUCTS: Product[] = [
     title: "Everyday Water Bottle",
     variantTitle: "1 L",
     sku: "EV-BTL-1L",
+    productType: "Drinkware",
     priceCents: 2400,
     compareAtCents: null,
     cogsCents: 780,
@@ -318,6 +331,7 @@ const PRODUCTS: Product[] = [
     title: "Trekking Poles",
     variantTitle: "Pair",
     sku: "TP-PR-01",
+    productType: "Tools",
     priceCents: 9900,
     compareAtCents: null,
     cogsCents: 4120,
@@ -330,6 +344,7 @@ const PRODUCTS: Product[] = [
     id: "p_glove",
     title: "Windproof Gloves",
     sku: "WP-GLV-01",
+    productType: "Accessories",
     // Someone edited this in Shopify mid-rollout, which is why ro_2039 is
     // paused: $49.70 (Priceflag) → $44.00 (external).
     priceCents: 4400,
@@ -345,6 +360,7 @@ const PRODUCTS: Product[] = [
     title: "Gear Care Kit",
     variantTitle: "Monthly subscription",
     sku: "GC-SUB-01",
+    productType: "Subscriptions",
     priceCents: 1900,
     compareAtCents: null,
     cogsCents: 620,
@@ -357,6 +373,7 @@ const PRODUCTS: Product[] = [
     id: "p_gift",
     title: "Gift card",
     sku: "GIFT-CARD",
+    productType: "Gift cards",
     priceCents: 5000,
     compareAtCents: null,
     cogsCents: null,
@@ -365,6 +382,210 @@ const PRODUCTS: Product[] = [
     units30d: 34,
     inLiveRollout: false,
   },
+];
+
+/* ------------------------------------------------------------------------- *
+ * The rest of the catalog.
+ *
+ * The curated products above are the ones the rollout and journal fixtures
+ * reference by id. Real pilot stores run 30–500 SKUs, and A2's accept criterion
+ * is that a 500-row catalog stays fast and legible, so the remainder is
+ * generated from a fixed seed — never `Math.random`, so server render, client
+ * hydration and build output always agree.
+ * ------------------------------------------------------------------------- */
+
+const CATALOG_SIZE = 500;
+
+function seededRandom(seed: number): () => number {
+  let state = seed % 2_147_483_647;
+  if (state <= 0) state += 2_147_483_646;
+  return () => {
+    state = (state * 16_807) % 2_147_483_647;
+    return (state - 1) / 2_147_483_646;
+  };
+}
+
+type ProductLine = {
+  type: string;
+  code: string;
+  nouns: string[];
+  variants: string[];
+  low: Cents;
+  high: Cents;
+};
+
+const LINES: ProductLine[] = [
+  {
+    type: "Outerwear",
+    code: "OW",
+    nouns: ["Rain Shell", "Down Vest", "Fleece Hoodie", "Wind Jacket", "Insulated Parka"],
+    variants: ["S", "M", "L", "XL"],
+    low: 6900,
+    high: 24900,
+  },
+  {
+    type: "Packs",
+    code: "PK",
+    nouns: ["Daypack 18L", "Hauler 40L", "Hip Pack", "Summit Pack 30L"],
+    variants: ["Slate", "Moss", "Clay"],
+    low: 4900,
+    high: 19900,
+  },
+  {
+    type: "Drinkware",
+    code: "DW",
+    nouns: ["Vacuum Flask", "Insulated Mug", "Water Bottle", "Growler"],
+    variants: ["350 ml", "500 ml", "750 ml", "1 L"],
+    low: 1900,
+    high: 5900,
+  },
+  {
+    type: "Socks",
+    code: "SK",
+    nouns: ["Trail Socks", "Liner Socks", "Crew Socks"],
+    variants: ["2-pack", "3-pack"],
+    low: 1400,
+    high: 3400,
+  },
+  {
+    type: "Lighting",
+    code: "LT",
+    nouns: ["Headlamp", "Camp Lantern", "Trail Beacon"],
+    variants: ["Black", "Sand"],
+    low: 1900,
+    high: 7900,
+  },
+  {
+    type: "Cookware",
+    code: "CK",
+    nouns: ["Camp Stove", "Nesting Pot Set", "Kettle", "Griddle"],
+    variants: ["Compact", "Wide"],
+    low: 3900,
+    high: 12900,
+  },
+  {
+    type: "Sleep",
+    code: "SL",
+    nouns: ["Sleep Mat", "Sleeping Bag", "Camp Pillow"],
+    variants: ["Regular", "Long"],
+    low: 4900,
+    high: 29900,
+  },
+  {
+    type: "Tents",
+    code: "TN",
+    nouns: ["2-Person Tent", "3-Person Tent", "Tarp Shelter"],
+    variants: ["Green", "Grey"],
+    low: 17900,
+    high: 44900,
+  },
+  {
+    type: "Tools",
+    code: "TL",
+    nouns: ["Trekking Poles", "Multi-tool", "Folding Saw", "Repair Kit"],
+    variants: ["Standard", "Long"],
+    low: 1900,
+    high: 13900,
+  },
+  {
+    type: "Camp furniture",
+    code: "CF",
+    nouns: ["Folding Chair", "Camp Table", "Camp Stool"],
+    variants: ["Standard", "Tall"],
+    low: 3900,
+    high: 14900,
+  },
+  {
+    type: "Accessories",
+    code: "AC",
+    nouns: ["Gloves", "Beanie", "Neck Gaiter", "Dry Bag"],
+    variants: ["S/M", "L/XL"],
+    low: 1400,
+    high: 5900,
+  },
+];
+
+const PREFIXES = [
+  "Ridgeline",
+  "Summit",
+  "Basecamp",
+  "Trailhead",
+  "Foghorn",
+  "Riverbank",
+  "Cloudbed",
+  "Northwind",
+  "Pinecrest",
+  "Backcountry",
+  "Driftwood",
+  "Stonefield",
+];
+
+/** Merchant-looking prices: nearest dollar, minus a cent. */
+function toShelfPrice(cents: number): Cents {
+  return Math.max(199, Math.round(cents / 100) * 100 - 1);
+}
+
+function generateCatalog(count: number): Product[] {
+  const random = seededRandom(20_260_729);
+  const products: Product[] = [];
+  const usedNames = new Set<string>();
+
+  for (let index = 0; index < count; index += 1) {
+    // Re-draw a few times rather than emit three visually identical rows; a
+    // catalog that looks copy-pasted reads as a rendering bug.
+    let line = LINES[0];
+    let prefix = PREFIXES[0];
+    let noun = line.nouns[0];
+    let variantTitle: string | undefined;
+    let name = "";
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      line = LINES[Math.floor(random() * LINES.length)];
+      prefix = PREFIXES[Math.floor(random() * PREFIXES.length)];
+      noun = line.nouns[Math.floor(random() * line.nouns.length)];
+      variantTitle =
+        line.variants.length > 0
+          ? line.variants[Math.floor(random() * line.variants.length)]
+          : undefined;
+      name = `${prefix} ${noun} ${variantTitle ?? ""}`;
+      if (!usedNames.has(name)) break;
+    }
+    if (usedNames.has(name)) {
+      // Out of fresh combinations: a model number, the way a real catalog does it.
+      noun = `${noun} ${200 + index}`;
+      name = `${prefix} ${noun} ${variantTitle ?? ""}`;
+    }
+    usedNames.add(name);
+
+    const priceCents = toShelfPrice(line.low + random() * (line.high - line.low));
+
+    // ~7% of a real catalog has no cost filled in. That state is designed for.
+    const hasCost = random() > 0.07;
+    const marginTarget = 0.34 + random() * 0.3;
+    const cogsCents = hasCost ? Math.round((priceCents * (1 - marginTarget)) / 10) * 10 : null;
+
+    products.push({
+      id: `p_gen_${index + 1}`,
+      title: `${prefix} ${noun}`,
+      variantTitle,
+      sku: `${line.code}-${1000 + index}`,
+      priceCents,
+      compareAtCents: random() > 0.87 ? toShelfPrice(priceCents * 1.18) : null,
+      cogsCents,
+      cogsSource: cogsCents === null ? null : random() > 0.28 ? "shopify" : "manual",
+      kind: "standard",
+      productType: line.type,
+      // Squared so most SKUs are slow movers and a few are the bestsellers.
+      units30d: Math.round(1 + random() * random() * 380),
+      inLiveRollout: false,
+    });
+  }
+
+  return products;
+}
+
+const ALL_PRODUCTS: Product[] = [
+  ...PRODUCTS,
+  ...generateCatalog(Math.max(0, CATALOG_SIZE - PRODUCTS.length)),
 ];
 
 const LIVE_ROLLOUT: Rollout = {
@@ -1055,11 +1276,34 @@ const JOURNAL: JournalEntry[] = [
  * ------------------------------------------------------------------------- */
 
 export function getProducts(): Product[] {
-  return PRODUCTS;
+  return ALL_PRODUCTS;
 }
 
 export function getProduct(id: string): Product | undefined {
-  return PRODUCTS.find((product) => product.id === id);
+  return ALL_PRODUCTS.find((product) => product.id === id);
+}
+
+/** Product types present in the catalog, for the catalog's type filter. */
+export function getProductTypes(): string[] {
+  const types = new Set(ALL_PRODUCTS.map((product) => product.productType));
+  return [...types].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Mocked cost write. Lane B's real server action is requested in
+ * contracts/requests-lane-a.md (REQ-A-004); the UI already treats it as async
+ * and fallible, so swapping it in is a one-line change.
+ */
+export async function saveProductCost(
+  productId: string,
+  cogsCents: Cents | null,
+): Promise<{ ok: true; cogsCents: Cents | null } | { ok: false; message: string }> {
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  if (cogsCents !== null && (!Number.isFinite(cogsCents) || cogsCents < 0)) {
+    return { ok: false, message: "A cost can't be negative." };
+  }
+  void productId;
+  return { ok: true, cogsCents };
 }
 
 export function getRollouts(): Rollout[] {
@@ -1115,13 +1359,13 @@ export function getLiveSummary(): LiveSummary {
 
   return {
     rollout: live ?? null,
-    skusChanged: PRODUCTS.filter((product) => product.inLiveRollout).length,
+    skusChanged: ALL_PRODUCTS.filter((product) => product.inLiveRollout).length,
     skusSelected: live?.productIds.length ?? 0,
     health,
     healthSentence,
     latestReading,
     pausedRollouts: ROLLOUTS.filter((rollout) => rollout.status === "paused_external"),
-    productsMissingCost: PRODUCTS.filter(
+    productsMissingCost: ALL_PRODUCTS.filter(
       (product) => product.kind === "standard" && product.cogsCents === null,
     ).length,
   };
@@ -1138,7 +1382,7 @@ function countTrailingBelow(readings: RolloutReading[]): number {
 
 /** Products a rollout touches, in catalog order. */
 export function getRolloutProducts(rollout: Rollout): Product[] {
-  return PRODUCTS.filter((product) => rollout.productIds.includes(product.id));
+  return ALL_PRODUCTS.filter((product) => rollout.productIds.includes(product.id));
 }
 
 /** Journal rows tied to one rollout, newest first. */

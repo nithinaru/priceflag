@@ -167,3 +167,60 @@ it" glance test that Lane A is graded on:
    `{ok, affectedSkus, message}`. A1 wires the confirm dialog and the toast
    against a mocked no-op; the real ones just need to be awaitable and to report
    what they touched.
+
+## REQ-A-004 — Catalog: cost writes, product type, and a proposal draft
+
+**Filed:** Sprint A2
+**Owner:** Lane B (`lib/**`, `app/api/**`, `contracts/**`)
+**Status:** open — not blocking, all three are mocked locally
+
+Three things A2 needed that belong to Lane B. All three are behind a local seam,
+so landing them is a small, mechanical change on Lane A's side.
+
+**1. A cost-write server action (R3).** Inline cost editing is the feature that
+turns "profit unknown" into a real forecast, so it has to be a two-second edit
+in the table. Lane A calls a mocked
+`saveProductCost(productId, cogsCents: number | null)` in
+`components/mock/engine.ts` and already treats it as async and fallible:
+
+```ts
+saveProductCost(productId, cogsCents):
+  Promise<{ ok: true; cogsCents: number | null }
+        | { ok: false; message: string }>
+```
+
+Requests on the real one:
+
+- take and return **integer cents**, and accept `null` to mean "unknown again"
+  (a merchant must be able to undo a mistyped cost back to unknown, not be stuck
+  with a wrong number);
+- `message` on failure is shown to the merchant verbatim, so please write it in
+  plain language;
+- it should set `cogs_source = 'manual'` — Lane A renders "Added by you" vs
+  "From Shopify" off that field, and merchants do ask where a number came from;
+- a cost **above** the price is allowed (loss leaders are real). Lane A warns but
+  saves. Please don't reject it server-side.
+
+**2. `productType` on `Product`.** Added to the mock and used for the catalog's
+type filter. Shopify's product type is the obvious source. If `contracts/` names
+it differently (`product_type`, or collections instead), say so in
+`docs/lane-status/lane-b.md` and Lane A will follow.
+
+**3. A server-side proposal draft, to replace a `sessionStorage` hand-off.** The
+catalog can legitimately select 400 SKUs, and 400 ids in a query string is a 6 kB
+URL, so A2 parks the selection in `sessionStorage` and `/propose` reads it on
+mount (`components/catalog/selection.ts`). That works, and its failure mode is
+designed for — a shared `/propose` URL shows an empty state pointing back at the
+catalog — but it means the preview screen is client-rendered and a selection
+cannot be linked to or resumed on another device.
+
+What would fix it: create a draft row server-side from a set of product ids and
+give back a short id, so the URL becomes `/propose/<draftId>`.
+
+```ts
+createProposalDraft(productIds: string[]): Promise<{ id: string }>
+getProposalDraft(id: string): Promise<{ id: string; productIds: string[] } | null>
+```
+
+A3 builds the real propose flow on top of this, so it is worth having by then;
+until it exists the seam is one module and one page.
