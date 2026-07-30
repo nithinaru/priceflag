@@ -10,7 +10,7 @@ telemetry, the evaluator, deploys.
 | **`npx tsx scripts/smoke.ts`** | green — **142 passed, 0 skipped** (Supabase suite live against real Postgres) |
 | **`npm audit`** | 0 vulnerabilities |
 | **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
-| **Deployed to Vercel?** | ❌ Not yet — `scripts/vercel-setup.sh` is ready, blocked on `VERCEL_TOKEN` |
+| **Deployed to Vercel?** | ✅ **https://priceflagv1.vercel.app** — build succeeded, `/api/health` returns `ok: true` |
 | **Evaluator cron on Vercel** | 🔒 Deliberately absent from `vercel.json` until B5 is verified |
 | **Contract requests** | Lane A 1–3 + REQ-A-001/002/003, Lane C 1–9 → [answered below](#contract-requests-serviced) |
 
@@ -324,15 +324,30 @@ Two things fixed along the way:
   schema specifically. The smoke suite degrades to a labelled skip rather than
   crashing, so Lanes A and C can still run it with no database access.
 
-## Vercel — ready but not deployed
+## Vercel — deployed
 
-`scripts/vercel-setup.sh` does the whole thing in one command once `VERCEL_TOKEN`
-exists: links to the **existing** `priceflag` project on `nithin-arus-projects`
-(never creating a second one), pushes every env var to preview *and* production,
-deploys, and attempts the `priceflagv1.vercel.app` alias. Secrets are piped on
-stdin and only ever reported as "set (N chars)".
+**https://priceflagv1.vercel.app** — the target domain was available and is
+claimed. Nothing was substituted.
 
-Two things it deliberately does **not** do:
+- Deployment: `priceflag-1gcbs3p8i-nithin-arus-projects.vercel.app`, state READY.
+- Linked to the **existing** project `prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` on
+  `team_AqaBD6YaOf9DIJ7NzbytTZTW`. No second project was created — the link file
+  is written directly from the pinned id, because `vercel link --project <name>`
+  will offer to create a new project when the name does not resolve cleanly.
+- Env vars pushed to **both** preview and production. `PRICEFLAG_MODE` is forced
+  to `real` there, because the demo adapter persists to the local filesystem,
+  which is read-only on Vercel.
+- `/api/health` on the deployment returns:
+  `{"ok":true,"mode":"real","adapter":{"kind":"supabase","ok":true,"detail":"supabase reachable, schema present"},...}`
+  — so the deployed runtime is genuinely reaching the migrated database, not just
+  building.
+
+**Deployment Protection is enabled on the project**, so a plain `curl` gets a 302
+to Vercel SSO. That is a security setting on your account and I did not change it;
+open the URL in a browser signed in to Vercel, or turn protection off in Project
+Settings → Deployment Protection if you want it publicly reachable.
+
+Two things `scripts/vercel-setup.sh` deliberately does **not** do:
 
 1. **It never touches `vercel.json`.** The evaluator cron is not there and will not
    be until B5 is written and verified — that cron writes real prices to a real

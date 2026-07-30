@@ -17,7 +17,10 @@
 set -euo pipefail
 
 PROJECT_NAME="priceflag"
-TEAM_SCOPE="nithin-arus-projects"
+# Pinned by id, not just name: linking by name alone can create a second project
+# if the name does not resolve inside the scope, and there must only ever be one.
+PROJECT_ID="prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh"
+TEAM_SCOPE="team_AqaBD6YaOf9DIJ7NzbytTZTW"
 TARGET_DOMAIN="priceflagv1.vercel.app"
 
 cd "$(dirname "$0")/.."
@@ -42,7 +45,13 @@ fi
 VC=(npx --yes vercel@latest "--token=$VERCEL_TOKEN" "--scope=$TEAM_SCOPE")
 
 echo "==> Linking to the existing '$PROJECT_NAME' project (never creating a second one)"
-"${VC[@]}" link --yes --project "$PROJECT_NAME"
+mkdir -p .vercel
+# Writing the link file directly is deterministic; `vercel link --project <name>`
+# will happily offer to create a new project when resolution is ambiguous.
+cat > .vercel/project.json <<JSON
+{"projectId":"$PROJECT_ID","orgId":"$TEAM_SCOPE"}
+JSON
+echo "    linked to $PROJECT_ID on $TEAM_SCOPE"
 
 # Every var the app reads at runtime. PRICEFLAG_MODE is forced to `real` on Vercel
 # — the demo adapter writes to the local filesystem, which is read-only there.
@@ -84,9 +93,20 @@ done
 
 echo "==> Building and deploying"
 if [[ "${1:-}" == "--prod" ]]; then
-  DEPLOY_URL="$("${VC[@]}" deploy --prod --yes)"
+  DEPLOY_OUTPUT="$("${VC[@]}" deploy --prod --yes 2>&1)"
 else
-  DEPLOY_URL="$("${VC[@]}" deploy --yes)"
+  DEPLOY_OUTPUT="$("${VC[@]}" deploy --yes 2>&1)"
+fi
+
+# The CLI emits a JSON envelope, not a bare URL. Capturing stdout wholesale and
+# passing it to `alias set` fails in a way that looks exactly like "the domain is
+# taken", so extract the hostname explicitly.
+DEPLOY_URL="$(printf '%s' "$DEPLOY_OUTPUT" | grep -oE 'https://[a-z0-9.-]+\.vercel\.app' | head -1)"
+
+if [[ -z "$DEPLOY_URL" ]]; then
+  echo "error: could not determine the deployment URL. Raw output follows:" >&2
+  printf '%s\n' "$DEPLOY_OUTPUT" >&2
+  exit 1
 fi
 echo "    deployment: $DEPLOY_URL"
 
@@ -106,5 +126,12 @@ else
 fi
 
 echo
-echo "Done. Verify with:  curl -s $DEPLOY_URL/api/health | jq"
+echo "Done."
+echo "  deployment: $DEPLOY_URL"
+echo "  target:     https://$TARGET_DOMAIN"
+echo
+echo "Deployment Protection is enabled on this project, so a plain curl gets a 302"
+echo "to Vercel SSO. That is a security setting and this script does not change it."
+echo "To verify, open the URL in a browser signed in to Vercel."
+echo
 echo "Reminder: the evaluator cron is intentionally NOT in vercel.json until B5."

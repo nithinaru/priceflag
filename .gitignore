@@ -30,3 +30,6 @@ __pycache__/
 # os / editors
 .DS_Store
 *.log
+
+# vercel
+.vercel/
