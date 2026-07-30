@@ -3,6 +3,16 @@
 Owned paths: `app/**` (except `app/api/**`), `components/**`,
 `docs/lane-status/lane-a.md`, `contracts/requests-lane-a.md`.
 
+> **Update (after Lane B's B1/B2 landed):** the root scaffold is on `main`, so
+> **`npm run build` now runs green in the repo itself** — 10 routes, 14 static
+> pages, Lane A's pages and Lane B's API routes together — and `npm run typecheck`
+> (shared + Lane B's strict pass) is clean. REQ-A-001 is **resolved**; the
+> out-of-repo harness described under Sprint A1 is retired. Lane B kept the `@/*`
+> alias, added no `tailwind.config.js`, and removed the four runtime dependencies
+> they had pre-added, so Lane A is still dependency-free. `lib/` and `contracts/`
+> now exist; `components/mock/engine.ts` is scheduled for deletion as A3 migrates
+> the propose flow onto the real `ForecastResult` contract.
+
 | Sprint | State |
 |---|---|
 | **A1 — Design system foundation** | ✅ done |
