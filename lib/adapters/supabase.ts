@@ -77,11 +77,29 @@ export class SupabaseAdapter implements StoreAdapter {
     this.db = client ?? getServiceClient();
   }
 
+  /**
+   * Reachable *and* migrated.
+   *
+   * A real `select` rather than a `head` request: a HEAD does not consult the
+   * schema cache the same way, so it can succeed against a database where the
+   * tables do not exist yet — which reports healthy and then fails on the first
+   * real query. PGRST205 ("table not found") is the signal that `db push` has not
+   * run, and it deserves its own message.
+   */
   async ping(): Promise<{ ok: boolean; detail?: string }> {
     try {
-      const { error } = await this.db.from('shops').select('id', { count: 'exact', head: true });
-      if (error) return { ok: false, detail: error.message };
-      return { ok: true, detail: 'supabase reachable' };
+      const { error } = await this.db.from('shops').select('id').limit(1);
+      if (error) {
+        if (error.code === 'PGRST205' || /schema cache/i.test(error.message)) {
+          return {
+            ok: false,
+            detail:
+              'connected, but the schema is missing — run `npx supabase db push` to apply supabase/migrations',
+          };
+        }
+        return { ok: false, detail: error.message };
+      }
+      return { ok: true, detail: 'supabase reachable, schema present' };
     } catch (cause) {
       return { ok: false, detail: cause instanceof Error ? cause.message : String(cause) };
     }
@@ -861,6 +879,9 @@ function mapFit(row: Row): ElasticityFitRow {
     variant_gid: String(row.variant_gid),
     elasticity: num(row.elasticity),
     se: numOrNull(row.se),
+    low: numOrNull(row.low),
+    high: numOrNull(row.high),
+    interval_nominal: numOrNull(row.interval_nominal),
     n_obs: num(row.n_obs),
     price_variation_pct: num(row.price_variation_pct),
     confidence: row.confidence as ElasticityFitRow['confidence'],

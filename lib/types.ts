@@ -441,6 +441,10 @@ export interface ElasticityFitRow {
   variant_gid: string;
   elasticity: number;
   se: number | null;
+  /** Explicit credible bounds from Lane C; preferred over `se` when both present. */
+  low: number | null;
+  high: number | null;
+  interval_nominal: number | null;
   n_obs: number;
   price_variation_pct: number;
   confidence: Confidence;

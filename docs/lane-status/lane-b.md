@@ -5,12 +5,14 @@ telemetry, the evaluator, deploys.
 
 | | |
 |---|---|
-| **Current sprint** | B1 complete. B2 in progress — auth core landed, install flow needs credentials to verify |
-| **`npm run build`** | green — with Lane A's A1 pages and Lane C's ml/ on `main` |
-| **`npx tsx scripts/smoke.ts`** | green — 114 passed, 1 skipped (Supabase suite, no project yet) |
+| **Current sprint** | B2 — static-token auth path landed. **OAuth install flow deferred, not passed** (see below) |
+| **`npm run build`** | green |
+| **`npx tsx scripts/smoke.ts`** | green — 121 passed, 1 skipped (Supabase suite: schema not applied yet) |
 | **`npm audit`** | 0 vulnerabilities |
-| **Contract requests** | REQ-A-001/002/003 and Lane C's 1–4 all answered → [below](#contract-requests-serviced) |
-| **Blocked on** | Shopify custom-app credentials + a Supabase project (see [What I need](#what-i-need-from-nithin)) |
+| **Migrations applied?** | ❌ **No.** Still never run against Postgres — blocked on a credential |
+| **Deployed to Vercel?** | ❌ Not yet — `scripts/vercel-setup.sh` is ready, blocked on `VERCEL_TOKEN` |
+| **Evaluator cron on Vercel** | 🔒 Deliberately absent from `vercel.json` until B5 is verified |
+| **Contract requests** | Lane A 1–3 + REQ-A-001/002/003, Lane C 1–9 → [answered below](#contract-requests-serviced) |
 
 ---
 
@@ -237,6 +239,95 @@ Still to do in B2, all of it requiring a dev store:
 - The acceptance criterion itself: install / uninstall / reinstall on a real dev
   store, all clean.
 
+## ⚠️ B2 acceptance is DEFERRED, not passed
+
+**"Install / uninstall / reinstall on a dev store, all clean" has not been
+verified and is not claimed.** Reading this file later, do not treat B2 as done.
+
+Why: the Shopify app on the dev store is an **admin-created custom app**, which
+has no install flow at all — it authenticates with a static Admin API token. The
+OAuth code path (`app/api/auth`, `app/api/auth/callback`) is written and unit
+tested, but it cannot be exercised until a **Partner-Dashboard app with custom
+distribution** exists, which is what pilots will actually install. That app also
+has to request `read_all_orders` *and* protected-customer-data access, both of
+which need approval.
+
+So OAuth stays in the tree, untested end to end, and is flagged here rather than
+quietly marked green.
+
+### Two app types, two auth paths
+
+`lib/shopify/credentials.ts` is now the single place either kind of token comes
+from. Everything above it — sync, price writer, evaluator — asks it for
+credentials and never reads env or the token column directly.
+
+| | Path A (now) | Path B (pilots) |
+|---|---|---|
+| App type | Admin-created custom app | Partner Dashboard + custom distribution |
+| Auth | Static `SHOPIFY_ADMIN_ACCESS_TOKEN` | OAuth offline token, encrypted at rest |
+| `read_all_orders` | **Implicit** — full history without the scope | Must be requested and approved |
+| Install flow | None | `/api/auth` → `/api/auth/callback` |
+| Status | Landed | Written, unverified |
+
+**`read_all_orders` is removed from `SHOPIFY_SCOPES`.** On an admin-created app
+the scope is not in the admin's checkbox list, so *requesting* it in an OAuth call
+fails outright — while the app already has the access. Put it back only when the
+Partner app exists and the scope is approved. `.env.example` now documents both
+paths separately.
+
+The static path deliberately stores **no token in the database at all** — not even
+encrypted. It reads from env per request, so it needs no `ENCRYPTION_KEY` and
+cannot go stale. `ensureStaticShop()` creates the `shops` row that every other
+table's foreign key needs, since there is no install to create it.
+
+## Migrations still not applied — and why
+
+`supabase db push` has **not** run. The SQL remains reviewed but unproven, exactly
+as at the end of B1.
+
+What I tried:
+
+- **Supabase CLI** — needs `supabase login`, which is an interactive browser flow,
+  or `SUPABASE_ACCESS_TOKEN`. Neither is available in a headless session.
+- **The Supabase MCP connection** — authenticated, but to a *different* account: it
+  lists only `AMA-supabase` (org `vercel_icfg_…`), not `vnyqevrdvfjsfhdnbfsz`. It
+  cannot reach the Priceflag project.
+- **The `sb_secret_…` key** — works, but API keys authenticate PostgREST, not
+  Postgres, and PostgREST cannot execute DDL.
+
+What I did confirm: **the modern `sb_secret_…` key authenticates correctly** with
+`@supabase/supabase-js` 2.111.0. A query returns `PGRST205` (table not found)
+rather than an auth error, and nothing in `lib/` parses the key or assumes JWT
+shape. That concern is closed.
+
+Also hardened as a result: `SupabaseAdapter.ping()` used a `head` request, which
+does **not** consult the schema cache and so reported healthy against a database
+with no tables — then failed on the first real query. It now does a real `select`
+and reports the missing schema specifically. The smoke suite degrades to a labelled
+skip instead of crashing, so Lanes A and C can run it with no database access.
+
+## Vercel — ready but not deployed
+
+`scripts/vercel-setup.sh` does the whole thing in one command once `VERCEL_TOKEN`
+exists: links to the **existing** `priceflag` project on `nithin-arus-projects`
+(never creating a second one), pushes every env var to preview *and* production,
+deploys, and attempts the `priceflagv1.vercel.app` alias. Secrets are piped on
+stdin and only ever reported as "set (N chars)".
+
+Two things it deliberately does **not** do:
+
+1. **It never touches `vercel.json`.** The evaluator cron is not there and will not
+   be until B5 is written and verified — that cron writes real prices to a real
+   store with a real token, and nothing should mutate the store unattended.
+   When B5 lands I will add the cron and say so explicitly in this file.
+2. It forces `PRICEFLAG_MODE=real` on Vercel. The demo adapter persists to the
+   local filesystem, which is read-only on Vercel, so demo mode would fail there
+   in a confusing way.
+
+If `priceflagv1.vercel.app` turns out to be taken globally, the script says so and
+leaves the deployment on its default URL rather than silently picking another
+subdomain; the substitution would be recorded here.
+
 ## Contract requests serviced
 
 All eight open requests from `contracts/requests-lane-a.md` and
@@ -429,6 +520,93 @@ One constraint to know about: `expected_bands` uniqueness includes
 `coalesce(rollout_id, '000…0')`, so raw-SQL upserts need the expression form in
 the `ON CONFLICT` target. The exact statement is in `contracts/db/schema.md`.
 
+## Contract requests serviced — round 2
+
+### Lane C 7 — negative-binomial noise — **done**
+
+`lib/demo/generator.ts` now draws daily units from a negative binomial via a
+Gamma–Poisson mixture (`var = mu + mu²/k`), with per-SKU `k` drawn once from
+**[4, 12]** to match your generator. You were right about why it matters: Poisson
+data would make the monitoring bands look better calibrated than they will ever be
+on a real store, and band calibration is a safety property here because it drives
+auto-rollback.
+
+`DemoTruth` now carries `dispersion_k` per SKU (and `DISPERSION_K_RANGE` is
+exported) so the two fixtures can be reconciled exactly. A smoke test asserts
+variance/mean > 1.15 on the busy SKUs, which a Poisson generator would fail.
+
+Note this **changes the golden series** for a given seed. If your harness has
+baselines recorded against the old Poisson fixture, re-record them.
+
+### Lane C 8 — `elasticity_fits.low` / `high` — **done, not deferred**
+
+You marked it low priority and said `se` was a good enough approximation. I landed
+it anyway, because the thing it affects is the honesty of the range the merchant
+sees, and "slightly misstates the served range" is the kind of small dishonesty
+this product is supposed to not have.
+
+Added to the migration and the schema: `low`, `high` (both nullable, CHECK
+`low <= high`, send together or not at all) plus `interval_nominal` defaulting to
+0.800. `lib/engine/forecast.ts` now prefers your bounds verbatim and only falls
+back to `elasticity ± 1.96·se` per variant when they are absent — so a mixed
+selection where some fits carry bounds and some do not still works. Two smoke tests
+cover it, including that an asymmetric interval genuinely widens the served range.
+
+### Lane C 4 — `explanation` column — **superseded, no column added**
+
+Request 4 asked for `explanation`; request 6 says you now emit
+`confidence_explanation`, which the schema has already. Adding a second
+near-identical column would guarantee they drift apart. Keep using
+`confidence_explanation` — Lane A renders it in preference to Lane B's wording.
+
+### Lane C 9 — write path for fits/bands — **answered, lands in B6**
+
+Both halves noted and neither is blocked on you:
+
+- **Write access.** The plan is an ingest endpoint I own rather than a write-scoped
+  key: `POST /api/ml/ingest` authenticated with a shared secret, validating every
+  row against the JSON Schemas before it touches a table. That keeps the ML role
+  read-only for everything (as you want), keeps a bad nightly run from writing
+  malformed rows, and gives one place to enforce R28 — a run whose `gate_passed` is
+  false writes `model_runs` and nothing else. Your nightly can POST the three
+  artifact files as-is.
+- **Shop enumeration.** B6 adds an `ml_shops` view (`shop_domain`, `timezone`,
+  `currency`, `mode`, catalog counts) with a SELECT policy for the read-only role.
+  Deliberately no token column and no email.
+
+Until B6, keep uploading artifacts — that path stays supported as a fallback.
+
+### Lane A 1 — inline COGS editing — **already correct, confirmed**
+
+All three of your points already hold in `setCogs`: it sets
+`cogs_source = 'manual'`, and it does **not** reject a cost above the price (loss
+leaders are real — warn and save, as you do). Clearing a cost sets `cogs_cents`
+to null and `cogs_source` back to `'none'`, which a DB CHECK enforces, so
+"Added by you" / "From Shopify" / unknown are always distinguishable. `PATCH
+/api/products/[variantId]/cogs` returns a plain-language `message` on failure.
+
+### Lane A 2 — `productType` naming — **it is `product_type`**
+
+Shopify's product type is the source, and the column and contract field are both
+`product_type` (snake_case, like everything else). `Product` also carries `vendor`
+and `tags`, if the catalog filter wants more axes later.
+
+### Lane A 3 — server-side proposal draft — **accepted, landing with B4**
+
+Agreed, and for a reason beyond the URL length: a draft row means the forecast the
+merchant approved is the forecast stored with the rollout, rather than something
+recomputed from ids after the fact. Shape as you specified:
+
+```ts
+createProposalDraft(variantGids: string[]): Promise<{ id: string }>
+getProposalDraft(id: string): Promise<{ id: string; variantGids: string[] } | null>
+```
+
+As `POST /api/proposals/draft` → `{ id }` and `GET /api/proposals/draft/[id]`,
+backed by a `proposal_drafts` table with a 7-day TTL. Note the ids are
+**`variant_gid`s**, not product ids — the catalog selects variants. It will exist
+before A3 needs it; `sessionStorage` remains fine until then.
+
 ## What I need from Nithin
 
 Two things, both free tier. Until they exist, Lane B keeps building against the
@@ -510,4 +688,5 @@ Resend (`RESEND_API_KEY`) is not needed until B5.
 | Date | Sprint | What landed |
 |---|---|---|
 | 2026-07-29 | B1 | Contracts (8 schemas + api.md + db/schema.md), 8 migrations, the v0 engine in `lib/`, `StoreAdapter` with Demo + Supabase implementations, demo/golden-data generator, `scripts/smoke.ts`, `scripts/seed-demo.ts`, `GET /api/health`, root configs |
+| 2026-07-30 | B2 | Static-token auth path (`lib/shopify/credentials.ts`) alongside OAuth; cost-aware Admin GraphQL client with throttle backoff; `read_all_orders` removed from requested scopes; negative-binomial golden data (Lane C 7); `elasticity_fits.low/high/interval_nominal` (Lane C 8); `ping()` hardened to detect a missing schema; `scripts/vercel-setup.sh`. Smoke 96 → 121. **B2 acceptance deferred, migrations still unapplied, not deployed** |
 | 2026-07-29 | B1 | Serviced REQ-A-001/002/003 and Lane C 1–4: removed the four runtime deps Lane A did not want, moved `noUncheckedIndexedAccess` out of the shared tsconfig into `tsconfig.strict.json` (it was breaking Lane A's file), added `lib/engine/readings.ts` with server-side reading verdicts and rollout health, specified `GET /api/live`, added `{ok, affected_skus, message}` to rollback and kill-switch responses, `overrides` for the `sharp`/`postcss` advisories. Smoke 89 → 96 |

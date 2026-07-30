@@ -181,6 +181,10 @@ export interface ElasticityFit {
   variant_gid: string;
   elasticity: number;
   se: number | null;
+  /** Credible bounds on the elasticity. Sent together; preferred over `se` when present. */
+  low?: number | null;
+  high?: number | null;
+  interval?: number | null;
   n_obs: number;
   price_variation_pct: number;
   confidence: Confidence;

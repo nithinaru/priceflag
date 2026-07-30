@@ -13,7 +13,22 @@ export type Mode = 'demo' | 'real';
  */
 export const DEFAULT_SHOPIFY_API_VERSION = '2026-07';
 
-export const DEFAULT_SHOPIFY_SCOPES = 'read_products,write_products,read_orders,read_all_orders';
+/**
+ * Scopes requested during OAuth.
+ *
+ * `read_all_orders` is deliberately NOT here. Two app types, two rules:
+ *
+ *   - **Admin-created custom app** (what the dev store uses): full order history
+ *     is already available without the scope, and the scope is not in the admin's
+ *     checkbox list at all — so requesting it in an OAuth call fails outright.
+ *   - **Partner-Dashboard app with custom distribution** (what pilots will need):
+ *     `read_all_orders` must be requested *and* approved, alongside
+ *     protected-customer-data access.
+ *
+ * When the Partner app exists, add it back here and re-check `missingScopes`.
+ * Until then, order history beyond 60 days comes from the static-token path.
+ */
+export const DEFAULT_SHOPIFY_SCOPES = 'read_products,write_products,read_orders';
 
 export function env(name: string): string | undefined {
   const value = process.env[name];
@@ -44,8 +59,18 @@ export function hasSupabaseConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && env('SUPABASE_SERVICE_ROLE_KEY') !== undefined;
 }
 
+/** Path B: OAuth credentials for a Partner-Dashboard app. */
 export function hasShopifyConfig(): boolean {
   return env('SHOPIFY_API_KEY') !== undefined && env('SHOPIFY_API_SECRET') !== undefined;
+}
+
+/** Path A: a static Admin API token from an admin-created custom app. */
+export function hasStaticShopifyToken(): boolean {
+  return env('SHOPIFY_ADMIN_ACCESS_TOKEN') !== undefined && env('SHOPIFY_SHOP_DOMAIN') !== undefined;
+}
+
+export function getStaticShopDomain(): string | undefined {
+  return env('SHOPIFY_SHOP_DOMAIN')?.trim().toLowerCase();
 }
 
 export function getShopifyApiVersion(): string {
@@ -75,6 +100,7 @@ export function describeEnvironment(): {
   mode: Mode;
   supabase: boolean;
   shopify: boolean;
+  shopifyStaticToken: boolean;
   encryption: boolean;
   resend: boolean;
   cronSecret: boolean;
@@ -84,6 +110,7 @@ export function describeEnvironment(): {
     mode: getMode(),
     supabase: hasSupabaseConfig(),
     shopify: hasShopifyConfig(),
+    shopifyStaticToken: hasStaticShopifyToken(),
     encryption: env('ENCRYPTION_KEY') !== undefined,
     resend: env('RESEND_API_KEY') !== undefined,
     cronSecret: env('CRON_SECRET') !== undefined,

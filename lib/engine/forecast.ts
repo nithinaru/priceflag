@@ -365,16 +365,39 @@ function unitChangeFromElasticity(basePrice: Cents, targetPrice: Cents, elastici
   return (Math.pow(targetPrice / basePrice, elasticity) - 1) * 100;
 }
 
-function aggregateUnitChange(lines: readonly VariantLine[], shift: number): number {
+/** Which elasticity to use for a given variant — the estimate, or an interval edge. */
+type ElasticityPick = (fit: ElasticityFitRow) => number;
+
+function fitSe(fit: ElasticityFitRow): number {
+  // No standard error reported: do not pretend to precision, draw the range as if
+  // the SE were a fixed fraction of the estimate.
+  return fit.se ?? Math.abs(fit.elasticity) * IMPLIED_SE_FRACTION;
+}
+
+const pickExpected: ElasticityPick = (fit) => fit.elasticity;
+
+/**
+ * Prefer Lane C's own credible bounds. Their posterior is asymmetric at the edges
+ * — the high side is clipped near zero and wrong-sign fits vacate precision — so a
+ * symmetric `elasticity ± z·se` would show a range the model does not actually
+ * believe. Falls back to the symmetric interval per variant, so a mixed selection
+ * where only some fits carry bounds still works.
+ */
+const pickLow: ElasticityPick = (fit) =>
+  fit.low !== null && fit.low !== undefined ? fit.low : fit.elasticity - Z_95 * fitSe(fit);
+
+const pickHigh: ElasticityPick = (fit) =>
+  fit.high !== null && fit.high !== undefined ? fit.high : fit.elasticity + Z_95 * fitSe(fit);
+
+function aggregateUnitChange(lines: readonly VariantLine[], pick: ElasticityPick): number {
   // Weight each variant's own response by its own volume, then aggregate — a
   // single blended elasticity would misprice a selection that mixes a
   // high-volume staple with a long tail.
   let baseUnits = 0;
   let newUnits = 0;
   for (const line of lines) {
-    const elasticity = line.fit ? line.fit.elasticity + shift : 0;
     const changePct = line.fit
-      ? unitChangeFromElasticity(line.basePriceCents, line.targetPriceCents, elasticity)
+      ? unitChangeFromElasticity(line.basePriceCents, line.targetPriceCents, pick(line.fit))
       : 0;
     baseUnits += line.unitsPerDay;
     newUnits += line.unitsPerDay * (1 + changePct / 100);
@@ -601,10 +624,9 @@ export function buildForecast(input: ForecastInput): ForecastResult {
         ]),
       ) ?? 0;
 
-    const shift = se === null ? 0 : Z_95 * se;
-    const expectedChange = aggregateUnitChange(lines, 0);
-    const candidateA = aggregateUnitChange(lines, -shift);
-    const candidateB = aggregateUnitChange(lines, shift);
+    const expectedChange = aggregateUnitChange(lines, pickExpected);
+    const candidateA = aggregateUnitChange(lines, pickLow);
+    const candidateB = aggregateUnitChange(lines, pickHigh);
 
     // Sort by outcome rather than by elasticity sign: which end of the interval
     // is the bad end flips between a price rise and a price cut.

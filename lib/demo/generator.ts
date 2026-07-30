@@ -40,15 +40,18 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+function standardNormal(rng: () => number): number {
+  // Box-Muller. u1 is floored off zero because log(0) is -Infinity.
+  const u1 = Math.max(rng(), 1e-12);
+  const u2 = rng();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
 /** Knuth's method. Only sane for small lambda, which daily retail units are. */
 function poisson(rng: () => number, lambda: number): number {
   if (lambda <= 0) return 0;
   if (lambda > 30) {
-    // Normal approximation, floored at zero.
-    const u1 = Math.max(rng(), 1e-12);
-    const u2 = rng();
-    const normal = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    return Math.max(0, Math.round(lambda + Math.sqrt(lambda) * normal));
+    return Math.max(0, Math.round(lambda + Math.sqrt(lambda) * standardNormal(rng)));
   }
   const limit = Math.exp(-lambda);
   let k = 0;
@@ -58,6 +61,47 @@ function poisson(rng: () => number, lambda: number): number {
     product *= rng();
   }
   return k;
+}
+
+/** Marsaglia–Tsang gamma, shape > 0, unit scale. */
+function gamma(rng: () => number, shape: number): number {
+  if (shape < 1) {
+    // Boost to shape+1 and scale back down, which is exact.
+    return gamma(rng, shape + 1) * Math.pow(Math.max(rng(), 1e-12), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+
+  for (;;) {
+    let x: number;
+    let v: number;
+    do {
+      x = standardNormal(rng);
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+
+    const u = Math.max(rng(), 1e-12);
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+/**
+ * Negative binomial by Gamma–Poisson mixture: `var = mu + mu²/k`.
+ *
+ * Real daily retail counts are overdispersed relative to Poisson — a bulk order,
+ * an influencer mention, a quiet Tuesday. Generating Poisson data would make the
+ * monitoring bands look better calibrated than they will ever be on a real store,
+ * and band calibration is a safety property here because it drives auto-rollback.
+ * Requested by Lane C (request 7) so the TypeScript and Python fixtures agree.
+ *
+ * Lower `k` = more overdispersion. k → ∞ converges to Poisson.
+ */
+function negativeBinomial(rng: () => number, mean: number, k: number): number {
+  if (mean <= 0) return 0;
+  if (!Number.isFinite(k) || k <= 0) return poisson(rng, mean);
+  return poisson(rng, gamma(rng, k) * (mean / k));
 }
 
 interface DemoProductSpec {
@@ -293,10 +337,15 @@ const DOW_MULTIPLIER: Record<number, number> = {
   7: 0.82,
 };
 
+/** Overdispersion range for the negative-binomial noise, per Lane C's request 7. */
+export const DISPERSION_K_RANGE: readonly [number, number] = [4, 12];
+
 export interface DemoTruth {
   variant_gid: string;
   title: string;
   true_elasticity: number;
+  /** Negative-binomial dispersion used for this SKU: `var = mu + mu²/k`. */
+  dispersion_k: number;
   /** Distinct list prices actually observed — the ceiling on what any fit can know. */
   price_levels: number;
   /** What an honest estimator should be able to claim about this product. */
@@ -450,6 +499,10 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
 
     const priceLevels = new Set<Cents>();
 
+    // Per-SKU overdispersion, drawn once so it is stable across the series.
+    const dispersionK =
+      DISPERSION_K_RANGE[0] + rng() * (DISPERSION_K_RANGE[1] - DISPERSION_K_RANGE[0]);
+
     for (let offset = 0; offset < historyDays; offset += 1) {
       const day = addDays(startDay, offset);
       const listPrice = priceOnDay(offset);
@@ -465,7 +518,7 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
       const promoLift = onPromo ? 1.55 : 1;
 
       const lambda = spec.baseUnitsPerDay * seasonal * trend * priceResponse * promoLift;
-      const units = hadStockout ? 0 : poisson(rng, lambda);
+      const units = hadStockout ? 0 : negativeBinomial(rng, lambda, dispersionK);
 
       if (units > 0) priceLevels.add(listPrice);
 
@@ -504,6 +557,7 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
       variant_gid: variantGid,
       title: spec.variantTitle ? `${spec.title} — ${spec.variantTitle}` : spec.title,
       true_elasticity: spec.trueElasticity,
+      dispersion_k: Number(dispersionK.toFixed(4)),
       price_levels: levels,
       // What an honest estimator can claim: two price levels and real volume is
       // estimable; one level is not, no matter how much data there is.

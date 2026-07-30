@@ -94,7 +94,7 @@ import {
   verifyOAuthState,
 } from '../lib/shopify/oauth';
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
-import { generateDemoStore, DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
+import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
 import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
 
@@ -232,6 +232,9 @@ function makeFit(variantGid: string, overrides: Partial<ElasticityFitRow> = {}):
     variant_gid: variantGid,
     elasticity: -1.6,
     se: 0.25,
+    low: null,
+    high: null,
+    interval_nominal: 0.8,
     n_obs: 168,
     price_variation_pct: 11.4,
     confidence: 'fitted',
@@ -741,6 +744,98 @@ async function testShopifyAuth(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// golden data (Lane C's fixture)
+// ---------------------------------------------------------------------------
+
+async function testGoldenData(): Promise<void> {
+  section('golden data');
+
+  const store = generateDemoStore({ seed: 20260729, historyDays: 180 });
+
+  await test('generation is deterministic for a given seed', () => {
+    const again = generateDemoStore({ seed: 20260729, historyDays: 180, endDay: store.window.to });
+    assertEqual(again.orderDays.length, store.orderDays.length, 'same row count');
+    const a = store.orderDays.map((row) => row.units).join(',');
+    const b = again.orderDays.map((row) => row.units).join(',');
+    assertEqual(a === b, true, 'byte-identical unit series');
+  });
+
+  await test('daily counts are overdispersed, not Poisson (Lane C request 7)', () => {
+    // Poisson has var = mean. Real retail counts do not, and generating Poisson
+    // data would make the monitoring bands look better calibrated than they will
+    // ever be on a real store — and band calibration drives auto-rollback.
+    const busiest = store.truth
+      .filter((row) => row.price_levels >= 1)
+      .map((row) => row.variant_gid);
+
+    let checked = 0;
+    for (const variantGid of busiest) {
+      const units = store.orderDays
+        .filter((row) => row.variant_gid === variantGid && !row.had_stockout && !row.on_promo)
+        .map((row) => row.units);
+      if (units.length < 60) continue;
+
+      const mean = units.reduce((sum, value) => sum + value, 0) / units.length;
+      if (mean < 4) continue; // too quiet for the ratio to be meaningful
+      const variance =
+        units.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (units.length - 1);
+
+      // Allow for seasonality inflating variance either way, but a Poisson
+      // generator would sit near 1.0 and NB with k in [4,12] sits well above it.
+      assert(
+        variance / mean > 1.15,
+        `variance/mean for ${variantGid} was ${(variance / mean).toFixed(2)}, expected overdispersion`,
+      );
+      checked += 1;
+    }
+    assert(checked >= 3, `expected to check several SKUs, checked ${checked}`);
+  });
+
+  await test('the truth table reports the dispersion so both fixtures can agree', () => {
+    for (const row of store.truth) {
+      assert(
+        row.dispersion_k >= DISPERSION_K_RANGE[0] && row.dispersion_k <= DISPERSION_K_RANGE[1],
+        `k for ${row.variant_gid} was ${row.dispersion_k}, outside [${DISPERSION_K_RANGE.join(', ')}]`,
+      );
+    }
+  });
+
+  await test('the fixture still contains the awkward cases on purpose', () => {
+    assert(
+      store.truth.some((row) => row.price_levels <= 1 && row.expected_confidence === 'assumption'),
+      'a never-repriced product, where `assumption` is the only honest answer',
+    );
+    assert(
+      store.truth.some((row) => row.expected_confidence === 'fitted'),
+      'and one with enough price movement to be estimable',
+    );
+    assert(
+      store.products.some((product) => product.cogs_cents === null),
+      'a product with no cost, for the profit-unknown state',
+    );
+    assert(
+      store.products.some((product) => product.is_gift_card) &&
+        store.products.some((product) => product.has_selling_plan),
+      'a gift card and a subscription product, which are never repriced',
+    );
+    assert(store.orderDays.some((row) => row.had_stockout), 'stockout days');
+    assert(store.orderDays.some((row) => row.on_promo), 'promo days');
+  });
+
+  await test('no order-day row carries anything resembling customer identity (R23)', () => {
+    const allowed = new Set([
+      'variant_gid', 'product_gid', 'day', 'units', 'orders', 'gross_revenue_cents',
+      'discount_cents', 'refund_units', 'refund_cents', 'net_revenue_cents',
+      'realized_unit_price_cents', 'list_price_cents', 'had_stockout', 'on_promo', 'source',
+    ]);
+    const first = store.orderDays[0] as Record<string, unknown>;
+    for (const key of Object.keys(first)) {
+      assert(allowed.has(key), `unexpected field on order_days: ${key}`);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // contracts
 // ---------------------------------------------------------------------------
 
@@ -1151,6 +1246,65 @@ async function testForecast(): Promise<void> {
       (fitted.low.profit_delta_cents as number) <= (fitted.high.profit_delta_cents as number),
       'low profit <= high profit',
     );
+  });
+
+  await test("Lane C's asymmetric bounds are used verbatim, not re-derived from se", () => {
+    const product = makeProduct();
+    // A posterior clipped near zero on the high side: -1.6 with bounds
+    // [-2.60, -0.30] is not symmetric, so elasticity ± 1.96·se would misstate it.
+    const asymmetric = makeFit(product.variant_gid, { se: 0.25, low: -2.6, high: -0.3 });
+    const withBounds = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, asymmetric]]),
+      now: NOW,
+    });
+
+    const symmetric = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, makeFit(product.variant_gid, { se: 0.25 })]]),
+      now: NOW,
+    });
+
+    const bounded = withBounds.fitted as NonNullable<typeof withBounds.fitted>;
+    const derived = symmetric.fitted as NonNullable<typeof symmetric.fitted>;
+
+    // The supplied interval is much wider than ±1.96·0.25, so the served range
+    // must be wider too — proof the bounds were honoured rather than ignored.
+    const boundedWidth = bounded.high.units_change_pct - bounded.low.units_change_pct;
+    const derivedWidth = derived.high.units_change_pct - derived.low.units_change_pct;
+    assert(
+      boundedWidth > derivedWidth * 1.5,
+      `explicit bounds should widen the range: ${boundedWidth.toFixed(1)} vs ${derivedWidth.toFixed(1)}`,
+    );
+    // The expected value is untouched by the bounds.
+    assertClose(bounded.expected.units_change_pct, derived.expected.units_change_pct, 0.01, 'centre unchanged');
+  });
+
+  await test('a variant without bounds still falls back to se, mixed in one selection', () => {
+    const withBounds = makeProduct();
+    const withoutBounds = makeProduct({ id: 'p2', variant_gid: toGid('ProductVariant', 2002) });
+
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [withBounds, withoutBounds],
+      orderDays: [...makeHistory(withBounds, 90, 10), ...makeHistory(withoutBounds, 90, 6)],
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([
+        [withBounds.variant_gid, makeFit(withBounds.variant_gid, { low: -2.2, high: -1.0 })],
+        [withoutBounds.variant_gid, makeFit(withoutBounds.variant_gid, { se: 0.3 })],
+      ]),
+      now: NOW,
+    });
+
+    const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
+    assert(fitted.low.units_change_pct < fitted.expected.units_change_pct, 'range still brackets the estimate');
+    assert(fitted.high.units_change_pct > fitted.expected.units_change_pct, 'on both sides');
   });
 
   await test('a stale fit is demoted, never served as fresh (R32)', () => {
@@ -2192,6 +2346,9 @@ async function runAdapterSuite(label: string, adapter: StoreAdapter, shopId: str
           variant_gid: variantGids[0] as string,
           elasticity: -1.55,
           se: 0.22,
+          low: -1.94,
+          high: -1.21,
+          interval_nominal: 0.8,
           n_obs: 160,
           price_variation_pct: 9.8,
           confidence: 'fitted',
@@ -2330,17 +2487,28 @@ async function testAdapters(): Promise<void> {
     return;
   }
 
-  const store = generateDemoStore({ seed: 20260729 });
-  const shop = await supabase.upsertShop({
-    ...store.shop,
-    shop_domain: 'priceflag-smoke.myshopify.com',
-    name: 'Priceflag smoke store',
-    mode: 'demo',
-  });
-  await supabase.upsertProducts(shop.id, store.products);
-  await supabase.upsertOrderDays(shop.id, store.orderDays);
+  // Seeding is outside the harness, so a failure here would crash the run rather
+  // than fail a test. Degrade to a skip: the other lanes must be able to run this
+  // suite without database access at all.
+  let shopId: string;
+  try {
+    const store = generateDemoStore({ seed: 20260729 });
+    const shop = await supabase.upsertShop({
+      ...store.shop,
+      shop_domain: 'priceflag-smoke.myshopify.com',
+      name: 'Priceflag smoke store',
+      mode: 'demo',
+    });
+    await supabase.upsertProducts(shop.id, store.products);
+    await supabase.upsertOrderDays(shop.id, store.orderDays);
+    shopId = shop.id;
+  } catch (cause) {
+    section('adapter: SupabaseAdapter');
+    skip('the full adapter suite', `could not seed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return;
+  }
 
-  await runAdapterSuite('SupabaseAdapter', supabase, shop.id);
+  await runAdapterSuite('SupabaseAdapter', supabase, shopId);
 }
 
 // ---------------------------------------------------------------------------
@@ -2352,6 +2520,7 @@ async function main(): Promise<void> {
 
   await testPrimitives();
   await testShopifyAuth();
+  await testGoldenData();
   await testContracts();
   await testForecast();
   await testGuardrails();

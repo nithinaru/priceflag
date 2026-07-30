@@ -53,6 +53,15 @@ create table public.elasticity_fits (
 
   elasticity          numeric(8, 4) not null check (elasticity between -12 and 2),
   se                  numeric(8, 4) check (se >= 0),
+  -- Explicit credible bounds on the elasticity itself, because Lane C's posterior
+  -- is asymmetric at the edges (high clipped near zero, wrong-sign fits vacate
+  -- precision) and `elasticity ± z·se` therefore misstates the range the forecast
+  -- card shows. When these are present the forecast uses them verbatim instead of
+  -- deriving a symmetric interval.
+  low                 numeric(8, 4) check (low between -12 and 2),
+  high                numeric(8, 4) check (high between -12 and 2),
+  interval_nominal    numeric(4, 3) default 0.800
+                        check (interval_nominal > 0 and interval_nominal < 1),
   n_obs               integer not null default 0 check (n_obs >= 0),
   price_variation_pct numeric(8, 4) not null default 0 check (price_variation_pct >= 0),
 
@@ -72,7 +81,10 @@ create table public.elasticity_fits (
 
   -- One fit per variant per model version; a refit of the same version replaces
   -- it, a new version lands alongside so we can compare champions.
-  constraint elasticity_fits_key unique (shop_id, variant_gid, model_version)
+  constraint elasticity_fits_key unique (shop_id, variant_gid, model_version),
+  constraint elasticity_fits_bounds_ordered check (
+    (low is null and high is null) or (low is not null and high is not null and low <= high)
+  )
 );
 
 comment on table public.elasticity_fits is

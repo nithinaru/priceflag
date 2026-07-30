@@ -30,7 +30,25 @@
     "se": {
       "type": ["number", "null"],
       "minimum": 0,
-      "description": "Standard error of `elasticity` (bootstrap). Drives the fitted range's width. null only if the method genuinely cannot produce one."
+      "description": "Standard error of `elasticity` (bootstrap). Used for the fitted range's width when `low`/`high` are absent. null only if the method genuinely cannot produce one."
+    },
+    "low": {
+      "type": ["number", "null"],
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Lower credible bound on the elasticity itself (nominal `interval`, default 80%). Supply this when the posterior is asymmetric — a symmetric `elasticity ± z·se` would misstate the range the forecast card shows. Must be <= `high`."
+    },
+    "high": {
+      "type": ["number", "null"],
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Upper credible bound on the elasticity itself. Send `low` and `high` together or not at all; when both are present the forecast uses them verbatim instead of deriving an interval from `se`."
+    },
+    "interval": {
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Nominal coverage of [low, high]. Defaults to 0.8 when omitted."
     },
     "n_obs": {
       "type": "integer",
