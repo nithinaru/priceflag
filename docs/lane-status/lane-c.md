@@ -1,6 +1,45 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprint C1 complete (2026-07-29). Next: C2 (elasticity v1).
+**Current:** Sprints C1 + C2 complete (2026-07-29). Next: C3 (baseline demand
+forecaster for the evaluator).
+
+## C2 — Elasticity v1 ✅
+
+`priceflag_ml/elasticity.py` — champion `elasticity-poisson-eb-1.0`:
+
+- Per-SKU Poisson GLM (IRLS) on non-promo/non-stockout days: log(mu) =
+  a + ε·log(rel price) + dow + trend. Promo days excluded because promo price
+  cuts are confounded with the promo lift (the golden generator's deliberate
+  trap — controlled by exclusion, not by a collinear dummy).
+- Moving-block bootstrap SEs + drift allowance; EB shrinkage toward a robust
+  portfolio median with fixed between-SKU tau = 0.6.
+- Honest tiers: `fitted` (real non-promo price variation, ≥60 days, tight
+  posterior) / `partial` (usable but thin signal — most SKUs land here, which
+  is the true state of 6-month order histories) / `assumption` (no permanent
+  price variation → v0 bracket verbatim). Every row carries a plain-language
+  `explanation` (Lane A renders it as-is).
+- `fits_frame()` emits `elasticity_fits` contract rows (elasticity, low,
+  high, se, n_obs, price_variation_pct, confidence, explanation,
+  model_version, fitted_at).
+
+**R28 gate (5 golden seeds, identifiable slice):** beats bracket incumbent on
+within-±0.3 (43.9% vs 33.1%) and MAE (0.486 vs 0.491); 80% CI covers the true
+elasticity 86.0% of the time. Verdict recorded in `eval/c2_elasticity.json`;
+seven rejected approaches documented in `ml/MODELS.md`.
+
+**Scope honesty (important for expectations):** per-SKU ±0.3 recovery for
+most SKUs is statistically impossible at this data scale — an unbiased
+estimator has sd ≈ 1.0 given 90–180 days of overdispersed daily counts and
+1–3 price changes. The product's honesty comes from the tiers + calibrated
+CIs, not from pretending point precision.
+
+**Adversarial review (pre-push, 20 agents):** 17 confirmed defects fixed.
+Highlights: a dead SKU (zero sales, historical price change) was being served
+`fitted` with a near-inelastic estimate (reads as "safe to raise price");
+wrong-sign raw fits acted as precise pseudo-observations of "elasticity = 0";
+merchant-facing explanation strings stated wrong reasons in several branches
+(now cause-derived); the R28 gate test now runs the exact shipped 5-seed
+verdict. 62 tests green.
 
 ## C1 — Data access + golden harness ✅
 

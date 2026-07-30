@@ -29,6 +29,7 @@ auto-rollback (R29).
 | `priceflag_ml/golden.py` | Synthetic golden store with known ground truth (elasticity, seasonality, promos with price confound, trend, stockouts, NB noise) |
 | `priceflag_ml/data.py` | Read-only data access: golden fixture or Supabase PostgREST (`SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`) |
 | `priceflag_ml/baselines.py` | Incumbents: seasonal-naive forecaster (80% bands), bracket elasticity (v0 stand-in) |
+| `priceflag_ml/elasticity.py` | Champion elasticity: Poisson GLM + EB shrinkage, honest confidence tiers, `elasticity_fits` rows |
 | `priceflag_ml/metrics.py` | Coverage, pinball loss, MAPE/WAPE, elasticity recovery |
 | `priceflag_ml/harness.py` | Rolling-origin backtests, golden recovery, champion-vs-challenger comparison |
 | `eval/` | Committed harness score snapshots (`c1_incumbents.json` = the bar) |
@@ -37,7 +38,8 @@ auto-rollback (R29).
 ## Reproduce the incumbent scores
 
 ```bash
-cd ml && uv run python -m priceflag_ml.harness
+cd ml && uv run python -m priceflag_ml.harness      # C1: incumbent bar
+cd ml && uv run python -m priceflag_ml.harness c2   # C2: elasticity gate (5 seeds)
 ```
 
 Deterministic: the golden generator is seeded (per-SKU independent streams)

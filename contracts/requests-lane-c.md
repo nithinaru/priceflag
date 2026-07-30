@@ -32,7 +32,17 @@ meanwhile (nothing here blocks C1–C3).
    `SUPABASE_ML_READONLY_KEY` in `.env.example` and as GitHub Actions secrets
    (for the C7 nightly refit) once B6 lands. Golden data suffices until then.
 
-4. **Output tables.** C2 writes `elasticity_fits`, C3 writes `expected_bands`,
+4. **`elasticity_fits.explanation` column (new, from C2).** Every fit row now
+   carries a plain-language `explanation` string (e.g. "Measured from this
+   product's own price changes (17% price variation across 174 days of
+   history)."). R7 requires a one-line explanation per estimate and R25 bans
+   jargon — Lane A can render this string verbatim. Please include
+   `explanation text` in the `elasticity_fits` schema. Also `low`/`high`
+   (80% credible bounds on the elasticity itself) — the forecast card's range
+   should come from these, not from a fixed bracket, when confidence isn't
+   `assumption`.
+
+5. **Output tables.** C2 writes `elasticity_fits`, C3 writes `expected_bands`,
    both with `model_version`; C7 needs the `model_runs` registry. When you
    write those schemas, the fields Lane C will populate are per
    BUILD_BRIEF §3 (`elasticity, se, n_obs, price_variation_pct, confidence,

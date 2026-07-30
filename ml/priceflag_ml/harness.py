@@ -209,6 +209,52 @@ def run_c1(cfg: GoldenConfig | None = None) -> dict:
     }
 
 
+def run_c2(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
+    """C2 report: EB-Poisson elasticity challenger vs bracket incumbent,
+    averaged over several golden universes (single-seed verdicts are noisy).
+    Also reports CI coverage of the true elasticity — the honesty metric."""
+    from .elasticity import MODEL_VERSION, RidgeElasticity, fit_store
+
+    per_seed = []
+    for seed in seeds:
+        store = generate_store(GoldenConfig(seed=seed))
+        truth = dict(zip(store.truth["sku"], store.truth["elasticity"]))
+        challenger = evaluate_elasticity(RidgeElasticity(store.orders, seed=0).estimate, store)
+        incumbent = evaluate_elasticity(BracketElasticity().estimate, store)
+        fits = fit_store(store.orders, seed=0)
+        ci = [f.low <= truth[f.sku] <= f.high for f in fits if f.confidence != "assumption"]
+        tiers = pd.Series([f.confidence for f in fits]).value_counts().to_dict()
+        per_seed.append(
+            {
+                "seed": seed,
+                "challenger_identifiable": challenger["identifiable_skus"],
+                "incumbent_identifiable": incumbent["identifiable_skus"],
+                "ci80_coverage_of_truth": float(np.mean(ci)) if ci else float("nan"),
+                "tiers": tiers,
+            }
+        )
+
+    def _mean(path_a: str, path_b: str) -> float:
+        return float(np.mean([s[path_a][path_b] for s in per_seed]))
+
+    summary = {
+        "model_version": MODEL_VERSION,
+        "n_seeds": len(seeds),
+        "challenger_mae": _mean("challenger_identifiable", "mae"),
+        "incumbent_mae": _mean("incumbent_identifiable", "mae"),
+        "challenger_within_0.3": _mean("challenger_identifiable", "pct_within_0.3"),
+        "incumbent_within_0.3": _mean("incumbent_identifiable", "pct_within_0.3"),
+        "ci80_coverage_of_truth": float(np.mean([s["ci80_coverage_of_truth"] for s in per_seed])),
+    }
+    summary["verdict"] = (
+        "challenger wins"
+        if summary["challenger_within_0.3"] > summary["incumbent_within_0.3"]
+        and summary["challenger_mae"] <= summary["incumbent_mae"] * 1.02
+        else "incumbent stays"
+    )
+    return {"summary": summary, "per_seed": per_seed}
+
+
 def _json_safe(obj):
     """Replace NaN/inf with None so the report is always valid JSON."""
     if isinstance(obj, dict):
@@ -221,7 +267,10 @@ def _json_safe(obj):
 
 
 def main() -> None:
-    report = run_c1()
+    import sys
+
+    which = sys.argv[1] if len(sys.argv) > 1 else "c1"
+    report = run_c2() if which == "c2" else run_c1()
     print(json.dumps(_json_safe(report), indent=2))
 
 
