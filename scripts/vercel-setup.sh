@@ -9,19 +9,23 @@
 # no secret is ever written to a file in the repo, printed, or committed. Values
 # are shown only as "set (N chars)".
 #
-# Safety: this script never touches vercel.json. The evaluator cron stays out of
-# vercel.json until B5 is written and verified, because that cron writes real
-# prices to a real store with a real token — nothing should be able to mutate the
-# store unattended.
+# Safety: this script never touches vercel.json. The evaluator is NOT a Vercel
+# cron — Deployment Protection 302s an unauthenticated request and Vercel Cron
+# does not follow redirects, so it would fail silently. GitHub Actions
+# (.github/workflows/evaluator.yml) is the only scheduler.
 
 set -euo pipefail
 
-PROJECT_NAME="priceflag"
-# Pinned by id, not just name: linking by name alone can create a second project
-# if the name does not resolve inside the scope, and there must only ever be one.
-PROJECT_ID="prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh"
+PROJECT_NAME="priceflag-app"
+# Pinned by id, not just name.
+#
+# NOTE: prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh (now named "priceflagv1") is NOT this
+# app any more — it was repurposed as the company homepage, its Git connection is
+# disconnected, and it still holds priceflag.vercel.app. Do not deploy to it, do
+# not touch its domains. This project is a separate one.
+PROJECT_ID="prj_RU8NlBDoR7t89BNqn5BagOpmpnmm"
 TEAM_SCOPE="team_AqaBD6YaOf9DIJ7NzbytTZTW"
-TARGET_DOMAIN="priceflagv1.vercel.app"
+TARGET_DOMAIN="priceflag-app.vercel.app"
 
 cd "$(dirname "$0")/.."
 
@@ -66,6 +70,8 @@ VARS=(
   SHOPIFY_SCOPES
   ENCRYPTION_KEY
   CRON_SECRET
+  APP_ACCESS_SECRET
+  ML_INGEST_SECRET
   RESEND_API_KEY
   RESEND_FROM
 )

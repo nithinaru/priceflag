@@ -49,7 +49,7 @@ jobs:
     steps:
       - name: Call the evaluator
         env:
-          BASE_URL: ${{ github.event.inputs.base_url || vars.PRICEFLAG_URL || 'https://priceflagv1.vercel.app' }}
+          BASE_URL: ${{ github.event.inputs.base_url || vars.PRICEFLAG_URL || 'https://priceflag-app.vercel.app' }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
@@ -59,9 +59,14 @@ jobs:
             echo "::error::CRON_SECRET is not set. The evaluator cannot run, so no rollout will advance or roll back."
             exit 1
           fi
+          # The bypass is only needed for a PROTECTED host. Vercel's protection
+          # exempts a project's production domain, so priceflag-app.vercel.app
+          # needs no bypass — the app's own gate (middleware.ts) is what guards
+          # it, and /api/cron/evaluate is exempt there because CRON_SECRET is its
+          # authentication. A preview URL still needs one, hence optional-with-warning
+          # rather than required.
           if [ -z "${BYPASS:-}" ]; then
-            echo "::error::VERCEL_AUTOMATION_BYPASS_SECRET is not set. Deployment Protection will 302 this request and the evaluator will never be reached."
-            exit 1
+            echo "::notice::No bypass secret set — expected when targeting the production domain."
           fi
 
           echo "Calling $BASE_URL/api/cron/evaluate"
@@ -73,7 +78,7 @@ jobs:
             --retry 3 --retry-delay 10 --retry-all-errors \
             -X POST "$BASE_URL/api/cron/evaluate" \
             -H "Authorization: Bearer $CRON_SECRET" \
-            -H "x-vercel-protection-bypass: $BYPASS" \
+            ${BYPASS:+-H "x-vercel-protection-bypass: $BYPASS"} \
             -H 'x-vercel-set-bypass-cookie: false' \
             -H 'content-type: application/json')
 
