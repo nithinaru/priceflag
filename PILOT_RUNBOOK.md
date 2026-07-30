@@ -51,6 +51,40 @@ exempt because each authenticates itself: `/api/cron/evaluate`,
 If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
 everything returns 401. Set it in Vercel and redeploy.
 
+### Demo credentials (reviewers)
+
+There is a second, separate way in, for people who cannot be handed a secret URL:
+`DEMO_USERNAME` / `DEMO_PASSWORD`, typed into the browser's credential dialog
+(realm: **"Priceflag demo"**). A successful login mints the same HttpOnly cookie
+for **7 days**, so a reviewer authenticates once and then browses normally.
+
+They are deliberately separate from `APP_ACCESS_SECRET` so a review ending does
+not break `cp4-chain.ts`, `smoke-browser.ts`, or any `?access=` link.
+
+**To revoke, the moment a review is over:**
+
+```bash
+vercel env rm DEMO_PASSWORD production --yes
+vercel env rm DEMO_PASSWORD preview --yes
+vercel deploy --prod --yes          # a redeploy is required to take effect
+```
+
+Revocation is immediate and complete: the cookie a demo login mints holds the
+**password**, not the access secret, so clearing `DEMO_PASSWORD` invalidates every
+outstanding reviewer session on its next request. Had the cookie carried the
+access secret, those sessions would have kept working for their full lifetime —
+revocation that does not revoke.
+
+**To rotate instead of revoking**, set a new value and redeploy; existing cookies
+stop working for the same reason.
+
+```bash
+printf 'new-password' | vercel env add DEMO_PASSWORD production --force
+```
+
+Removing only `DEMO_USERNAME` also disables the path (both must be set), but
+clear the password — that is what the cookie is checked against.
+
 ## Triage
 
 ```bash

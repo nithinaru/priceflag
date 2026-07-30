@@ -46,6 +46,18 @@ import { NextResponse, type NextRequest } from 'next/server';
 /** Cookie name. Deliberately not obviously guessable from the product name. */
 const COOKIE = 'pf_access';
 
+/**
+ * Demo credentials for reviewers (YC and similar), separate from
+ * `APP_ACCESS_SECRET` on purpose so they can be revoked the day the review ends
+ * without breaking `cp4-chain.ts`, `smoke-browser.ts` or any `?access=` link.
+ *
+ * The cookie a demo login mints holds the **demo password**, not the access
+ * secret. If it held the secret, clearing `DEMO_PASSWORD` would leave every
+ * reviewer's 30-day cookie working — revocation that does not revoke. This way
+ * unsetting the password invalidates their sessions on the next request.
+ */
+const DEMO_COOKIE_DAYS = 7;
+
 /** Query parameter that mints the cookie: `?access=…` once, then it is stripped. */
 const QUERY_PARAM = 'access';
 
@@ -90,6 +102,37 @@ function secretFromBasicAuth(header: string | null): string | null {
   }
 }
 
+/** The `user:password` pair from a Basic header, unparsed. */
+function basicPair(header: string | null): { user: string; password: string } | null {
+  if (header === null) return null;
+  const match = /^Basic\s+(.+)$/i.exec(header.trim());
+  if (!match) return null;
+  try {
+    const decoded = atob(match[1] as string);
+    const separator = decoded.indexOf(':');
+    if (separator === -1) return null;
+    return { user: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
+  } catch {
+    return null;
+  }
+}
+
+/** Both fields compared in constant time — a username is a secret here too. */
+function isDemoLogin(header: string | null): boolean {
+  const user = process.env.DEMO_USERNAME;
+  const password = process.env.DEMO_PASSWORD;
+  if (!user || !password) return false;
+
+  const pair = basicPair(header);
+  if (pair === null) return false;
+
+  // Deliberately not short-circuiting: `&&` on the first comparison would leak
+  // whether the username was right via timing.
+  const userOk = safeEqual(pair.user, user);
+  const passwordOk = safeEqual(pair.password, password);
+  return userOk && passwordOk;
+}
+
 function unauthorized(): NextResponse {
   const response = new NextResponse(
     JSON.stringify({
@@ -103,7 +146,9 @@ function unauthorized(): NextResponse {
     { status: 401, headers: { 'content-type': 'application/json' } },
   );
   // Prompts a browser for credentials instead of showing a bare JSON error.
-  response.headers.set('www-authenticate', 'Basic realm="Priceflag", charset="UTF-8"');
+  // A reviewer reads this string in the browser's credential dialog, so it says
+  // what the box is for rather than just the product name.
+  response.headers.set('www-authenticate', 'Basic realm="Priceflag demo", charset="UTF-8"');
   // A 401 must never be cached and served to somebody who *is* authorised.
   response.headers.set('cache-control', 'no-store');
   return response;
@@ -127,15 +172,35 @@ export function middleware(request: NextRequest): NextResponse {
     return NextResponse.next();
   }
 
-  // 1. The cookie, which is how every request after the first one arrives.
+  // 1. The cookie, which is how every request after the first one arrives. It
+  //    carries either the access secret or the demo password; the latter stops
+  //    working the moment DEMO_PASSWORD is cleared.
   const cookie = request.cookies.get(COOKIE)?.value;
-  if (cookie !== undefined && safeEqual(cookie, secret)) return NextResponse.next();
+  if (cookie !== undefined) {
+    if (safeEqual(cookie, secret)) return NextResponse.next();
+    const demoPassword = process.env.DEMO_PASSWORD;
+    if (demoPassword && safeEqual(cookie, demoPassword)) return NextResponse.next();
+  }
 
-  // 2. Basic auth, for curl and for scripts.
+  // 2. Demo credentials over Basic — what a reviewer types into the browser
+  //    dialog. Mint the cookie so they authenticate once and then browse.
+  if (isDemoLogin(request.headers.get('authorization'))) {
+    const response = NextResponse.next();
+    response.cookies.set(COOKIE, process.env.DEMO_PASSWORD as string, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: request.nextUrl.protocol === 'https:',
+      path: '/',
+      maxAge: 60 * 60 * 24 * DEMO_COOKIE_DAYS,
+    });
+    return response;
+  }
+
+  // 3. The access secret over Basic, for curl and for scripts.
   const basic = secretFromBasicAuth(request.headers.get('authorization'));
   if (basic !== null && safeEqual(basic, secret)) return NextResponse.next();
 
-  // 3. `?access=…` — the way a person gets in the first time. Mint the cookie and
+  // 4. `?access=…` — the way a person gets in the first time. Mint the cookie and
   //    redirect to the same URL without the parameter, so the secret does not sit
   //    in the address bar, the browser history, or a `Referer` header on the next
   //    outbound link.
