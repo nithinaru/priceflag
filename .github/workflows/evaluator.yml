@@ -1,0 +1,118 @@
+# The evaluator schedule — the only scheduler Priceflag has.
+#
+# Vercel Cron cannot be used here. The production deployment is behind Deployment
+# Protection, protection answers an unauthenticated request with a 302 to SSO, and
+# Vercel Cron does not follow redirects — so a scheduled invocation would be
+# silently swallowed and no rollout would ever advance or roll back. Protection
+# stays on: Priceflag has no login of its own and the URL is guessable, so an
+# unprotected deployment would let anyone write prices to a real Shopify store.
+#
+# Two secrets, doing two different jobs, and both are required:
+#   VERCEL_AUTOMATION_BYPASS_SECRET — gets past Deployment Protection
+#   CRON_SECRET                     — proves to the app that this is the evaluator
+# The bypass alone reaches a 401. The bearer alone reaches a 302. Neither secret
+# is sufficient on its own, which is the point.
+#
+# Hourly. The evaluator judges the last *closed* shop-local day, so it does not
+# need to fire at midnight — it needs to fire within an hour of each store's local
+# midnight, for any UTC offset including the :30 and :45 zones. Every run is
+# idempotent per (rollout, day) and catches up days the schedule missed, so a late
+# or skipped run costs nothing.
+
+name: evaluator
+
+on:
+  schedule:
+    # Hourly, on the hour. GitHub may delay scheduled runs under load; catch-up
+    # makes that harmless.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Override the deployment URL (for testing a preview)'
+        required: false
+        default: ''
+
+concurrency:
+  # Never let two ticks overlap. Rollouts are leased in the database as well, so
+  # this is belt and braces — but a queued pile-up after an outage helps nobody.
+  group: evaluator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the evaluator
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || vars.PRICEFLAG_URL || 'https://priceflagv1.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET is not set. The evaluator cannot run, so no rollout will advance or roll back."
+            exit 1
+          fi
+          if [ -z "${BYPASS:-}" ]; then
+            echo "::error::VERCEL_AUTOMATION_BYPASS_SECRET is not set. Deployment Protection will 302 this request and the evaluator will never be reached."
+            exit 1
+          fi
+
+          echo "Calling $BASE_URL/api/cron/evaluate"
+
+          # -w writes the status on its own last line; -o keeps the body separate
+          # so a protection redirect cannot be mistaken for a result.
+          status=$(curl -sS -o /tmp/evaluator.json -w '%{http_code}' \
+            --max-time 120 \
+            --retry 3 --retry-delay 10 --retry-all-errors \
+            -X POST "$BASE_URL/api/cron/evaluate" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "x-vercel-protection-bypass: $BYPASS" \
+            -H 'x-vercel-set-bypass-cookie: false' \
+            -H 'content-type: application/json')
+
+          echo "HTTP $status"
+          cat /tmp/evaluator.json || true
+          echo
+
+          case "$status" in
+            200|207)
+              ;;
+            302|307)
+              echo "::error::Deployment Protection redirected the request. The bypass secret is missing, wrong, or was rotated."
+              exit 1
+              ;;
+            401)
+              echo "::error::The app rejected CRON_SECRET. The bypass worked, the bearer did not."
+              exit 1
+              ;;
+            404)
+              echo "::error::/api/cron/evaluate is not deployed at $BASE_URL."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected status $status from the evaluator."
+              exit 1
+              ;;
+          esac
+
+          # 207 means some rollouts errored. Surface it rather than passing green.
+          if [ "$status" = "207" ]; then
+            echo "::warning::Some rollouts failed to evaluate — see the errors array above."
+          fi
+
+          python3 - <<'PY'
+          import json
+          with open('/tmp/evaluator.json') as fh:
+              data = json.load(fh)
+          summary = ', '.join(f'{k}={v}' for k, v in data.items() if k != 'errors')
+          print(f'::notice::evaluator {summary}')
+          if data.get('caught_up'):
+              print(f"::warning::caught up {data['caught_up']} day(s) the schedule had missed")
+          PY

@@ -6,11 +6,6 @@
     "app/api/**/*": {
       "maxDuration": 60
     }
-  },
-  "crons": [
-    {
-      "path": "/api/cron/evaluate",
-      "schedule": "*/15 * * * *"
-    }
-  ]
+  }
 }
+

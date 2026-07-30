@@ -453,6 +453,68 @@ export async function evaluateRollout(
   return outcome.result as EvaluateResult;
 }
 
+/**
+ * How many missed days a single tick will work through. A rollout that has been
+ * unevaluated for longer than this has a bigger problem than catch-up, and
+ * grinding through months of history inside one function invocation would just
+ * time out.
+ */
+export const MAX_CATCHUP_DAYS = 14;
+
+/**
+ * Evaluate every shop-local day that has closed but never been evaluated.
+ *
+ * The scheduler can miss windows — a failed workflow run, a deploy, an outage,
+ * GitHub Actions being late. Without catch-up those days are simply never judged:
+ * a breach that happened on a skipped day would never fire, because the evaluator
+ * only ever looked at yesterday. Guardrails that silently skip a day are worse
+ * than no guardrails, because the merchant believes they are covered.
+ *
+ * Days are processed oldest first, so `breach_streak` accumulates in the right
+ * order, and the loop stops the moment the rollout stops running.
+ */
+export async function evaluateRolloutWithCatchUp(
+  adapter: StoreAdapter,
+  shop: Shop,
+  rollout: Rollout,
+  options: EvaluateOptions = {},
+): Promise<EvaluateResult[]> {
+  const now = options.now ?? new Date();
+  const target = options.asOfDay ?? yesterday(shop.timezone, now);
+
+  // Start the day after whatever was last evaluated; failing that, the day the
+  // rollout started. Never before it went live — there is nothing to judge.
+  const startedDay =
+    rollout.started_at === null ? target : dayInTimeZone(new Date(rollout.started_at), shop.timezone);
+  const firstUnevaluated =
+    rollout.last_evaluated_day === null ? startedDay : addDays(rollout.last_evaluated_day, 1);
+
+  let from = firstUnevaluated > startedDay ? firstUnevaluated : startedDay;
+  if (from > target) from = target;
+
+  // Cap the backlog, oldest first.
+  const span = diffDays(from, target);
+  if (span > MAX_CATCHUP_DAYS) from = addDays(target, -MAX_CATCHUP_DAYS);
+
+  const results: EvaluateResult[] = [];
+  let current: Rollout | null = rollout;
+
+  for (let day = from; day <= target && current !== null; day = addDays(day, 1)) {
+    const outcome = await evaluateRollout(adapter, shop, current, { ...options, asOfDay: day, now });
+    results.push(outcome);
+
+    // A lease we could not take, or a rollout that has ended: stop, do not churn
+    // through the remaining days.
+    if (outcome.skipped === 'locked' || outcome.skipped === 'not_running') break;
+    if (outcome.decision === 'rollback' || outcome.decision === 'complete' || outcome.decision === 'pause') break;
+
+    current = await adapter.getRollout(rollout.id);
+    if (current === null || current.status !== 'running') break;
+  }
+
+  return results;
+}
+
 export interface EvaluateAllResult {
   evaluated: number;
   skipped_locked: number;
@@ -462,6 +524,8 @@ export interface EvaluateAllResult {
   completed: number;
   paused: number;
   started: number;
+  /** Extra days processed because the scheduler had missed them. */
+  caught_up: number;
   errors: { rollout_id: string; message: string }[];
 }
 
@@ -480,6 +544,7 @@ export async function evaluateAll(
     completed: 0,
     paused: 0,
     started: 0,
+    caught_up: 0,
     errors: [],
   };
 
@@ -501,19 +566,25 @@ export async function evaluateAll(
         continue;
       }
 
-      const outcome = await evaluateRollout(adapter, shop, rollout, options);
-      if (outcome.skipped === 'locked') {
-        result.skipped_locked += 1;
-        continue;
-      }
-      if (outcome.skipped !== null) continue;
+      // Catch-up, not just "yesterday": a day the scheduler missed must still be
+      // judged, or a breach that happened on it would never fire.
+      const outcomes = await evaluateRolloutWithCatchUp(adapter, shop, rollout, options);
 
-      result.evaluated += 1;
-      if (outcome.decision === 'advance') result.advanced += 1;
-      else if (outcome.decision === 'hold') result.held += 1;
-      else if (outcome.decision === 'rollback') result.rolled_back += 1;
-      else if (outcome.decision === 'complete') result.completed += 1;
-      else if (outcome.decision === 'pause') result.paused += 1;
+      for (const outcome of outcomes) {
+        if (outcome.skipped === 'locked') {
+          result.skipped_locked += 1;
+          continue;
+        }
+        if (outcome.skipped !== null) continue;
+
+        result.evaluated += 1;
+        if (outcome.decision === 'advance') result.advanced += 1;
+        else if (outcome.decision === 'hold') result.held += 1;
+        else if (outcome.decision === 'rollback') result.rolled_back += 1;
+        else if (outcome.decision === 'complete') result.completed += 1;
+        else if (outcome.decision === 'pause') result.paused += 1;
+      }
+      if (outcomes.length > 1) result.caught_up += outcomes.length - 1;
     } catch (cause) {
       result.errors.push({
         rollout_id: rollout.id,
