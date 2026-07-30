@@ -19,9 +19,9 @@
  *     SupabaseAdapter — plus a restart test that proves demo state persists
  */
 
-import { existsSync, rmSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
 
 import Ajv2020 from 'ajv/dist/2020';
 import addFormats from 'ajv-formats';
@@ -81,6 +81,19 @@ import {
   roundCents,
 } from '../lib/money';
 import { coerceGid, gidId, isVariantGid, parseGid, toGid } from '../lib/shopify/gid';
+import { signOAuthParams, signWebhookBody, verifyOAuthHmac, verifyWebhookHmac } from '../lib/shopify/hmac';
+import {
+  adminGraphqlUrl,
+  buildAuthorizeUrl,
+  createOAuthState,
+  exchangeCodeForToken,
+  isValidShopDomain,
+  missingScopes,
+  normalizeShopDomain,
+  ShopifyAuthError,
+  verifyOAuthState,
+} from '../lib/shopify/oauth';
+import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
 import { generateDemoStore, DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
 import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
@@ -409,6 +422,321 @@ async function testPrimitives(): Promise<void> {
     const { start, end } = dayBoundsUtc('2026-07-29', 'America/New_York');
     assertEqual(start.toISOString(), '2026-07-29T04:00:00.000Z', 'EDT midnight is 04:00Z');
     assertEqual(end.getTime() - start.getTime(), 86_400_000, 'exactly one day long');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shopify auth (Sprint B2)
+// ---------------------------------------------------------------------------
+
+const TEST_CLIENT_ID = 'test-client-id';
+const TEST_CLIENT_SECRET = 'hush-hush-shopify-client-secret';
+
+function signSessionToken(
+  claims: Record<string, unknown>,
+  secret = TEST_CLIENT_SECRET,
+  alg = 'HS256',
+): string {
+  const encode = (value: unknown): string =>
+    Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+  const header = encode({ alg, typ: 'JWT' });
+  const payload = encode(claims);
+  const signature = createHmac('sha256', secret).update(`${header}.${payload}`, 'utf8').digest('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+function validSessionClaims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const nowSeconds = Math.floor(NOW.getTime() / 1000);
+  return {
+    iss: 'https://acme-dev.myshopify.com/admin',
+    dest: 'https://acme-dev.myshopify.com',
+    aud: TEST_CLIENT_ID,
+    sub: '42',
+    exp: nowSeconds + 60,
+    nbf: nowSeconds - 10,
+    iat: nowSeconds - 10,
+    jti: 'abc123',
+    ...overrides,
+  };
+}
+
+async function testShopifyAuth(): Promise<void> {
+  section('shopify auth — shop domains');
+
+  await test('accepts real shop domains and rejects lookalikes', () => {
+    assert(isValidShopDomain('acme-dev.myshopify.com'), 'ordinary shop');
+    assert(isValidShopDomain('ACME-DEV.MYSHOPIFY.COM'.toLowerCase()), 'case normalised');
+    assertEqual(normalizeShopDomain('https://acme-dev.myshopify.com/admin'), 'acme-dev.myshopify.com', 'strips scheme and path');
+
+    // Shopify's published regex is not anchored at the end, which would accept
+    // this. Ours is — the value ends up in a URL we send the client secret to.
+    assert(!isValidShopDomain('evil.myshopify.com.attacker.test'), 'suffix attack rejected');
+    assert(!isValidShopDomain('acme.example.com'), 'wrong domain rejected');
+    assert(!isValidShopDomain('acme..myshopify.com'), 'double dot rejected');
+    assert(!isValidShopDomain('-acme.myshopify.com'), 'leading hyphen rejected');
+    assert(!isValidShopDomain(''), 'empty rejected');
+    assertThrows(() => normalizeShopDomain('not a shop'), 'garbage throws');
+  });
+
+  section('shopify auth — OAuth');
+
+  await test('the authorize URL requests an offline token', () => {
+    const url = new URL(
+      buildAuthorizeUrl({
+        shop: 'acme-dev.myshopify.com',
+        state: 'nonce123',
+        clientId: TEST_CLIENT_ID,
+        redirectUri: 'https://app.test/api/auth/callback',
+        scopes: ['read_products', 'write_products', 'read_orders', 'read_all_orders'],
+      }),
+    );
+
+    assertEqual(url.origin, 'https://acme-dev.myshopify.com', 'authorizes on the shop, not on our domain');
+    assertEqual(url.pathname, '/admin/oauth/authorize', 'correct path');
+    assertEqual(url.searchParams.get('client_id'), TEST_CLIENT_ID, 'client id');
+    assertEqual(url.searchParams.get('state'), 'nonce123', 'nonce');
+    assertEqual(
+      url.searchParams.get('scope'),
+      'read_products,write_products,read_orders,read_all_orders',
+      'comma-separated scopes',
+    );
+    // Absent `grant_options[]` is what makes the token offline. An online token
+    // would expire and auto-rollback would silently stop working at 3am.
+    assertEqual(url.searchParams.get('grant_options[]'), null, 'no grant_options means an offline token');
+  });
+
+  await test('the callback HMAC verifies exactly as Shopify computes it', () => {
+    const params = new URLSearchParams({
+      code: 'authcode',
+      host: 'YWRtaW4uc2hvcGlmeS5jb20',
+      shop: 'acme-dev.myshopify.com',
+      state: 'nonce123',
+      timestamp: '1785000000',
+    });
+    params.set('hmac', signOAuthParams(params, TEST_CLIENT_SECRET));
+
+    assert(verifyOAuthHmac(params, TEST_CLIENT_SECRET), 'a genuine callback verifies');
+    assert(!verifyOAuthHmac(params, 'wrong-secret'), 'a different secret does not');
+  });
+
+  await test('any tampered parameter invalidates the callback', () => {
+    const params = new URLSearchParams({ code: 'authcode', shop: 'acme-dev.myshopify.com', timestamp: '1785000000' });
+    params.set('hmac', signOAuthParams(params, TEST_CLIENT_SECRET));
+
+    const swapped = new URLSearchParams(params);
+    // The attack this defends against: same signature, different shop.
+    swapped.set('shop', 'attacker-dev.myshopify.com');
+    assert(!verifyOAuthHmac(swapped, TEST_CLIENT_SECRET), 'shop cannot be swapped');
+
+    const extra = new URLSearchParams(params);
+    extra.set('injected', '1');
+    assert(!verifyOAuthHmac(extra, TEST_CLIENT_SECRET), 'a parameter cannot be added');
+
+    const missing = new URLSearchParams(params);
+    missing.delete('hmac');
+    assert(!verifyOAuthHmac(missing, TEST_CLIENT_SECRET), 'no hmac is not a pass');
+  });
+
+  await test('`signature` is included in the digest, not stripped', () => {
+    // Only `hmac` is excluded. An older generation of Shopify docs also excluded
+    // `signature`; doing that today would reject legitimate requests.
+    const params = new URLSearchParams({ code: 'c', shop: 'acme-dev.myshopify.com', signature: 'legacy' });
+    params.set('hmac', signOAuthParams(params, TEST_CLIENT_SECRET));
+    assert(verifyOAuthHmac(params, TEST_CLIENT_SECRET), 'verifies with signature present');
+  });
+
+  await test('the OAuth nonce is single-use and compared safely', () => {
+    const state = createOAuthState();
+    assert(state.length >= 32, 'nonce has real entropy');
+    assert(verifyOAuthState(state, state), 'matching nonce passes');
+    assert(!verifyOAuthState(state, createOAuthState()), 'a different nonce fails');
+    assert(!verifyOAuthState(state, undefined), 'a missing cookie fails');
+    assert(!verifyOAuthState(null, state), 'a missing parameter fails');
+  });
+
+  await test('the token exchange posts the right body and reads the token', async () => {
+    let seenUrl = '';
+    let seenBody: Record<string, unknown> = {};
+
+    const token = await exchangeCodeForToken({
+      shop: 'acme-dev.myshopify.com',
+      code: 'authcode',
+      clientId: TEST_CLIENT_ID,
+      clientSecret: TEST_CLIENT_SECRET,
+      fetchImpl: (async (url: string, init?: RequestInit) => {
+        seenUrl = String(url);
+        seenBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({ access_token: 'shpat_abc', scope: 'read_products,write_products' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    assertEqual(seenUrl, 'https://acme-dev.myshopify.com/admin/oauth/access_token', 'exchange endpoint');
+    assertEqual(seenBody.client_id, TEST_CLIENT_ID, 'client id sent');
+    assertEqual(seenBody.client_secret, TEST_CLIENT_SECRET, 'client secret sent');
+    assertEqual(seenBody.code, 'authcode', 'code sent');
+    assertEqual(seenBody.expiring, undefined, 'no `expiring` flag: we want a non-expiring offline token');
+    assertEqual(token.access_token, 'shpat_abc', 'token parsed');
+  });
+
+  await test('a failed or empty token exchange throws rather than storing nothing', async () => {
+    const reject = async (status: number, body: string): Promise<string> => {
+      try {
+        await exchangeCodeForToken({
+          shop: 'acme-dev.myshopify.com',
+          code: 'authcode',
+          clientId: TEST_CLIENT_ID,
+          clientSecret: TEST_CLIENT_SECRET,
+          fetchImpl: (async () => new Response(body, { status })) as unknown as typeof fetch,
+        });
+      } catch (cause) {
+        return cause instanceof ShopifyAuthError ? cause.code : 'wrong-error';
+      }
+      return 'no-throw';
+    };
+
+    assertEqual(await reject(401, '{}'), 'token_exchange_failed', 'HTTP error throws');
+    assertEqual(await reject(200, '{"scope":"read_products"}'), 'token_exchange_failed', 'missing token throws');
+  });
+
+  await test('a missing scope is caught, especially read_all_orders', () => {
+    const required = ['read_products', 'write_products', 'read_orders', 'read_all_orders'];
+    assertEqual(missingScopes('read_products,write_products,read_orders,read_all_orders', required).length, 0, 'all granted');
+
+    // The dangerous case: everything looks fine but order history silently caps at
+    // 60 days, so every forecast would be built on two months of data.
+    const missing = missingScopes('read_products,write_products,read_orders', required);
+    assertEqual(missing.join(','), 'read_all_orders', 'the history scope is noticed');
+    assertEqual(missingScopes(' read_products , read_orders ', ['read_products']).length, 0, 'tolerates whitespace');
+  });
+
+  await test('the Admin GraphQL endpoint is pinned to a version', () => {
+    assertEqual(
+      adminGraphqlUrl('acme-dev.myshopify.com', '2026-07'),
+      'https://acme-dev.myshopify.com/admin/api/2026-07/graphql.json',
+      'versioned endpoint',
+    );
+  });
+
+  section('shopify auth — webhook HMAC');
+
+  await test('a webhook verifies against its raw body in base64', () => {
+    const body = JSON.stringify({ id: 1234, line_items: [{ variant_id: 9 }] });
+    const signature = signWebhookBody(body, TEST_CLIENT_SECRET);
+
+    assert(verifyWebhookHmac(body, signature, TEST_CLIENT_SECRET), 'genuine webhook verifies');
+    assert(!verifyWebhookHmac(body, signature, 'wrong-secret'), 'wrong secret fails');
+    assert(!verifyWebhookHmac(`${body} `, signature, TEST_CLIENT_SECRET), 'a single byte of drift fails');
+    assert(!verifyWebhookHmac(body, null, TEST_CLIENT_SECRET), 'a missing header is not a pass');
+    assert(!verifyWebhookHmac(body, '', TEST_CLIENT_SECRET), 'an empty header is not a pass');
+  });
+
+  await test('re-serialised JSON does not verify (why we keep the raw body)', () => {
+    const body = '{"b":2,"a":1}';
+    const signature = signWebhookBody(body, TEST_CLIENT_SECRET);
+    const reserialised = JSON.stringify(JSON.parse(body) as unknown);
+    assert(verifyWebhookHmac(body, signature, TEST_CLIENT_SECRET), 'the raw body verifies');
+    assert(
+      !verifyWebhookHmac(reserialised, signature, TEST_CLIENT_SECRET) || reserialised === body,
+      'parsing and re-stringifying breaks the digest',
+    );
+  });
+
+  section('shopify auth — session tokens');
+
+  const verifyOptions = { clientId: TEST_CLIENT_ID, clientSecret: TEST_CLIENT_SECRET, now: NOW };
+
+  await test('a valid session token resolves the shop', () => {
+    const session = verifySessionToken(signSessionToken(validSessionClaims()), verifyOptions);
+    assertEqual(session.shopDomain, 'acme-dev.myshopify.com', 'shop comes from the signed dest claim');
+  });
+
+  await test('the algorithm is pinned to HS256', () => {
+    // The classic JWT hole: honouring whatever `alg` the token asks for.
+    const noneToken = `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')}.${Buffer.from(
+      JSON.stringify(validSessionClaims()),
+    ).toString('base64url')}.`;
+    assertThrows(() => verifySessionToken(noneToken, verifyOptions), 'alg=none rejected');
+    assertThrows(
+      () => verifySessionToken(signSessionToken(validSessionClaims(), TEST_CLIENT_SECRET, 'HS512'), verifyOptions),
+      'alg=HS512 rejected',
+    );
+  });
+
+  await test('a forged or mis-signed token is rejected', () => {
+    assertThrows(
+      () => verifySessionToken(signSessionToken(validSessionClaims(), 'attacker-secret'), verifyOptions),
+      'signed with the wrong secret',
+    );
+    assertThrows(() => verifySessionToken('not.a.jwt', verifyOptions), 'not a JWT');
+    assertThrows(() => verifySessionToken('onlyonepart', verifyOptions), 'wrong shape');
+  });
+
+  await test('expiry, aud and dest/iss agreement are all enforced', () => {
+    const nowSeconds = Math.floor(NOW.getTime() / 1000);
+
+    assertThrows(
+      () => verifySessionToken(signSessionToken(validSessionClaims({ exp: nowSeconds - 60 })), verifyOptions),
+      'expired token',
+    );
+    assertThrows(
+      () => verifySessionToken(signSessionToken(validSessionClaims({ nbf: nowSeconds + 600 })), verifyOptions),
+      'not-yet-valid token',
+    );
+    // A validly-signed token for a different app is not ours to honour.
+    assertThrows(
+      () => verifySessionToken(signSessionToken(validSessionClaims({ aud: 'someone-elses-app' })), verifyOptions),
+      'wrong audience',
+    );
+    // The cross-shop attack: a token for shop A claiming to be destined for shop B.
+    assertThrows(
+      () =>
+        verifySessionToken(
+          signSessionToken(validSessionClaims({ iss: 'https://attacker-dev.myshopify.com/admin' })),
+          verifyOptions,
+        ),
+      'iss and dest disagree',
+    );
+
+    // A little clock skew is tolerated, as Shopify's own libraries do.
+    const session = verifySessionToken(
+      signSessionToken(validSessionClaims({ exp: nowSeconds - 2 })),
+      verifyOptions,
+    );
+    assertEqual(session.shopDomain, 'acme-dev.myshopify.com', '2 seconds of skew is fine');
+  });
+
+  await test('a session token beats the ?shop= parameter', () => {
+    process.env.SHOPIFY_API_KEY = TEST_CLIENT_ID;
+    process.env.SHOPIFY_API_SECRET = TEST_CLIENT_SECRET;
+    try {
+      const token = signSessionToken(validSessionClaims());
+      // The query parameter claims a different shop. The signed token wins, because
+      // the parameter is not authenticated and the token is.
+      const request = new Request('https://app.test/api/products?shop=attacker-dev.myshopify.com', {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const resolved = resolveShopFromRequest(request, { now: NOW });
+      assertEqual(resolved.shopDomain, 'acme-dev.myshopify.com', 'shop comes from the token');
+      assertEqual(resolved.source, 'session_token', 'and the source says so');
+    } finally {
+      delete process.env.SHOPIFY_API_KEY;
+      delete process.env.SHOPIFY_API_SECRET;
+    }
+  });
+
+  await test('the ?shop= fallback is refused in production', () => {
+    const request = new Request('https://app.test/api/products?shop=acme-dev.myshopify.com');
+
+    const dev = resolveShopFromRequest(request, { allowQueryParam: true });
+    assertEqual(dev.source, 'query', 'allowed when explicitly permitted');
+
+    assertThrows(
+      () => resolveShopFromRequest(request, { allowQueryParam: false }),
+      'refused without a session token',
+    );
   });
 }
 
@@ -2023,6 +2351,7 @@ async function main(): Promise<void> {
   process.stdout.write('\x1b[1mPriceflag smoke test\x1b[0m\n');
 
   await testPrimitives();
+  await testShopifyAuth();
   await testContracts();
   await testForecast();
   await testGuardrails();

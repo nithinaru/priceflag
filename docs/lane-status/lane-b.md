@@ -5,9 +5,9 @@ telemetry, the evaluator, deploys.
 
 | | |
 |---|---|
-| **Current sprint** | B1 complete → starting B2 (Shopify OAuth + install) |
-| **`npm run build`** | green — with Lane A's A1 pages and Lane C's ml/ on `main` (13 static pages) |
-| **`npx tsx scripts/smoke.ts`** | green — 96 passed, 1 skipped (Supabase suite, no project yet) |
+| **Current sprint** | B1 complete. B2 in progress — auth core landed, install flow needs credentials to verify |
+| **`npm run build`** | green — with Lane A's A1 pages and Lane C's ml/ on `main` |
+| **`npx tsx scripts/smoke.ts`** | green — 114 passed, 1 skipped (Supabase suite, no project yet) |
 | **`npm audit`** | 0 vulnerabilities |
 | **Contract requests** | REQ-A-001/002/003 and Lane C's 1–4 all answered → [below](#contract-requests-serviced) |
 | **Blocked on** | Shopify custom-app credentials + a Supabase project (see [What I need](#what-i-need-from-nithin)) |
@@ -189,6 +189,53 @@ carries the whole loop — but treat "migrations apply cleanly" as an open item,
 completed one.
 
 ---
+
+## Sprint B2 — Shopify OAuth + install (in progress)
+
+Everything that can be verified without a store is landed and tested. Everything
+that remains *is* the part that needs a store, so B2 stops here until credentials
+exist.
+
+Landed:
+
+- `lib/shopify/hmac.ts` — OAuth callback HMAC (sorted query, **hex**) and webhook
+  HMAC (raw body, **base64**). Two different schemes; mixing them up would be a
+  security hole rather than a bug, so they are separate functions with separate
+  tests. Only `hmac` is excluded from the OAuth digest — an older generation of
+  Shopify's docs also excluded `signature`, and doing that today rejects valid
+  requests. Verified against shopify.dev for 2026-07.
+- `lib/shopify/oauth.ts` — authorize URL (**`grant_options[]` omitted, so the token
+  is offline**), single-use nonce, token exchange, scope verification, shop-domain
+  validation. Two decisions worth stating:
+  - **Offline token, deliberately.** The evaluator has to restore a price at 3am
+    with nobody logged in. An online token expires and auto-rollback would
+    silently stop working — the one failure this product cannot have.
+  - **The shop-domain regex is anchored at both ends.** Shopify's published
+    pattern is not, which accepts `evil.myshopify.com.attacker.test`. That value
+    ends up in a URL we POST the client secret to, so it gets the stricter check.
+- `lib/shopify/session.ts` — App Bridge session-token verification with the
+  algorithm **pinned to HS256** (accepting the token's own `alg` is the classic JWT
+  hole), plus `exp`/`nbf` with 5s leeway, `aud` = our client id, and `iss`/`dest`
+  agreement. `resolveShopFromRequest` prefers the signed token over `?shop=`, and
+  **refuses the `?shop=` fallback in production** — a shop taken from a query
+  parameter is an authorisation hole, not a convenience.
+- `GET /api/auth` and `GET /api/auth/callback`. The callback verifies HMAC, then
+  the nonce, and only then exchanges the code — exchanging an unauthenticated code
+  would let an attacker drive our client secret at a shop of their choosing. The
+  token is encrypted before storage and is returned by no route.
+- A missing `read_all_orders` **fails the install** rather than warning. Without it
+  the Admin API silently caps order history at 60 days, and every elasticity fit
+  would be built on two months of data while the UI claimed 180.
+- 18 new smoke assertions covering all of the above, including the cross-shop
+  token attack, `alg: none`, parameter tampering, and the raw-body requirement.
+
+Still to do in B2, all of it requiring a dev store:
+
+- `app/uninstalled` handling (clear the token, stamp `uninstalled_at`, keep the
+  journal) — needs the webhook registration path, which lands with B4's sink.
+- Webhook registration on install.
+- The acceptance criterion itself: install / uninstall / reinstall on a real dev
+  store, all clean.
 
 ## Contract requests serviced
 
