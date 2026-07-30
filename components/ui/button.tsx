@@ -123,13 +123,30 @@ export function ButtonLink({
 }
 
 /** Plain inline text link, for prose and table cells. */
-export function TextLink({ className, children, ...props }: ComponentProps<typeof Link>) {
+export function TextLink({
+  className,
+  children,
+  standalone = false,
+  ...props
+}: ComponentProps<typeof Link> & {
+  /**
+   * The link is its own control rather than a word inside a sentence — a
+   * breadcrumb, a card action, a footer link.
+   *
+   * WCAG 2.2 SC 2.5.8 (AA) wants a 24×24 target, and exempts links whose size is
+   * "constrained by the line-height of non-target text" — i.e. inline links in a
+   * paragraph. Standalone ones are not exempt, and at our type scale they come
+   * out 15–22px high, so they get the height explicitly.
+   */
+  standalone?: boolean;
+}) {
   return (
     <Link
       className={cn(
         "rounded-sm font-medium text-accent underline decoration-accent-border decoration-1 " +
           "underline-offset-2 hover:decoration-accent focus-visible:outline-2 " +
           "focus-visible:outline-offset-2 focus-visible:outline-focus",
+        standalone && "inline-flex min-h-6 items-center",
         className,
       )}
       {...props}

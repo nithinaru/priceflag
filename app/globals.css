@@ -28,10 +28,17 @@
   --pf-border: #e2e6ec;
   --pf-border-strong: #c7ced8;
 
-  /* Text. ink-muted and ink-subtle both clear 4.5:1 on canvas and surface. */
+  /*
+   * Text. Both clear WCAG AA (4.5:1) on **every** background they are used on,
+   * not just on canvas and surface — the A7 audit found `ink-subtle` at 4.26 on
+   * `surface-inset` and 4.40 on the status tints, which is where `CellNote` and
+   * the small captions actually sit (a selected catalog row, a breached reading
+   * row, a saved cost row). Darkened until the worst pairing passes:
+   *   surface 5.32 · surface-inset 4.53 · accent-tint 4.67
+   */
   --pf-ink: #121821;
   --pf-ink-muted: #4c5666;
-  --pf-ink-subtle: #66707f;
+  --pf-ink-subtle: #626c7a;
   --pf-ink-inverse: #ffffff;
 
   /* One accent. Used for the single primary action on a screen, and links. */

@@ -253,7 +253,7 @@ export default function OverviewPage() {
           </CardBody>
           <CardFooter>
             <span>Showing the {countOf(journal.length, "most recent change")}.</span>
-            <TextLink href="/journal">Open the price journal</TextLink>
+            <TextLink standalone href="/journal">Open the price journal</TextLink>
           </CardFooter>
         </Card>
 
@@ -303,7 +303,7 @@ export default function OverviewPage() {
             )}
             <CardFooter>
               <span>Nothing here is live.</span>
-              <TextLink href="/rollouts">See all price changes</TextLink>
+              <TextLink standalone href="/rollouts">See all price changes</TextLink>
             </CardFooter>
           </Card>
         </div>

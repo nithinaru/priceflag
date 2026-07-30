@@ -1,5 +1,6 @@
 "use server";
 
+import { getAdapter } from "@/lib/adapters";
 import { buildForecast } from "@/lib/engine/forecast";
 import { CONTRACT_VERSION, type ForecastResult, type Guardrails } from "@/lib/contracts";
 import { exclusionReasonFor } from "@/lib/types";
@@ -54,6 +55,16 @@ export async function requestForecast(input: ForecastRequest): Promise<ForecastR
   }
 
   try {
+    // Lane C's fits, via the adapter (B6). Without these every forecast is
+    // `assumption` with no range, which is what REQ-A-006 was about — the
+    // forecast card's fitted band was unreachable because this call never asked
+    // for them. A store with no fits still works: absent entries fall back to
+    // bracket math, per the contract's fallback chain.
+    const fits = await getAdapter().getLatestFits(
+      store.shop.id,
+      products.map((product) => product.variant_gid),
+    );
+
     const forecast = buildForecast({
       shop: { currency: store.shop.currency, timezone: store.shop.timezone },
       products,
@@ -61,6 +72,7 @@ export async function requestForecast(input: ForecastRequest): Promise<ForecastR
       change: input.change,
       horizonDays: input.horizon_days,
       now: DEMO_NOW,
+      fits,
     });
     return { ok: true, forecast };
   } catch (error) {

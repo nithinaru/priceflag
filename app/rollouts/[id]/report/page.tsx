@@ -57,7 +57,7 @@ export default async function ReportPage({ params }: PageProps) {
     return (
       <div className="space-y-6">
         <PageHeader
-          breadcrumb={<TextLink href={`/rollouts/${id}`}>← {rollout.name}</TextLink>}
+          breadcrumb={<TextLink standalone href={`/rollouts/${id}`}>← {rollout.name}</TextLink>}
           title="Results"
         />
         <Notice tone="info" title="Nothing to report yet">
@@ -73,7 +73,7 @@ export default async function ReportPage({ params }: PageProps) {
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumb={<TextLink href={`/rollouts/${id}`}>← {rollout.name}</TextLink>}
+        breadcrumb={<TextLink standalone href={`/rollouts/${id}`}>← {rollout.name}</TextLink>}
         title="What actually happened"
         meta={<RolloutStatusBadge status={rollout.status} />}
         description={`${countOf(report.window.days, "day")} of orders, ${formatDay(
@@ -208,8 +208,8 @@ export default async function ReportPage({ params }: PageProps) {
           </DetailList>
         </CardBody>
         <CardFooter>
-          <TextLink href={`/rollouts/${id}`}>Back to the day-by-day view</TextLink>
-          <TextLink href="/journal">Every price this change moved</TextLink>
+          <TextLink standalone href={`/rollouts/${id}`}>Back to the day-by-day view</TextLink>
+          <TextLink standalone href="/journal">Every price this change moved</TextLink>
         </CardFooter>
       </Card>
     </div>

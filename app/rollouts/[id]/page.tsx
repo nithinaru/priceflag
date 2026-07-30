@@ -91,7 +91,7 @@ export default async function RolloutPage({ params }: PageProps) {
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumb={<TextLink href="/rollouts">← All price changes</TextLink>}
+        breadcrumb={<TextLink standalone href="/rollouts">← All price changes</TextLink>}
         title={rollout.name}
         meta={
           <span className="flex flex-wrap items-center gap-2">
@@ -422,7 +422,7 @@ export default async function RolloutPage({ params }: PageProps) {
               </CardBody>
             )}
             <CardFooter>
-              <TextLink href="/journal">Open the full journal</TextLink>
+              <TextLink standalone href="/journal">Open the full journal</TextLink>
             </CardFooter>
           </Card>
         </div>

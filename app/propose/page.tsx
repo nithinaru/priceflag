@@ -15,7 +15,7 @@ export default function ProposePage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumb={<TextLink href="/products">← Your products</TextLink>}
+        breadcrumb={<TextLink standalone href="/products">← Your products</TextLink>}
         title="Propose a price change"
         description="See what it would do to your profit before anything goes live, and set the limit that undoes it if you are wrong."
       />

@@ -24,7 +24,7 @@ export default function CostsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumb={<TextLink href="/products">← Your products</TextLink>}
+        breadcrumb={<TextLink standalone href="/products">← Your products</TextLink>}
         title="Add your costs"
         description="What you pay for each product is the one number Shopify cannot tell us unless you have filled it in. With it, every profit figure in Priceflag is real — and you do not need a single order for that to be true."
       />

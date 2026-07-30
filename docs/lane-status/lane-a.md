@@ -20,17 +20,130 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | **A3 — Propose flow v2 + migration onto `lib/`** | ✅ done |
 | **A4 — Rollout monitoring v2** | ✅ done |
 | **A5 — Onboarding & sync** | ✅ done |
-| **A6 — Post-rollout report & journal v2** | ⚠️ report done; **journal filters have an open hydration bug** |
-| A7 — Polish, a11y, responsive | not started |
-| A5 — Onboarding & sync | not started |
-| A6 — Post-rollout report & journal v2 | not started |
-| A7 — Polish, a11y, responsive | not started |
+| **A6 — Post-rollout report & journal v2** | ✅ done — **the "hydration bug" was a measurement error; there was nothing wrong** |
+| **A7 — Polish, a11y, responsive** | ✅ done |
+
+**All seven Lane A sprints are complete.** `npm run build` and `npm run typecheck`
+green; ten routes, 21 static pages.
 
 ---
 
-## Sprint A6 — report done, journal filters have an open bug
+## Sprint A7 — polish, a11y, responsive ✅
 
-### 🐛 Open bug — `JournalTable` does not hydrate on a hard load
+### First: the A6 "hydration bug" did not exist
+
+`JournalTable` hydrates fine on a hard load. Filters and CSV export have worked
+the whole time. **The previous session's diagnosis was a measurement artifact**,
+and it is worth writing down exactly how, because the same three mistakes would
+fool anyone testing a React 19 app through a browser automation tool.
+
+1. **`__reactProps$*` key counting is not a hydration signal in React 19.**
+   React attaches those keys to a DOM node **lazily**, on first interaction —
+   not at hydration. Proof: on `/products/costs` the cost input reported `0`
+   keys, and after typing one character it reported `3` and the row updated
+   live. Every "not hydrated" reading in the A6 report was this.
+2. **A synthetic `change` event cannot drive a controlled `<select>`.** React 19
+   keeps its own value tracker; setting `.value` through the prototype setter and
+   dispatching `change` is suppressed as a no-op. That is React working as
+   designed, not a dead component.
+3. **A real click on a native `<select>` opens an OS-level popup** the automation
+   cannot see or drive, so the follow-up `Down`/`Return` went nowhere.
+
+The bisect that settled it: a trivial `useState` probe placed on `/journal`
+*also* reported zero keys — while the same probe on a stripped-down page
+reported two. That pointed at "the page segment is broken", which was wrong in
+the same way. Switching to **behavioural** testing ended it immediately: typing
+`belt` into the search field filtered 23 rows to 1, the `Showing 1 of 23
+changes.` footer appeared, `Clear filters` appeared, and the CSV button produced
+a correct 398-byte file with Lane B's `journalToCsv` header. Setting the source
+filter through the automation's own form-input tool (which drives React
+properly) filtered correctly too.
+
+Also ruled out along the way, so nobody re-checks them: no hydration error in
+`next dev` (which would scream), payload complete, client reference registered
+for both `journal-table.tsx` and `shell/nav.tsx`, and `Intl` output **byte for
+byte identical** between Node and Chrome for both currency (`$32.00`) and dates
+(`29 Jul, 10:00 am`) — the timezone/locale hypothesis was tested and is clean.
+
+**Nothing was changed to "fix" it, because nothing was broken.** The lesson is a
+QA rule, now in force for this lane: **test hydration behaviourally — type into
+a field and assert the UI changed. Never infer it from React internals.**
+
+### REQ-A-006 closed on Lane A's side
+
+Lane B's B6 seeded `lib/demo/elasticity-fits.json` from a real Lane C run and
+exposed it through `DemoAdapter.getLatestFits`. Lane A was still not asking for
+it — `requestForecast` called `buildForecast` without `fits`, so **every forecast
+was `assumption` with no range**, which is exactly what REQ-A-006 described.
+
+Now wired: `app/propose/actions.ts` calls `getAdapter().getLatestFits(...)` and
+passes them through. Selecting the six variants Lane C produced usable fits for
+gives `confidence: partial`, a real elasticity of **−1.82** from
+`elasticity-poisson-eb-1.0`, and a genuine range (−$10,140 → +$7,613 on profit,
+most likely −$1,551). **The fitted band has now been verified rendering from real
+model output rather than by temporary injection** — the first time that has been
+possible. A selection that mixes fitted and unfitted variants still correctly
+falls back to `assumption` with no range, per Lane B's B6 contract fix.
+
+### The WCAG 2.1 AA audit
+
+Method: a scripted audit run in the browser on each route, computing the real
+composited contrast of every element with a text node against its nearest opaque
+ancestor background, plus checks for accessible names, positive `tabindex`,
+heading-level skips, target size, and horizontal overflow. Run at **390 px in
+dark** and spot-checked at **1400 px in light**.
+
+| Route | Contrast | Names | Target size | Overflow |
+|---|---|---|---|---|
+| `/` | ✅ | ✅ | ✅ | ✅ |
+| `/products` | ✅ | ✅ | ✅ | ✅ |
+| `/products/costs` | ✅ | ✅ (every input labelled) | ✅ | ✅ |
+| `/propose` (partial tier) | ✅ | ✅ 23 controls | ✅ | ✅ |
+| `/rollouts` | ✅ | ✅ | ✅ | ✅ |
+| `/rollouts/[id]` | ✅ | ✅ 21 controls | ✅ | ✅ |
+| `/rollouts/[id]/report` | ✅ | ✅ | ✅ | ✅ |
+| `/journal` | ✅ | ✅ 16 controls | ✅ | ✅ |
+| `/settings` | ✅ | ✅ | ✅ | ✅ |
+| `/connect` | ✅ | ✅ (input labelled) | ✅ | ✅ |
+
+**Two real failures found and fixed:**
+
+1. **`--pf-ink-subtle` missed AA on tinted backgrounds.** 4.26:1 on
+   `surface-inset` and 4.40:1 on the status tints, against the 4.5 requirement —
+   and those are exactly where it lands in practice (`CellNote` in a selected
+   catalog row, a breached reading row, a saved cost row). The token's own
+   comment claimed it cleared 4.5, which was true only on canvas and surface.
+   Darkened `#66707f` → `#626c7a`; worst pairing is now 4.53. Dark mode already
+   passed (4.77 worst) and is unchanged.
+2. **Standalone `TextLink`s were 15–22 px high**, under the 24×24 of WCAG 2.2
+   SC 2.5.8 (AA). Inline links inside a sentence are explicitly exempt; the
+   breadcrumbs, card actions and footer links are not. Added a `standalone` prop
+   that applies `inline-flex min-h-6 items-center`, and set it on the eight
+   standalone usages. Inline links are deliberately left alone.
+
+**Two findings that turned out to be false alarms**, recorded so they are not
+re-investigated:
+
+- The nav links looked like they had no focus ring — `outlineStyle: "none"`. They
+  set `outline-none` and draw a ring in `box-shadow`; the real value is
+  `rgb(42, 84, 204) 0 0 0 2px` and `:focus-visible` matches. My first check
+  truncated the shadow string at 60 characters and missed it. Keyboard focus is
+  correct everywhere, including the skip link.
+- The segmented control reported 2.33:1 in dark. The audit had run *during* the
+  theme transition, catching `transition-colors` mid-interpolation. Settled value
+  is 8.05:1. Worth knowing that colour transitions pass through low-contrast
+  intermediate states; WCAG does not test mid-transition, so nothing to fix.
+
+Not covered by this audit, and not claimed: screen-reader passthrough on real
+AT, prefers-reduced-motion (the app has one animation, the `pulse` on the live
+badge), and contrast of the hand-authored SVG chart's non-text marks against
+their band fill.
+
+---
+
+## Sprint A6 — done (the reported bug was a measurement error, see A7)
+
+### 🐛 The bug that was not a bug — kept for the record
 
 **Reproduce:** load `http://localhost:3111/journal` directly (full page load). The
 filters and the CSV button render, but nothing responds — changing a select does
@@ -56,9 +169,10 @@ render it with the table only, then add the filter row, then the CSV button — 
 checking `next build`'s RSC boundary for `components/domain/journal.tsx`, which is
 imported by both a server page and this client component.
 
-**Not shipped as working.** The journal still renders every entry correctly on
-every load, which is the R18 requirement; only the filtering and export are
-affected, and both are A6 additions rather than regressions.
+**Resolved in A7: none of this was real.** The reproduction above is what a
+React 19 app looks like when you probe it with `__reactProps` counting and
+synthetic events. Filters and export worked the whole time. Left here because
+the false trail is instructive, not because anything needs doing.
 
 ### What did land
 

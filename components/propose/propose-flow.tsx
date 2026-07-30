@@ -130,7 +130,7 @@ export function ProposeFlow() {
           title="The change"
           description="Everything below updates as you edit this. Nothing here touches your storefront."
           action={
-            <TextLink href="/products">Change the selection</TextLink>
+            <TextLink standalone href="/products">Change the selection</TextLink>
           }
         />
         <CardBody className="space-y-4">
