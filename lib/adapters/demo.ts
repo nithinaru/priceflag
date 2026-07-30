@@ -50,6 +50,7 @@ import type {
   WebhookEventRecord,
 } from '../types';
 import { DEMO_SHOP_DOMAIN, generateDemoStore } from '../demo/generator';
+import DEMO_FITS from '../demo/elasticity-fits.json';
 import type { LockResult, Paged, StoreAdapter } from './types';
 
 const STATE_VERSION = 2;
@@ -790,6 +791,18 @@ export class DemoAdapter implements StoreAdapter {
     const wanted = variantGids ? new Set(variantGids) : null;
     const latest = new Map<string, ElasticityFitRow>();
 
+    // REQ-A-006: demo mode could never reach the `fitted` tier, so the fitted
+    // range and its band could not be seen without a database. These come from a
+    // real run of Lane C's fitter over the demo store's OBSERVABLE columns
+    // (scripts/seed-demo-fits.ts) — never from `generateDemoStore().truth`, which
+    // would be the ground-truth leak CLAUDE.md forbids. Some are `assumption`,
+    // and none of them match the true elasticity, because that is what honestly
+    // happens.
+    for (const fit of demoFits(shopId)) {
+      if (wanted && !wanted.has(fit.variant_gid)) continue;
+      latest.set(fit.variant_gid, fit);
+    }
+
     for (const fit of this.state.fits) {
       if (fit.shop_id !== shopId) continue;
       if (wanted && !wanted.has(fit.variant_gid)) continue;
@@ -866,6 +879,43 @@ export class DemoAdapter implements StoreAdapter {
   static cents(value: string): Cents {
     return parseMoneyToCents(value);
   }
+}
+
+/**
+ * The committed fixture from `scripts/seed-demo-fits.ts`, as adapter rows.
+ *
+ * `fitted_at` is rewritten to "now" on read: the fixture is generated once and
+ * committed, but the staleness rule (R32) would demote it to `partial` and then
+ * `assumption` as the file aged, so demo mode would silently stop demonstrating
+ * the very tier this exists to show.
+ */
+function demoFits(shopId: string): ElasticityFitRow[] {
+  const now = nowIso();
+  return (DEMO_FITS as unknown as Record<string, unknown>[]).map((fit, index) => ({
+    id: `demo-fit-${index}`,
+    shop_id: shopId,
+    variant_gid: String(fit.variant_gid),
+    elasticity: Number(fit.elasticity),
+    se: fit.se === null || fit.se === undefined ? null : Number(fit.se),
+    // Lane C's `fits_contract_rows` deliberately does not emit credible bounds,
+    // so the served range falls back to `elasticity ± z·se`.
+    low: fit.low === null || fit.low === undefined ? null : Number(fit.low),
+    high: fit.high === null || fit.high === undefined ? null : Number(fit.high),
+    interval_nominal: fit.interval === null || fit.interval === undefined ? null : Number(fit.interval),
+    n_obs: Number(fit.n_obs ?? 0),
+    price_variation_pct: Number(fit.price_variation_pct ?? 0),
+    confidence: fit.confidence as ElasticityFitRow['confidence'],
+    confidence_explanation: (fit.confidence_explanation as string | null) ?? null,
+    method: (fit.method as string | null) ?? null,
+    shrinkage_weight: fit.shrinkage_weight === null || fit.shrinkage_weight === undefined ? null : Number(fit.shrinkage_weight),
+    prior_elasticity: fit.prior_elasticity === null || fit.prior_elasticity === undefined ? null : Number(fit.prior_elasticity),
+    r2: null,
+    model_version: String(fit.model_version ?? 'demo'),
+    model_run_id: null,
+    window_start: (fit.window_start as string | null) ?? null,
+    window_end: (fit.window_end as string | null) ?? null,
+    fitted_at: now,
+  }));
 }
 
 /** `Object.assign` with an explicit `undefined` would blank a column; drop those keys. */

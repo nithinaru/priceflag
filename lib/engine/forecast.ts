@@ -662,6 +662,16 @@ export function buildForecast(input: ForecastInput): ForecastResult {
     }
   }
 
+  // The contract says `fitted` is null when the tier is `assumption`, and it has
+  // to be: a range the card would draw while the tier tells the merchant we
+  // cannot predict demand is two contradictory claims on one screen. This
+  // happens whenever a selection mixes variants that have usable fits with
+  // variants that do not — the worst tier wins, so the range must go.
+  if (confidence === 'assumption' && fitted !== null) {
+    fitted = null;
+    modelVersion = null;
+  }
+
   const assumptions = buildAssumptions(lines, horizonDays, hasCogs, rounding, historyDays);
 
   return {
