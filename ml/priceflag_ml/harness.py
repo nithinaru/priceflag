@@ -259,6 +259,52 @@ def run_c2(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     return {"summary": summary, "per_seed": per_seed}
 
 
+def run_c4(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
+    """C4 report: hierarchical (category-pooled) elasticity challenger vs the
+    C2 champion, on category-structured golden universes. Scores both the
+    thin slice (1 permanent price level — where category borrowing is
+    supposed to help) and the identifiable slice (where it must not hurt)."""
+    from .elasticity import fit_store
+    from .elasticity_hier import MODEL_VERSION as HIER_VERSION
+    from .elasticity_hier import fit_store_hier
+
+    per_seed = []
+    for seed in seeds:
+        store = generate_store(GoldenConfig(seed=seed, n_categories=4))
+        truth = dict(zip(store.truth["sku"], store.truth["elasticity"]))
+        cats = dict(zip(store.truth["sku"], store.truth["category"]))
+        thin = set(store.truth.loc[store.truth["n_permanent_levels"] == 1, "sku"])
+        ident = set(store.truth["sku"]) - thin
+        champ = {f.sku: f.elasticity for f in fit_store(store.orders, seed=0)}
+        chall = {f.sku: f.elasticity for f in fit_store_hier(store.orders, categories=cats, seed=0)}
+        per_seed.append(
+            {
+                "seed": seed,
+                "thin_mae_champion": float(np.mean([abs(champ[s] - truth[s]) for s in thin])),
+                "thin_mae_challenger": float(np.mean([abs(chall[s] - truth[s]) for s in thin])),
+                "ident_mae_champion": float(np.mean([abs(champ[s] - truth[s]) for s in ident])),
+                "ident_mae_challenger": float(np.mean([abs(chall[s] - truth[s]) for s in ident])),
+            }
+        )
+
+    summary = {
+        "challenger_version": HIER_VERSION,
+        "champion_version": "elasticity-poisson-eb-1.0",
+        "n_seeds": len(seeds),
+        "thin_mae_champion": float(np.mean([s["thin_mae_champion"] for s in per_seed])),
+        "thin_mae_challenger": float(np.mean([s["thin_mae_challenger"] for s in per_seed])),
+        "ident_mae_champion": float(np.mean([s["ident_mae_champion"] for s in per_seed])),
+        "ident_mae_challenger": float(np.mean([s["ident_mae_challenger"] for s in per_seed])),
+    }
+    summary["verdict"] = (
+        "challenger wins"
+        if summary["thin_mae_challenger"] < summary["thin_mae_champion"]
+        and summary["ident_mae_challenger"] <= summary["ident_mae_champion"] * 1.03
+        else "incumbent stays"
+    )
+    return {"summary": summary, "per_seed": per_seed}
+
+
 def run_c3(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     """C3 report: CleanLevel baseline challenger vs the bracket band (the
     band the evaluator actually ships) and vs seasonal-naive (the brief's
@@ -331,7 +377,7 @@ def main() -> None:
     import sys
 
     which = sys.argv[1] if len(sys.argv) > 1 else "c1"
-    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3}[which]()
+    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4}[which]()
     print(json.dumps(_json_safe(report), indent=2))
 
 

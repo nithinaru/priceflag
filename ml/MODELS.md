@@ -102,9 +102,39 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Challengers
 
-(none in flight — C3/C4 will add them)
+(none in flight — C5 will add the counterfactual monitor)
 
 ## Rejected
+
+### C4 (hierarchical elasticity) — C2 stays champion; no vanity upgrade
+
+The brief's own escape hatch applied: partial pooling across categories LOST
+to the flat C2 champion on category-structured golden universes
+(`GoldenConfig(n_categories=4)`, elasticities clustered per category:
+category means ~ N(-1.3, 0.45), within-category sd 0.3). Verdict snapshot:
+`eval/c4_hier.json`; pinned by a test so a future flip is deliberate.
+
+- **elasticity-hier-em-1.0 (two-level EM EB, category means + estimated
+  tau):** thin-slice MAE **0.830 vs C2's 0.457**; identifiable slice 0.728 vs
+  0.533 (5 seeds). Implementation verified correct (EM recovers known
+  hyperparameters on clean data — tests) — the loss is informational, not a
+  bug: with only ~4-6 identifiable SKUs per category and stage-1 fit noise
+  sd ≈ 1.0, a category mean's own SE (~0.45) exceeds the between-category
+  signal it could add, and deceptively-tight wild fits poison small groups.
+- **Robust variant (shrunk category medians, fixed tau=0.6):** thin MAE 0.629
+  vs 0.456 — better than EM, still loses; wins 1 seed of 5.
+- **Practical rule this establishes:** category borrowing starts paying at
+  roughly ≥15 identifiable members per category at this noise level — rare in
+  a 30-500 SKU DTC store with thin price history. Revisit at C7 with real
+  multi-store data.
+- **Not attempted:** full-likelihood PyMC hierarchical model (single-stage).
+  It would avoid the noisy two-stage SEs but the per-SKU elasticity
+  information is identical; expected gain modest. Recorded as an open
+  challenger, priority below C5-C7.
+- **Note:** real-data backtest half of the C4 acceptance is blocked until
+  Lane B's B6 read-only credentials exist; the verdict is golden-only.
+
+## Rejected (earlier sprints)
 
 ### C3 (baseline forecaster) — all lost to the bracket band or tied it
 

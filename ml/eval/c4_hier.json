@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "challenger_version": "elasticity-hier-em-1.0",
+    "champion_version": "elasticity-poisson-eb-1.0",
+    "n_seeds": 5,
+    "thin_mae_champion": 0.4565365288446833,
+    "thin_mae_challenger": 0.8298434941547275,
+    "ident_mae_champion": 0.5332639796738605,
+    "ident_mae_challenger": 0.7283851336722652,
+    "verdict": "incumbent stays"
+  },
+  "per_seed": [
+    {
+      "seed": 7,
+      "thin_mae_champion": 0.4019560831322003,
+      "thin_mae_challenger": 0.5446410364372645,
+      "ident_mae_champion": 0.6355214931106549,
+      "ident_mae_challenger": 0.7326642693896804
+    },
+    {
+      "seed": 11,
+      "thin_mae_champion": 0.5619978878051707,
+      "thin_mae_challenger": 0.6478134850688713,
+      "ident_mae_champion": 0.6385836531375605,
+      "ident_mae_challenger": 0.5335286945397644
+    },
+    {
+      "seed": 42,
+      "thin_mae_champion": 0.224119434256077,
+      "thin_mae_challenger": 1.2195399024548919,
+      "ident_mae_champion": 0.598194899840302,
+      "ident_mae_challenger": 0.9565356976788131
+    },
+    {
+      "seed": 99,
+      "thin_mae_champion": 0.46325416482488696,
+      "thin_mae_challenger": 0.5929837399441604,
+      "ident_mae_champion": 0.35016316772644257,
+      "ident_mae_challenger": 0.5625056662945763
+    },
+    {
+      "seed": 123,
+      "thin_mae_champion": 0.6313550742050819,
+      "thin_mae_challenger": 1.1442393068684493,
+      "ident_mae_champion": 0.4438566845543424,
+      "ident_mae_challenger": 0.8566913404584915
+    }
+  ]
+}

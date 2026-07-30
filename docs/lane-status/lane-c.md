@@ -1,7 +1,24 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1–C3 complete (2026-07-29). Next: C4 (hierarchical
-elasticity).
+**Current:** Sprints C1–C4 complete (2026-07-29). Next: C5 (rollout
+counterfactual monitor).
+
+## C4 — Hierarchical elasticity: challenger LOST, C2 stays champion ✅
+
+The honest outcome the brief anticipated ("otherwise C2 stays champion and
+this is recorded — no vanity upgrades"). Partial pooling across categories
+was implemented (`priceflag_ml/elasticity_hier.py`: two-level EM empirical
+Bayes; category-clustered golden universes added to the generator behind
+`GoldenConfig.n_categories`, default off and byte-identical) and it LOSES to
+C2 on the harness: thin-slice MAE 0.830 vs 0.457, identifiable 0.728 vs 0.533
+(5 seeds; robust shrunk-median variant also loses at 0.629). Why: ~4-6
+identifiable SKUs per category x fit noise sd ≈ 1.0 → a category mean's own
+error exceeds the category signal. EM implementation is verified correct by
+tests (recovers known hyperparameters), the losing verdict is snapshot at
+`ml/eval/c4_hier.json` and PINNED by a test, and the code stays as a scorable
+challenger for when real multi-store data arrives. Full analysis in
+`ml/MODELS.md`. Real-data half of the acceptance is blocked on B6
+credentials.
 
 ## C3 — Baseline demand forecaster ✅
 

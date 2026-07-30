@@ -90,6 +90,12 @@ class GoldenConfig:
     seed: int = 7
     end_date: str = "2026-07-01"  # fixed anchor: generator is fully deterministic
     shop_id: str = "golden-store"
+    # 0 = no category structure (the default universe — byte-identical to
+    # before this field existed; the SHA snapshot test enforces that).
+    # >0 = elasticities cluster by category (sku i belongs to category i mod
+    # n_categories; category means ~ N(-1.3, 0.45), within-category sd 0.3) —
+    # the ground truth hierarchical estimators (C4) must exploit.
+    n_categories: int = 0
 
 
 @dataclass(frozen=True)
@@ -217,6 +223,24 @@ def generate_store(cfg: GoldenConfig | None = None) -> GoldenStore:
         t.sku: t
         for t in (_make_sku(i, cfg, np.random.default_rng([cfg.seed, i, 0])) for i in range(cfg.n_skus))
     }
+
+    categories: dict[str, str | None] = {sku: None for sku in skus}
+    if cfg.n_categories > 0:
+        # Category structure uses dedicated RNG streams so the rest of the
+        # universe (prices, promos, noise draws) is untouched.
+        from dataclasses import replace
+
+        cat_means = {
+            c: float(np.clip(np.random.default_rng([cfg.seed, 7770 + c]).normal(-1.3, 0.45), -2.6, -0.5))
+            for c in range(cfg.n_categories)
+        }
+        for i, (sku, t) in enumerate(list(skus.items())):
+            c = i % cfg.n_categories
+            eps = float(
+                np.clip(np.random.default_rng([cfg.seed, i, 2]).normal(cat_means[c], 0.3), -3.0, -0.3)
+            )
+            skus[sku] = replace(t, elasticity=eps)
+            categories[sku] = f"cat-{c}"
     frames = [
         simulate_sku(t, dates, np.random.default_rng([cfg.seed, i, 1])) for i, t in enumerate(skus.values())
     ]
@@ -227,6 +251,7 @@ def generate_store(cfg: GoldenConfig | None = None) -> GoldenStore:
         [
             {
                 "sku": t.sku,
+                "category": categories[t.sku],
                 "elasticity": t.elasticity,
                 "base_units": t.base_units,
                 "base_price_cents": t.base_price_cents,
