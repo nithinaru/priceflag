@@ -30,6 +30,7 @@ auto-rollback (R29).
 | `priceflag_ml/data.py` | Read-only data access: golden fixture or Supabase PostgREST (`SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`) |
 | `priceflag_ml/baselines.py` | Incumbents: seasonal-naive forecaster (80% bands), bracket elasticity (v0 stand-in) |
 | `priceflag_ml/elasticity.py` | Champion elasticity: Poisson GLM + EB shrinkage, honest confidence tiers, `elasticity_fits` rows |
+| `priceflag_ml/forecaster.py` | Champion baseline forecaster: promo-clean dow-level model + calibrated 80% bands, `expected_bands` rows |
 | `priceflag_ml/metrics.py` | Coverage, pinball loss, MAPE/WAPE, elasticity recovery |
 | `priceflag_ml/harness.py` | Rolling-origin backtests, golden recovery, champion-vs-challenger comparison |
 | `eval/` | Committed harness score snapshots (`c1_incumbents.json` = the bar) |

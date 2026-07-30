@@ -54,8 +54,10 @@ def _validate_forecast(sku: str, fc: pd.DataFrame, test_dates: pd.DatetimeIndex)
     vals = fc[["expected", "low", "high"]].to_numpy(dtype=float)
     if not np.isfinite(vals).all():
         raise ValueError(f"SKU {sku}: forecast contains non-finite expected/low/high values.")
-    if (fc["low"].to_numpy() > fc["high"].to_numpy()).any():
-        raise ValueError(f"SKU {sku}: forecast has low > high.")
+    if (fc["low"].to_numpy() > fc["expected"].to_numpy()).any() or (
+        fc["expected"].to_numpy() > fc["high"].to_numpy()
+    ).any():
+        raise ValueError(f"SKU {sku}: forecast violates low <= expected <= high.")
     if (fc["low"].to_numpy() < 0).any():
         raise ValueError(f"SKU {sku}: negative low band for a units forecast.")
 
@@ -257,6 +259,63 @@ def run_c2(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     return {"summary": summary, "per_seed": per_seed}
 
 
+def run_c3(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
+    """C3 report: CleanLevel baseline challenger vs the bracket band (the
+    band the evaluator actually ships) and vs seasonal-naive (the brief's
+    named acceptance), averaged over several golden universes."""
+    from .forecaster import MODEL_VERSION, CleanLevelBaseline
+
+    per_seed = []
+    per_sku_coverage: list[float] = []
+    nonfloored_cov: list[float] = []
+    for seed in seeds:
+        store = generate_store(GoldenConfig(seed=seed))
+        out = rolling_origin_backtest(store.orders, CleanLevelBaseline)
+        agg = out["aggregate"]
+        pred = out["predictions"]
+        pred = pred[~pred["stockout"]]
+        # Auto-rollback fires per SKU, and floored days (expected < 3, low=0)
+        # structurally over-cover — so calibration must be checked where it
+        # can actually bite: non-floored days, and the worst SKUs.
+        nf = pred[pred["expected"] >= 3.0]
+        if len(nf):
+            nonfloored_cov.append(interval_coverage(nf["actual"], nf["low"], nf["high"]))
+        for _, g in pred.groupby("sku"):
+            per_sku_coverage.append(interval_coverage(g["actual"], g["low"], g["high"]))
+        vs_band = compare_forecasters(store.orders, BracketBand, CleanLevelBaseline)
+        vs_naive = compare_forecasters(store.orders, SeasonalNaive, CleanLevelBaseline)
+        per_seed.append(
+            {
+                "seed": seed,
+                "challenger": agg,
+                "win_rate_vs_bracket_band": vs_band["challenger_win_rate"],
+                "win_rate_vs_seasonal_naive": vs_naive["challenger_win_rate"],
+                "median_wape_bracket_band": vs_band["median_wape_champion"],
+            }
+        )
+
+    summary = {
+        "model_version": MODEL_VERSION,
+        "n_seeds": len(seeds),
+        "median_wape": float(np.mean([s["challenger"]["median_wape"] for s in per_seed])),
+        "median_wape_bracket_band": float(np.mean([s["median_wape_bracket_band"] for s in per_seed])),
+        "pooled_coverage_80": float(np.mean([s["challenger"]["pooled_coverage_80"] for s in per_seed])),
+        "nonfloored_coverage_80": float(np.mean(nonfloored_cov)),
+        "per_sku_coverage_p10": float(np.quantile(per_sku_coverage, 0.10)),
+        "win_rate_vs_bracket_band": float(np.mean([s["win_rate_vs_bracket_band"] for s in per_seed])),
+        "win_rate_vs_seasonal_naive": float(np.mean([s["win_rate_vs_seasonal_naive"] for s in per_seed])),
+    }
+    summary["verdict"] = (
+        "challenger wins"
+        if summary["win_rate_vs_bracket_band"] > 0.5
+        and summary["win_rate_vs_seasonal_naive"] >= 0.7
+        and abs(summary["nonfloored_coverage_80"] - 0.80) <= 0.10
+        and summary["per_sku_coverage_p10"] >= 0.65
+        else "incumbent stays"
+    )
+    return {"summary": summary, "per_seed": per_seed}
+
+
 def _json_safe(obj):
     """Replace NaN/inf with None so the report is always valid JSON."""
     if isinstance(obj, dict):
@@ -272,7 +331,7 @@ def main() -> None:
     import sys
 
     which = sys.argv[1] if len(sys.argv) > 1 else "c1"
-    report = run_c2() if which == "c2" else run_c1()
+    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3}[which]()
     print(json.dumps(_json_safe(report), indent=2))
 
 

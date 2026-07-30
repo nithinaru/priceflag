@@ -1,9 +1,41 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1 + C2 complete; C3 in progress (2026-07-29). B1
-alignment done.
+**Current:** Sprints C1–C3 complete (2026-07-29). Next: C4 (hierarchical
+elasticity).
 
-## C3 (in progress) — post-B1 alignment landed
+## C3 — Baseline demand forecaster ✅
+
+`priceflag_ml/forecaster.py` — champion `baseline-cleanlevel-1.0`:
+
+- Promo-aware dow-level model: level fit ONLY on non-promo, non-stockout days
+  (the incumbent's biggest bias: its trailing mean inhales promo spikes and
+  over-expects for weeks); smoothed weekday profile; EW level (half-life
+  14d); 80% band from clean-day residual variance in the incumbent's
+  overdispersed-Poisson family; low-volume floor + `is_floored` per the
+  evaluator's semantics; bracket-band fallback when < 7 clean days.
+- **R28/R29 gate (5 golden seeds, h=14):** median WAPE **0.525 vs 0.553**
+  (bracket band incumbent), win rate **65%** vs bracket band, **82.5%** vs
+  seasonal-naive (brief's ≥70% acceptance met). Calibration gated where
+  rollback can actually fire: **non-floored 80% coverage 0.791**, per-SKU
+  coverage p10 **0.713** (floored low-volume days structurally over-cover and
+  are reported separately). `eval/c3_baseline.json` has the verdict and is
+  pinned by a staleness test; rejected challengers (statsmodels ETS,
+  LightGBM, per-SKU selection ensembles) are in `ml/MODELS.md` with scores.
+- **Adversarial review (13 agents, pre-push):** 10 confirmed defects fixed —
+  headline: clean-window bug used the last 56 clean rows ever (stale levels →
+  false rollbacks), pooled-only calibration gate masked per-SKU
+  miscalibration, null `list_price_cents` was zero-filled into the
+  elasticity regressor, contract invariant low ≤ expected ≤ high now
+  enforced at the band boundary and in the harness.
+- `bands_contract_rows()` emits `expected_band.schema.json`-exact rows
+  (schema-validated in tests): band_kind=baseline, `is_floored`, interval
+  0.8, model_version.
+- **For Lane B:** these bands are ready to write into `expected_bands` as
+  soon as B6 credentials exist; until then the shipped bracket band is a fine
+  fallback (it scored 0.803 coverage on golden — honest, just ~6% worse WAPE
+  and slow to recover after promos).
+
+## C3 part 1 — post-B1 alignment (landed earlier)
 
 - `ml/data.py` reads Lane B's `ml_product_days` view (variant_gid → sku,
   day → date, **list_price_cents → price_cents** as instructed, on_promo,

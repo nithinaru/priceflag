@@ -92,8 +92,10 @@ class SeasonalNaive:
         if self._has_resid_quantiles:
             # Empirical band only — stacking a variance floor on top of valid
             # quantiles systematically over-covers (max of two ~80% bands).
-            low = np.maximum(0.0, expected + self._q10)
-            high = expected + self._q90
+            # Clamped so the band always brackets its own point forecast
+            # (after a level collapse the empirical q10 can go positive).
+            low = np.clip(expected + self._q10, 0.0, expected)
+            high = np.maximum(expected + self._q90, expected)
             # integer daily units: a band thinner than 1 unit is meaningless
             high = np.maximum(high, low + 1.0)
         else:

@@ -64,7 +64,9 @@ def densify_daily(orders: pd.DataFrame) -> pd.DataFrame:
     df = pd.concat(out, ignore_index=True)
     df["units"] = df["units"].astype(int)
     df["revenue_cents"] = df["revenue_cents"].astype(np.int64)
-    df["price_cents"] = df["price_cents"].astype(np.int64)
+    # A SKU with no observed price on ANY day survives as 0 (unregressable —
+    # the elasticity design matrix drops non-positive prices).
+    df["price_cents"] = df["price_cents"].fillna(0).astype(np.int64)
     df["promo"] = df["promo"].astype(bool)
     df["stockout"] = df["stockout"].astype(bool)
     return df[CANONICAL_COLUMNS]
@@ -145,8 +147,14 @@ class SupabaseSource:
             return pd.DataFrame(columns=CANONICAL_COLUMNS)
         df = pd.concat(pages, ignore_index=True).rename(columns=self.VIEW_COLUMN_MAP)
         df["date"] = pd.to_datetime(df["date"])
-        for col, default in (("promo", False), ("stockout", False), ("price_cents", 0)):
+        for col, default in (("promo", False), ("stockout", False)):
             if col not in df.columns:
                 df[col] = default
             df[col] = df[col].fillna(default)
+        # price_cents (list_price_cents) is genuinely nullable (e.g. an
+        # orders/create webhook for a not-yet-synced variant). Do NOT fill
+        # with 0 — a zero price poisons log-price regressors; leave NaN for
+        # densify_daily's ffill/bfill to repair from neighboring days.
+        if "price_cents" not in df.columns:
+            df["price_cents"] = np.nan
         return densify_daily(df[CANONICAL_COLUMNS])

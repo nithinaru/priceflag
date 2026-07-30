@@ -1,0 +1,91 @@
+{
+  "summary": {
+    "model_version": "baseline-cleanlevel-1.0",
+    "n_seeds": 5,
+    "median_wape": 0.524559699039156,
+    "median_wape_bracket_band": 0.5529440830555298,
+    "pooled_coverage_80": 0.8349801328661541,
+    "nonfloored_coverage_80": 0.7908193998437085,
+    "per_sku_coverage_p10": 0.7125,
+    "win_rate_vs_bracket_band": 0.6500000000000001,
+    "win_rate_vs_seasonal_naive": 0.825,
+    "verdict": "challenger wins"
+  },
+  "per_seed": [
+    {
+      "seed": 7,
+      "challenger": {
+        "n_skus": 24,
+        "n_scored_days": 1336,
+        "median_wape": 0.5524847400203206,
+        "median_mape": 0.5557628682619713,
+        "pooled_coverage_80": 0.8203592814371258,
+        "pooled_pinball_q10": 0.7726267998365082,
+        "pooled_pinball_q90": 1.2655404014050866
+      },
+      "win_rate_vs_bracket_band": 0.7916666666666666,
+      "win_rate_vs_seasonal_naive": 0.9166666666666666,
+      "median_wape_bracket_band": 0.5720247169326236
+    },
+    {
+      "seed": 11,
+      "challenger": {
+        "n_skus": 24,
+        "n_scored_days": 1332,
+        "median_wape": 0.5174745340523944,
+        "median_mape": 0.4938628575138968,
+        "pooled_coverage_80": 0.8588588588588588,
+        "pooled_pinball_q10": 0.7505463601603007,
+        "pooled_pinball_q90": 1.0968628425094569
+      },
+      "win_rate_vs_bracket_band": 0.5833333333333334,
+      "win_rate_vs_seasonal_naive": 0.8333333333333334,
+      "median_wape_bracket_band": 0.5333848568694286
+    },
+    {
+      "seed": 42,
+      "challenger": {
+        "n_skus": 24,
+        "n_scored_days": 1334,
+        "median_wape": 0.5621292416076767,
+        "median_mape": 0.5422671877416713,
+        "pooled_coverage_80": 0.8448275862068966,
+        "pooled_pinball_q10": 0.7552561941079706,
+        "pooled_pinball_q90": 1.0346741938500141
+      },
+      "win_rate_vs_bracket_band": 0.5833333333333334,
+      "win_rate_vs_seasonal_naive": 0.8333333333333334,
+      "median_wape_bracket_band": 0.5949986309166542
+    },
+    {
+      "seed": 99,
+      "challenger": {
+        "n_skus": 24,
+        "n_scored_days": 1314,
+        "median_wape": 0.5319442002451329,
+        "median_mape": 0.5517501225829595,
+        "pooled_coverage_80": 0.8120243531202436,
+        "pooled_pinball_q10": 0.8648144712363013,
+        "pooled_pinball_q90": 1.4635303649754998
+      },
+      "win_rate_vs_bracket_band": 0.5833333333333334,
+      "win_rate_vs_seasonal_naive": 0.6666666666666666,
+      "median_wape_bracket_band": 0.5624462737943041
+    },
+    {
+      "seed": 123,
+      "challenger": {
+        "n_skus": 24,
+        "n_scored_days": 1334,
+        "median_wape": 0.4587657792702552,
+        "median_mape": 0.5095493579943939,
+        "pooled_coverage_80": 0.8388305847076462,
+        "pooled_pinball_q10": 0.7299954383427784,
+        "pooled_pinball_q90": 1.1483725749818687
+      },
+      "win_rate_vs_bracket_band": 0.7083333333333334,
+      "win_rate_vs_seasonal_naive": 0.875,
+      "median_wape_bracket_band": 0.5018659367646382
+    }
+  ]
+}

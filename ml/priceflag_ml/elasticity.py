@@ -102,6 +102,8 @@ def _design(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
     column is needed (it would be identically zero).
     """
     clean = df[~df["stockout"]] if "stockout" in df.columns else df
+    if "price_cents" in clean.columns:
+        clean = clean[clean["price_cents"] > 0]  # unknown price: not regressable
     if len(clean) < MIN_OBS_ANY:
         return None
     y = clean["units"].to_numpy(dtype=float)

@@ -7,7 +7,35 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Champions (current)
 
-### bracket-band-ts-port-1.0 — expected band (the incumbent C3 must beat)
+### baseline-cleanlevel-1.0 — expected bands (champion since C3)
+
+- **What:** promo-aware day-of-week level model: fit only on *clean* days
+  (non-promo, non-stockout) in a trailing 56-day window; smoothed
+  multiplicative weekday profile; exponentially-weighted level (half-life
+  14d) on the deseasonalized clean days; 80% band = z80 ·
+  sqrt(max(clean-residual var, expected)) with the evaluator's low-volume
+  floor (expected < 3 → low 0, `is_floored`). Falls back to the bracket band
+  when < 7 clean days exist. Emits `expected_band` contract rows
+  (schema-validated in tests).
+- **Scores (5 golden seeds, rolling-origin h=14):** median WAPE **0.525 vs
+  0.553** (bracket band) · win rate **65%** vs bracket band · **82.5%** vs
+  seasonal-naive (brief acceptance ≥70% ✓) · **non-floored 80% coverage
+  0.791** (the days where rollback can actually fire) · per-SKU coverage p10
+  **0.713** · pooled 0.835. Band sd carries a 1.15 calibration factor
+  (in-window residuals understate out-of-sample error — factor chosen so
+  non-floored days cover at nominal). Snapshot: `eval/c3_baseline.json`.
+- **Why it wins:** the incumbent's trailing mean inhales promo spikes and
+  over-expects for weeks after every promo; excluding promo/stockout days
+  from the level is worth more than any extra model capacity tried (below).
+- **History:** pre-push adversarial review (13 agents) confirmed 10 defects,
+  all fixed — the two that mattered: the "trailing window" selected the last
+  56 clean ROWS from all history (a months-stale level would have
+  manufactured false rollbacks on any SKU with a long promo/stockout tail),
+  and the R29 gate read only pooled coverage, which floored days inflate
+  (~0.86 cov on 44% of days) while 28% of SKUs sat under 0.70 — the gate now
+  checks non-floored coverage and the per-SKU p10.
+
+### bracket-band-ts-port-1.0 — expected band (incumbent C1→C3, now the low-history fallback)
 
 - **What:** faithful Python port of Lane B's shipped fallback band
   (`lib/engine/bands.ts`): trailing 28-day mean, day-of-week mean shrunk
@@ -78,7 +106,25 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Rejected
 
-All tested during C2 development on golden data; none deployed.
+### C3 (baseline forecaster) — all lost to the bracket band or tied it
+
+- **statsmodels ETS (dow profile × damped-trend exponential smoothing):**
+  alone — median WAPE 0.590, win rate 0.38 vs bracket band. The damped trend
+  buys almost nothing over a well-weighted level at 90–180 days.
+- **LightGBM (Poisson objective, dow/trend/promo + origin-frozen levels,
+  direct multi-step):** no measurable edge in ensembles (identical scores
+  with and without it); alone worse than the bracket band. Too little data
+  per SKU for tree capacity to pay.
+- **Per-SKU champion selection (inner 3-origin backtest over
+  ETS/LGBM/band/naive + winner's residual-quantile bands):** win rate 0.33 vs
+  bracket band, coverage 0.735 — selection on ~21 inner test days overfits
+  the picker, and 21 residuals make noisy quantiles. Averaging beat picking;
+  clean-day fitting beat both.
+- **Equal-weight ensembles (ETS+band±naive±LGBM):** exact tie with the
+  incumbent (win rate 0.50, WAPE 0.573 vs 0.572) — blending with the biased
+  promo-inflated level dilutes the clean-level win (0.79 → 0.62).
+
+### C2 (elasticity) — all tested during development on golden data; none deployed.
 
 - **log-log ridge, λ=1 on all coefficients** (the brief's literal v1 recipe):
   penalizing the log-price coefficient attenuates elasticity ~4x (its column
