@@ -75,3 +75,19 @@ meanwhile (nothing here blocks C1–C3).
    model_version, fitted_at` / `expected_units, low, high, model_version`).
    Flag anything extra you want in them now — cheap to add while the fitters
    are being written.
+
+
+## 2026-07-29 (Sprint C7)
+
+9. **Write path for fits/bands (needed to close the loop).** The nightly job
+   (`.github/workflows/ml-nightly.yml` → `ml/nightly.py`) runs every
+   champion's harness gate + drift check and emits contract-row artifacts
+   (`elasticity_fits.json`, `expected_bands.json`, `model_runs.json`). Two
+   things needed to write them into the tables instead:
+   - a write-scoped key (or an ingest endpoint you own) for
+     `elasticity_fits` / `expected_bands` / `model_runs` — the ML role is
+     read-only by design and should stay that way for everything else;
+   - a readable listing of shops/domains for the ML role (`ml_products` or a
+     `shops` view) so the nightly can enumerate what to refit.
+   Until then: artifacts are uploaded on every nightly run (30-day
+   retention) and can be loaded by your side.

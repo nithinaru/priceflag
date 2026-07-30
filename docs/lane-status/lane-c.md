@@ -1,7 +1,36 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1–C6 complete (2026-07-29). Next: C7 (nightly
-production loop).
+**Current:** ALL SPRINTS C1–C7 COMPLETE (2026-07-29). Lane C is
+feature-complete pending Lane B's B6 credentials for the real-data legs.
+
+## C7 — Nightly production loop ✅
+
+- `ml/nightly.py` + `.github/workflows/ml-nightly.yml` (daily 07:00 UTC +
+  manual dispatch): re-runs every champion's harness gate (C2/C3/C5/C6) AND
+  the C4 recorded-loser check, plus an exact drift check against the
+  committed `eval/*.json` verdict snapshots — the golden universe is
+  deterministic, so any numeric drift means a code/dep change silently
+  altered model behavior. Any failure = exit 1 = red nightly. Verified green
+  end-to-end locally.
+- Acceptance ("a deliberately-degraded model is rejected by the gate") is a
+  unit test: a degraded challenger fails the gate, and a still-winning model
+  whose numbers drifted from the snapshot ALSO fails (silent behavior change
+  is an alarm, not a pass).
+- `model_runs.json` rows record champions AND the recorded loser
+  (status=rejected) per R28; artifacts uploaded on every run.
+- Real-data refit leg activates automatically when `SUPABASE_URL` +
+  `SUPABASE_ML_READONLY_KEY` secrets exist; writing into the tables needs
+  the write path requested in contracts/requests-lane-c.md item 9.
+
+## Current champions (all verdicts snapshot in ml/eval/, drift-pinned)
+
+| Surface | Champion | Key scores (golden) |
+|---|---|---|
+| Elasticity | elasticity-poisson-eb-1.0 | MAE 0.486 vs 0.491, within±0.3 43.9% vs 33.1%, CI cov 86% |
+| Expected bands | baseline-cleanlevel-1.0 | WAPE 0.525 vs 0.553, win 65%, non-floored cov 0.791, p10 0.713 |
+| Rollout monitor | counterfactual-cleanlevel-1.0 | FPR 0% vs 10%, catastrophic median day 1 |
+| Post-rollout reports | rollout-report-1.0 | pct_in_range 77.8% (R30 ≥70%) |
+| (recorded loser) | elasticity-hier-em-1.0 | loses both slices; pinned |
 
 ## C6 — Post-rollout reports + calibration ✅
 
