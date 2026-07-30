@@ -23,6 +23,8 @@ import {
 import { IconArrowRight, IconFlag, IconTag } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
 import { KillSwitch } from "@/components/domain/kill-switch";
+import { FirstRunGuide, type StoreReadiness } from "@/components/onboarding/first-run";
+import { exclusionReasonFor } from "@/lib/types";
 import { PriceMove, SourceBadge } from "@/components/domain/journal";
 import {
   HealthBadge,
@@ -46,7 +48,8 @@ export const metadata: Metadata = {
  * I undo it — answered above the fold, in that order (R16).
  */
 export default function OverviewPage() {
-  const { shop } = getDemoStore();
+  const store = getDemoStore();
+  const { shop } = store;
   const live = getLive();
   const journal = getJournal().slice(0, 4);
   const upcoming = getRollouts().filter(
@@ -56,12 +59,30 @@ export default function OverviewPage() {
   const running = live.rollouts.filter((rollout) => rollout.status === "running");
   const paused = live.rollouts.filter((rollout) => rollout.status === "paused");
 
+  const repriceable = store.products.filter((product) => exclusionReasonFor(product) === null);
+  const readiness: StoreReadiness = {
+    productCount: store.products.length,
+    repriceableCount: repriceable.length,
+    missingCostCount: repriceable.filter((product) => product.cogs_cents === null).length,
+    // Days with an actual sale, not days of history: a store synced for 180 days
+    // that sold nothing has no baseline, and that is the state that matters.
+    daysWithSales: new Set(
+      store.orderDays.filter((day) => day.units > 0).map((day) => day.day),
+    ).size,
+    hasAnyRollout: getRollouts().length > 0,
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Overview"
         description={`What Priceflag has live on ${shop.domain} right now, and how to undo it.`}
       />
+
+      {/* First on the page while the store is still being set up: a young store
+          has nothing live, so "what is live right now" is not yet the question
+          the merchant is asking (R24). */}
+      <FirstRunGuide readiness={readiness} />
 
       {paused.map((rollout) => (
         <Notice

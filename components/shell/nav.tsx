@@ -11,6 +11,7 @@ import {
   IconGauge,
   IconLayers,
   IconMenu,
+  IconSettings,
   IconTag,
 } from "@/components/ui/icons";
 
@@ -46,6 +47,12 @@ const ITEMS: NavItem[] = [
     label: "Price journal",
     icon: <IconBook size={17} />,
     hint: "Every price change ever made",
+  },
+  {
+    href: "/settings",
+    label: "Settings",
+    icon: <IconSettings size={17} />,
+    hint: "Which store, and who we email",
   },
 ];
 

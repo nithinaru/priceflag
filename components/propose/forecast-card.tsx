@@ -47,6 +47,16 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
   const excluded = forecast.products.filter((line) => line.excluded);
   const profitUnknown = !forecast.baseline.has_cogs;
 
+  /**
+   * A store with no trading yet. Every scenario row is zero units and zero
+   * money, and breakeven is undefined because there is no order volume to break
+   * even against — so the whole "pick a level of order loss and read across"
+   * apparatus has nothing in it. Rendering it anyway is how a correct fallback
+   * chain ends up looking like a broken app. This is the *default* first-run
+   * state on a young store, not an edge case.
+   */
+  const noTrading = forecast.baseline.units_per_day <= 0;
+
   return (
     <div className="space-y-6">
       <Card tone="accent" edge>
@@ -57,13 +67,76 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
 
         <CardBody className="space-y-6">
           {/* 1. Arithmetic that is true regardless of any model. */}
-          <div className="space-y-1.5">
-            <p className="max-w-prose text-lg font-medium text-ink">{forecast.breakeven.sentence}</p>
-            <p className="text-sm text-ink-muted">
-              That is your own margins, worked out exactly. It does not depend on predicting
-              anything.
-            </p>
-          </div>
+          {noTrading ? (
+            <div className="space-y-1.5">
+              <p className="max-w-prose text-lg font-medium text-ink">
+                We cannot tell you what this change will do — your store has no orders for us to
+                learn from yet.
+              </p>
+              <p className="max-w-prose text-sm text-ink-muted">
+                That is not a problem with your store or with this change. We work out what a price
+                change will do by looking at what you have already sold, and there is nothing there
+                yet. We would rather say so than dress up a guess.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <p className="max-w-prose text-lg font-medium text-ink">
+                {forecast.breakeven.sentence}
+              </p>
+              <p className="text-sm text-ink-muted">
+                That is your own margins, worked out exactly. It does not depend on predicting
+                anything.
+              </p>
+            </div>
+          )}
+
+          {noTrading ? (
+            <div className="rounded-lg border border-border bg-surface-muted p-4">
+              <h3 className="text-md font-semibold text-ink">What you can still rely on</h3>
+              <ul className="mt-2 space-y-1.5">
+                <li className="flex gap-2 text-base text-ink-muted">
+                  <span aria-hidden="true" className="text-ink-subtle">
+                    •
+                  </span>
+                  <span className="max-w-prose">
+                    {profitUnknown ? (
+                      <>
+                        <strong className="font-medium text-ink">Add your costs</strong> and the
+                        table below shows exactly what you make on each sale before and after this
+                        change. That is arithmetic — it needs costs, not orders, so it works from
+                        your very first day.
+                      </>
+                    ) : (
+                      <>
+                        The table below shows exactly what you make on each sale before and after
+                        this change. That is arithmetic — it needs costs, not orders, so it is
+                        already true today.
+                      </>
+                    )}
+                  </span>
+                </li>
+                <li className="flex gap-2 text-base text-ink-muted">
+                  <span aria-hidden="true" className="text-ink-subtle">
+                    •
+                  </span>
+                  <span className="max-w-prose">
+                    You can still make this change safely: set the limit that undoes it, roll it out
+                    a few products at a time, and undo everything in one click.
+                  </span>
+                </li>
+                <li className="flex gap-2 text-base text-ink-muted">
+                  <span aria-hidden="true" className="text-ink-subtle">
+                    •
+                  </span>
+                  <span className="max-w-prose">
+                    As orders come in we start building the expected range, and we will tell you the
+                    moment there is enough to be worth reading.
+                  </span>
+                </li>
+              </ul>
+            </div>
+          ) : null}
 
           {/* 2. The prediction — only when there is one. */}
           {forecast.fitted ? (
@@ -108,7 +181,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                 />
               </div>
             </div>
-          ) : (
+          ) : noTrading ? null : (
             <Notice tone="info" title="We are not going to guess what your customers will do">
               {forecast.confidence_explanation} Everything below is exact arithmetic instead — pick
               the level of order loss you believe and read across.
@@ -124,7 +197,10 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
             <ConfidenceBadge tier={forecast.confidence} size="md" />
           )}
 
-          {remainder(forecast.explanation, forecast.breakeven.sentence) ? (
+          {/* The engine's explanation ends by pointing at the scenario table. With
+              no trading that table is suppressed, so the sentence would point at
+              nothing — the panel above replaces it. */}
+          {!noTrading && remainder(forecast.explanation, forecast.breakeven.sentence) ? (
             <p className="max-w-prose text-base text-ink-muted">
               {remainder(forecast.explanation, forecast.breakeven.sentence)}
             </p>
@@ -134,14 +210,23 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
         <CardFooter>
           <span>
             {countOf(included.length, "product")} would change
-            {excluded.length > 0 ? `, ${excluded.length} left out` : ""}. Based on{" "}
-            {countOf(forecast.baseline.history_days, "day")} of your sales, averaging{" "}
-            {formatUnits(forecast.baseline.units_per_day, 1)} units a day.
+            {excluded.length > 0 ? `, ${excluded.length} left out` : ""}.{" "}
+            {noTrading
+              ? "No sales recorded yet, so there is no baseline to compare against."
+              : `Based on ${countOf(
+                  forecast.baseline.history_days,
+                  "day",
+                )} of your sales, averaging ${formatUnits(
+                  forecast.baseline.units_per_day,
+                  1,
+                )} units a day.`}
           </span>
           <span>
             {forecast.model_version
               ? `Predicted by ${forecast.model_version}.`
-              : "No model was used — this is margin arithmetic."}
+              : noTrading
+                ? "Nothing here is predicted."
+                : "No model was used — this is margin arithmetic."}
           </span>
         </CardFooter>
       </Card>
@@ -156,7 +241,10 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
         </Notice>
       ))}
 
-      {/* 4. Show your work. Collapsed, never hidden (R8). */}
+      {/* 4. Show your work. Collapsed, never hidden (R8) — but on a store with no
+          trading every row is zero units and zero money, and a table of zeros
+          teaches nothing. The per-product table below is the honest substitute. */}
+      {noTrading ? null : (
       <Card>
         <details className="group">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3.5 outline-none hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-focus sm:px-5">
@@ -250,6 +338,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
           </div>
         </details>
       </Card>
+      )}
 
       {/* Per-product breakdown. */}
       <Card>

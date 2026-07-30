@@ -19,9 +19,90 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | **A2 — Catalog & COGS** | ✅ done |
 | **A3 — Propose flow v2 + migration onto `lib/`** | ✅ done |
 | **A4 — Rollout monitoring v2** | ✅ done |
+| **A5 — Onboarding & sync** | ✅ done |
 | A5 — Onboarding & sync | not started |
 | A6 — Post-rollout report & journal v2 | not started |
 | A7 — Polish, a11y, responsive | not started |
+
+---
+
+## Sprint A5 — done
+
+Rebuilt around the three facts from Lane B's real-store sync, treated as **the
+default first-run experience rather than edge cases**: 17 repriceable variants,
+**no variant has a cost**, and **the store has zero orders**. A merchant
+connecting a young store sees exactly that, and it has to read as encouraging and
+actionable rather than broken.
+
+### The problem that shaped the sprint
+
+Ran the engine against that state before designing anything. With zero orders and
+zero costs, `buildForecast` correctly returns: `units_per_day: 0`, breakeven
+`direction: "undefined"` ("no order volume to break even against"), `fitted:
+null`, and **five scenario rows that are all zero units and zero money**.
+
+Every one of those is right. Rendered as-is they are a wall of zeros and
+"unknown" — which is how a correct fallback chain ends up looking like a broken
+app. So the forecast card now branches on `baseline.units_per_day <= 0`:
+
+- the breakeven headline is replaced by a plain statement that **we cannot tell
+  you what this change will do**, and why — not a hedge, a refusal to guess;
+- the all-zeros scenario table is **suppressed entirely**, along with the
+  engine's explanation sentence that points at it;
+- a "what you can still rely on" panel takes its place: add costs and the
+  per-product table below is exact today, the change can still be made safely,
+  and the range starts building as orders arrive;
+- the footer says "no sales recorded yet, so there is no baseline to compare
+  against" instead of "based on 0 days, averaging 0 units a day".
+
+The sequencing insight the whole sprint hangs on: **costs unlock value
+immediately, orders cannot be rushed.** Margin arithmetic needs costs, not
+history — so a store with no orders that adds costs gets real per-sale profit
+figures on day one. That is why costs are step 2 and orders are stated once,
+honestly, as "not yet".
+
+### What landed
+
+- **`/connect`** — the install path. Reads `lib/config.describeEnvironment()` (the
+  same probe behind `GET /api/health`) rather than a UI flag, so it **cannot offer
+  an install that would 404**: with Shopify credentials it hands off to
+  `GET /api/auth`; without them the button says so and runs a clearly-labelled
+  scripted sync instead. Includes what Priceflag will read and do in plain
+  language, and the promise that names the product — never different prices for
+  different shoppers.
+- **`components/onboarding/sync-progress.tsx`** — renders
+  `sync_progress.schema.json`. Never one undifferentiated bar: catalog and history
+  finish independently, and the moment `catalog.ready` flips the merchant gets a
+  real next action instead of watching history download (R24). `eta_seconds:
+  null` renders as no ETA — never "calculating…". A failed poll is not a failed
+  sync and says nothing.
+- **`/products/costs`** — the focused cost pass. The catalog could already edit a
+  cost in place, but that is the wrong shape when *none* of 26 variants has one.
+  Type, Enter, land on the next. Each row saves on its own, and the moment a cost
+  lands that row shows the profit and margin it just unlocked — the reward is the
+  reason the screen exists. Only repriceable products appear; a cost on a gift
+  card is busywork.
+- **First-run guide on the overview** — three steps ordered by what unlocks what,
+  plus a separate honest panel about having no orders.
+- **`/settings`** — notification addresses, and the demo ↔ real explanation. The
+  mode switch is **deliberately not a toggle**: which store Priceflag can reprice
+  is a server setting, and a control that appeared to change it would be lying
+  about something that governs whether real prices move. Event types are not
+  configurable either — a merchant who can switch off "your prices were put back
+  automatically" will one day not know their prices were put back automatically.
+
+### QA
+
+Verified the young-store state by temporarily stripping costs and order days from
+the demo store, walking `/`, `/products/costs` and `/propose`, then reverting.
+Confirmed: no dead ends (the start button is still there — a young store can
+still change prices safely), the guardrail builder correctly warns these products
+sell too rarely for a daily limit to bite, and Enter-to-advance on the cost screen
+saves, moves focus and updates the counter.
+
+**Still open for Lane B:** REQ-A-005 (two copy fixes in verbatim strings) and
+REQ-A-006 (demo cannot reach `fitted`) — the latter is assigned to B6. Fitted
+rendering continues to be verified by temporary injection during QA, reverted.
 
 ---
 
