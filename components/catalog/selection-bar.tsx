@@ -3,7 +3,7 @@
 import { cn } from "@/components/cn";
 import { Button } from "@/components/ui/button";
 import { IconArrowRight, IconClose } from "@/components/ui/icons";
-import { countOf, formatPercent } from "@/components/format";
+import { countOf, formatPct } from "@/components/format";
 
 /**
  * The selection bar. Appears only when something is selected, states exactly
@@ -21,6 +21,7 @@ export function SelectionBar({
 }: {
   count: number;
   withoutCostCount: number;
+  /** Percentage points, per the contracts' percent convention. */
   blendedMargin: number | null;
   onClear: () => void;
   onContinue: () => void;
@@ -44,7 +45,7 @@ export function SelectionBar({
           </p>
           <p className="text-sm text-ink-muted">
             {blendedMargin !== null ? (
-              <>Together they make {formatPercent(blendedMargin, { digits: 0 })} margin. </>
+              <>Together they make {formatPct(blendedMargin, 0)} margin. </>
             ) : null}
             {withoutCostCount > 0 ? (
               <span className="text-hold">

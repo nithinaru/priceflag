@@ -1,7 +1,7 @@
 import { bracketBand, combineBands, type DailyUnits } from "@/lib/engine/bands";
-import { ruleConditionHolds, type DailyObservation } from "@/lib/engine/guardrails";
+import { evaluateGuardrails, type DailyObservation } from "@/lib/engine/guardrails";
 import { healthSentence, rolloutHealth, type RolloutHealth } from "@/lib/engine/readings";
-import { normalizeStages, planRolloutVariants } from "@/lib/engine/rollout";
+import { decideNext, normalizeStages, planRolloutVariants } from "@/lib/engine/rollout";
 import { defaultGuardrails, type Guardrails, type StageSpec } from "@/lib/contracts";
 import { exclusionReasonFor, type JournalEntry, type OrderDay, type Product, type Rollout, type RolloutEndReason, type RolloutEvent, type RolloutReading, type RolloutStatus, type RolloutVariant } from "@/lib/types";
 import type { DayString } from "@/lib/dates";
@@ -44,12 +44,19 @@ type RolloutSpec = {
   name: string;
   skus: string[];
   change: { type: "percent"; percent: number } | { type: "absolute"; absolute_cents: Cents };
+  /**
+   * The status before the simulation runs. For a started rollout the simulation
+   * decides the outcome — a rollback happens because a guardrail fired, not
+   * because a fixture said so.
+   */
   status: RolloutStatus;
   startDay: DayString | null;
   /** Last day with a reading. Defaults to the demo store's last full day. */
   endDay?: DayString;
   scheduledStartAt?: string;
   endedReason?: RolloutEndReason;
+  /** Exogenous: someone edited a price in Shopify on this day. */
+  externalPauseOn?: DayString;
   pausedReason?: string;
   guardrails?: Guardrails;
   /** Simulated shopper response. 1 = no change in demand. */
@@ -111,6 +118,7 @@ const SPECS: RolloutSpec[] = [
     change: { type: "percent", percent: 8 },
     status: "paused",
     startDay: "2026-07-26" as DayString,
+    externalPauseOn: "2026-07-27" as DayString,
     pausedReason:
       "The price of Bridle Leather Belt was changed in Shopify on 27 July, outside Priceflag.",
     guardrails: guardrailsWith(25, 2),
@@ -157,7 +165,7 @@ const SPECS: RolloutSpec[] = [
     change: { type: "percent", percent: -12 },
     status: "completed",
     startDay: "2026-06-08" as DayString,
-    endDay: "2026-06-18" as DayString,
+    endDay: "2026-06-24" as DayString,
     endedReason: "completed",
     guardrails: guardrailsWith(35, 2),
     demandFactor: 1.16,
@@ -214,63 +222,61 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
       baselineUnitsPerDay: baselinePerDay,
     });
 
-    const stageStart = stageStartDays(spec.startDay, stages);
-    const lastDay = spec.endDay ?? DEMO_END_DAY;
-    const currentStage = spec.startDay === null ? -1 : stageIndexOn(stageStart, minDay(lastDay, DEMO_END_DAY));
-
-    const variants: RolloutVariant[] = variantCreates.map((create, index) => {
-      const appliedDay = create.excluded ? null : stageStart[create.cohort_stage] ?? null;
-      const isLive =
-        spec.startDay !== null &&
-        !create.excluded &&
-        appliedDay !== null &&
-        appliedDay <= DEMO_TODAY &&
-        create.cohort_stage <= currentStage &&
-        spec.status !== "rolled_back" &&
-        spec.status !== "draft" &&
-        spec.status !== "scheduled";
-      return {
-        ...create,
-        id: `${spec.id}-v${index + 1}`,
-        applied_price_cents: isLive ? create.target_price_cents : null,
-        applied_at: isLive && appliedDay ? `${appliedDay}T10:00:00.000Z` : null,
-        reverted_at:
-          spec.status === "rolled_back" && appliedDay !== null
-            ? `${lastDay}T06:07:00.000Z`
-            : null,
-        created_at: spec.createdAt,
-        updated_at: spec.createdAt,
-      };
-    });
-
-    const readings: RolloutReading[] = [];
     const events: RolloutEvent[] = [];
-    let streak = 0;
+    const readings: RolloutReading[] = [];
+    const observations: DailyObservation[] = [];
+    /** The day each stage was actually entered, as the simulation decided it. */
+    const stageEnteredOn: DayString[] = [];
+
+    let stageIndex = spec.startDay === null ? -1 : 0;
+    let status: RolloutStatus = spec.status;
+    let endedReason: RolloutEndReason | null = spec.endedReason ?? null;
+    let endedDay: DayString | null = null;
     let lastDecision: RolloutReading["decision"] = "none";
 
     events.push(
-      event(spec, "created", `You set this up: ${changeWords(spec)} on ${countWord(eligible.length, "product")}, in ${stages.length === 1 ? "one step" : `${stages.length} steps`}.`, spec.createdAt),
+      event(
+        spec,
+        "created",
+        `You set this up: ${changeWords(spec)} on ${countWord(eligible.length, "product")}, in ${
+          stages.length === 1 ? "one step" : `${stages.length} steps`
+        }.`,
+        spec.createdAt,
+      ),
     );
     if (spec.status === "scheduled" && spec.scheduledStartAt) {
       events.push(
-        event(spec, "scheduled", "Set to start on Monday 3 August at 6:00 am in your store's time.", spec.scheduledStartAt),
+        event(
+          spec,
+          "scheduled",
+          "Set to start on Monday 3 August at 6:00 am in your store's time.",
+          spec.scheduledStartAt,
+        ),
       );
     }
 
     if (spec.startDay !== null) {
+      stageEnteredOn[0] = spec.startDay;
+      status = "running";
       events.push(
         event(
           spec,
           "started",
-          `New prices went live on ${liveCountAt(variants, 0)} of ${eligible.length} products.`,
+          `New prices went live on ${cohortCountAt(variantCreates, 0)} of ${eligible.length} products.`,
           `${spec.startDay}T10:00:00.000Z`,
         ),
       );
 
-      const finalDay = minDay(lastDay, DEMO_END_DAY);
+      const finalDay = minDay(spec.endDay ?? DEMO_END_DAY, DEMO_END_DAY);
+
+      // Day by day, exactly as the evaluator will run it: build the day's
+      // observation, ask `evaluateGuardrails` whether a rule fired, then ask
+      // `decideNext` what to do. Stages advance only when the engine says so —
+      // this file never decides to advance, hold, or roll back on its own.
       for (let day = spec.startDay; day <= finalDay; day = dayOffset(day, 1)) {
-        const stageIndex = stageIndexOn(stageStart, day);
-        const liveVariants = variants.filter(
+        if (spec.externalPauseOn && day > spec.externalPauseOn) break;
+
+        const liveVariants = variantCreates.filter(
           (variant) => !variant.excluded && variant.cohort_stage <= stageIndex,
         );
         if (liveVariants.length === 0) continue;
@@ -297,7 +303,8 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
         }
 
         const band = combineBands(bands);
-        const observation: DailyObservation = {
+        const expectedRevenue = Math.round(band.expected_units * averagePrice(liveVariants));
+        observations.push({
           day,
           stage_index: stageIndex,
           actual_units: actualUnits,
@@ -306,27 +313,25 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
           expected_units: band.expected_units,
           expected_low: band.low,
           expected_high: band.high,
-          expected_revenue_cents: Math.round(band.expected_units * averagePrice(liveVariants)),
+          expected_revenue_cents: expectedRevenue,
           expected_profit_cents: null,
-        };
+        });
 
-        const rule = guardrails.rules[0];
-        const condition = rule
-          ? ruleConditionHolds(rule, observation, store.shop.currency)
-          : { holds: false, floored: false, known: true, reason: "" };
-        streak = condition.holds ? streak + 1 : 0;
-
-        const tripped = rule !== undefined && streak >= rule.consecutive_days;
-        const advancesTomorrow =
-          stageIndexOn(stageStart, dayOffset(day, 1)) > stageIndex && !tripped;
-        const decision: RolloutReading["decision"] = tripped
-          ? guardrails.auto_rollback
-            ? "rollback"
-            : "pause"
-          : advancesTomorrow
-            ? "advance"
-            : "hold";
-        lastDecision = decision;
+        const assessment = evaluateGuardrails(guardrails, observations, store.shop.currency);
+        const stageEntered = stageEnteredOn[stageIndex] ?? spec.startDay;
+        const decision = decideNext({
+          rollout: {
+            status: "running",
+            stages,
+            current_stage: stageIndex,
+            stage_entered_at: `${stageEntered}T10:00:00.000Z`,
+            guardrails,
+          },
+          assessment,
+          asOf: day,
+          timezone: store.shop.timezone,
+        });
+        lastDecision = decision.decision;
 
         readings.push({
           id: `${spec.id}-r${readings.length + 1}`,
@@ -345,75 +350,122 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
           interval_nominal: band.interval,
           model_version: null,
           band_stale: false,
-          band_floored: band.floored || condition.floored,
+          band_floored: band.floored || assessment.floored,
           breach_probability: null,
-          breach: condition.holds,
-          breach_rule_id: condition.holds && rule ? rule.id : null,
-          breach_reason: condition.holds ? condition.reason || null : null,
-          breach_streak: streak,
-          decision,
+          breach: assessment.breach,
+          breach_rule_id: assessment.rule_id,
+          breach_reason: assessment.reason,
+          breach_streak: assessment.streak,
+          decision: decision.decision,
           evaluated_at: `${dayOffset(day, 1)}T06:04:00.000Z`,
         });
 
-        if (condition.holds && !tripped) {
+        if (assessment.breach && decision.decision !== "rollback" && decision.decision !== "pause") {
           events.push(
             event(
               spec,
               "breach_detected",
-              `Orders on ${day} came in below the range we expected. Not far enough to undo the change — that needs ${countWord(rule?.consecutive_days ?? 2, "day")} in a row.`,
+              `${assessment.reason ?? `Orders on ${day} came in below the range we expected.`} Nothing has changed yet — your guardrail needs ${countWord(
+                guardrails.rules[0]?.consecutive_days ?? 2,
+                "day",
+              )} in a row before it acts.`,
               `${dayOffset(day, 1)}T06:04:00.000Z`,
             ),
           );
         }
-        if (advancesTomorrow) {
+
+        if (decision.decision === "advance" && decision.next_stage !== null) {
+          stageIndex = decision.next_stage;
+          stageEnteredOn[stageIndex] = dayOffset(day, 1);
           events.push(
             event(
               spec,
               "stage_advanced",
-              `Moved on to ${liveCountAt(variants, stageIndex + 1)} of ${eligible.length} products. Orders in the last step stayed inside the expected range.`,
+              `Moved on to ${cohortCountAt(variantCreates, stageIndex)} of ${eligible.length} products. ${decision.reason}`,
               `${dayOffset(day, 1)}T06:05:00.000Z`,
             ),
           );
+          continue;
+        }
+
+        if (decision.decision === "rollback") {
+          status = "rolled_back";
+          endedReason = "guardrail_breach";
+          endedDay = day;
+          events.push(
+            event(
+              spec,
+              "auto_rollback",
+              `${decision.reason} Every price went back to what it was before this change started.`,
+              `${dayOffset(day, 1)}T06:07:00.000Z`,
+            ),
+          );
+          break;
+        }
+
+        if (decision.decision === "pause") {
+          status = "paused";
+          endedReason = null;
+          events.push(event(spec, "held", decision.reason, `${dayOffset(day, 1)}T06:05:00.000Z`));
+          break;
+        }
+
+        if (decision.decision === "complete") {
+          status = "completed";
+          endedReason = "completed";
+          endedDay = day;
+          events.push(
+            event(
+              spec,
+              "completed",
+              `Finished. All ${eligible.length} products are on the new price and monitoring has stopped.`,
+              `${dayOffset(day, 1)}T06:00:00.000Z`,
+            ),
+          );
+          break;
         }
       }
 
-      if (spec.status === "rolled_back") {
-        events.push(
-          event(
-            spec,
-            "auto_rollback",
-            `Undone automatically. Orders were below the range you set as acceptable ${countWord(guardrails.rules[0]?.consecutive_days ?? 2, "day")} in a row, so every price went back to what it was.`,
-            `${lastDay}T06:07:00.000Z`,
-          ),
-        );
-      }
-      if (spec.status === "completed") {
-        events.push(
-          event(
-            spec,
-            "completed",
-            `Finished. All ${eligible.length} products are on the new price and monitoring has stopped.`,
-            `${lastDay}T06:00:00.000Z`,
-          ),
-        );
-      }
-      if (spec.status === "paused" && spec.pausedReason) {
+      // An external edit is exogenous: it is not something a guardrail decides,
+      // so it is applied after the simulation rather than inside it.
+      if (spec.externalPauseOn && spec.pausedReason) {
+        status = "paused";
+        endedReason = null;
         events.push(
           event(
             spec,
             "paused_external_change",
             `Paused: ${spec.pausedReason} We stopped rather than blame this change for a difference we did not cause.`,
-            "2026-07-27T14:22:00.000Z",
+            `${spec.externalPauseOn}T14:22:00.000Z`,
           ),
         );
       }
     }
 
+    const lastDay = endedDay ?? spec.endDay ?? DEMO_END_DAY;
+    const currentStage = stageIndex;
+
+    const variants: RolloutVariant[] = variantCreates.map((create, index) => {
+      const appliedDay = create.excluded ? null : (stageEnteredOn[create.cohort_stage] ?? null);
+      const wasApplied =
+        appliedDay !== null && create.cohort_stage <= currentStage && status !== "draft" && status !== "scheduled";
+      const reverted = wasApplied && status === "rolled_back";
+      return {
+        ...create,
+        id: `${spec.id}-v${index + 1}`,
+        applied_price_cents: wasApplied && !reverted ? create.target_price_cents : null,
+        applied_at: wasApplied && appliedDay ? `${appliedDay}T10:00:00.000Z` : null,
+        reverted_at: reverted ? `${dayOffset(lastDay, 1)}T06:07:00.000Z` : null,
+        created_at: spec.createdAt,
+        updated_at: spec.createdAt,
+      };
+    });
+
     const rollout: Rollout = {
       id: spec.id,
       shop_id: store.shop.id,
       name: spec.name,
-      status: spec.status,
+      status,
       change_type: spec.change.type,
       change_pct: spec.change.type === "percent" ? spec.change.percent : null,
       change_absolute_cents: spec.change.type === "absolute" ? spec.change.absolute_cents : null,
@@ -422,16 +474,18 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
       stages,
       current_stage: currentStage,
       stage_entered_at:
-        currentStage >= 0 && stageStart[currentStage] ? `${stageStart[currentStage]}T10:00:00.000Z` : null,
+        currentStage >= 0 && stageEnteredOn[currentStage]
+          ? `${stageEnteredOn[currentStage]}T10:00:00.000Z`
+          : null,
       guardrails,
       forecast: null,
       scheduled_start_at: spec.scheduledStartAt ?? null,
       started_at: spec.startDay ? `${spec.startDay}T10:00:00.000Z` : null,
       ended_at:
-        spec.status === "completed" || spec.status === "rolled_back"
-          ? `${lastDay}T06:07:00.000Z`
+        status === "completed" || status === "rolled_back"
+          ? `${dayOffset(lastDay, 1)}T06:07:00.000Z`
           : null,
-      ended_reason: spec.endedReason ?? null,
+      ended_reason: endedReason,
       paused_reason: spec.pausedReason ?? null,
       notify_emails: [],
       eval_lock_token: null,
@@ -444,7 +498,11 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
     };
 
     const health = rolloutHealth(rollout.status, readings);
-    const variantsLive = variants.filter((variant) => variant.applied_at !== null).length;
+    // Applied and not since put back — `applied_at` stays set after a rollback
+    // because the write really happened; `reverted_at` is what ends it.
+    const variantsLive = variants.filter(
+      (variant) => variant.applied_at !== null && variant.reverted_at === null,
+    ).length;
 
     built.push({
       rollout,
@@ -466,7 +524,7 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
       },
     });
 
-    entries.push(...journalFor(spec, rollout, variants, stageStart, lastDay, store.shop.currency));
+    entries.push(...journalFor(rollout, variants, stageEnteredOn, lastDay, store.shop.currency));
   }
 
   // Real history from the generator, so the journal is complete rather than
@@ -496,6 +554,17 @@ export function getRolloutBundle(id: string): RolloutBundle | undefined {
 
 export function getJournal(): JournalEntry[] {
   return build().journal;
+}
+
+/** Variants currently holding a price Priceflag wrote and has not put back. */
+export function getLiveVariantGids(): string[] {
+  return build()
+    .bundles.filter((bundle) => bundle.rollout.status !== "cancelled")
+    .flatMap((bundle) =>
+      bundle.variants
+        .filter((variant) => variant.applied_at !== null && variant.reverted_at === null)
+        .map((variant) => variant.variant_gid),
+    );
 }
 
 export function getJournalForRollout(rolloutId: string): JournalEntry[] {
@@ -589,31 +658,14 @@ function preChangeHistory(
   return (index.get(variantGid) ?? []).filter((row) => row.day < startDay);
 }
 
-function stageStartDays(startDay: DayString | null, stages: readonly StageSpec[]): DayString[] {
-  if (startDay === null) return [];
-  const days: DayString[] = [];
-  let cursor = startDay;
-  for (const stage of stages) {
-    days.push(cursor);
-    cursor = dayOffset(cursor, stage.hold_days);
-  }
-  return days;
-}
-
-function stageIndexOn(stageStart: readonly DayString[], day: DayString): number {
-  let index = -1;
-  for (let i = 0; i < stageStart.length; i += 1) {
-    const start = stageStart[i];
-    if (start !== undefined && start <= day) index = i;
-  }
-  return index;
-}
-
-function liveCountAt(variants: readonly RolloutVariant[], stageIndex: number): number {
+function cohortCountAt(
+  variants: readonly { cohort_stage: number; excluded: boolean }[],
+  stageIndex: number,
+): number {
   return variants.filter((variant) => !variant.excluded && variant.cohort_stage <= stageIndex).length;
 }
 
-function averagePrice(variants: readonly RolloutVariant[]): number {
+function averagePrice(variants: readonly { target_price_cents: Cents }[]): number {
   if (variants.length === 0) return 0;
   return variants.reduce((sum, variant) => sum + variant.target_price_cents, 0) / variants.length;
 }
@@ -654,18 +706,19 @@ function event(
 }
 
 function journalFor(
-  spec: RolloutSpec,
   rollout: Rollout,
   variants: readonly RolloutVariant[],
-  stageStart: readonly DayString[],
+  stageEnteredOn: readonly DayString[],
   lastDay: DayString,
   currency: string,
 ): JournalEntry[] {
   const entries: JournalEntry[] = [];
 
   for (const variant of variants) {
-    if (variant.applied_at === null) continue;
-    const day = stageStart[variant.cohort_stage];
+    // A reverted variant has `applied_at` cleared but still had a price written,
+    // so the journal must carry both writes.
+    if (variant.applied_at === null && variant.reverted_at === null) continue;
+    const day = stageEnteredOn[variant.cohort_stage];
     if (!day) continue;
 
     entries.push({
@@ -693,7 +746,7 @@ function journalFor(
       created_at: `${day}T10:00:00.000Z`,
     });
 
-    if (spec.status === "rolled_back") {
+    if (variant.reverted_at !== null) {
       entries.push({
         id: `${variant.id}-revert`,
         shop_id: rollout.shop_id,
@@ -715,15 +768,15 @@ function journalFor(
         idempotency_key: `${rollout.id}:${variant.variant_gid}:rollback`,
         error: null,
         shopify_user_errors: null,
-        applied_at: `${lastDay}T06:07:00.000Z`,
-        created_at: `${lastDay}T06:07:00.000Z`,
+        applied_at: variant.reverted_at,
+        created_at: variant.reverted_at,
       });
     }
   }
 
   // The external edit that paused ro_2039 — journalled because Shopify keeps no
   // price audit trail and this is the entry a merchant comes looking for (R18).
-  if (spec.id === "ro_2039") {
+  if (rollout.id === "ro_2039") {
     const belt = variants.find((variant) => variant.sku === "LEATHERBELT-5");
     if (belt) {
       entries.push({

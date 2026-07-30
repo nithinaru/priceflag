@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import {
-  Badge,
   ButtonLink,
   Card,
   CardBody,
@@ -11,9 +10,16 @@ import {
   PageHeader,
 } from "@/components/ui";
 import { IconArrowRight, IconChevronRight, IconLayers } from "@/components/ui/icons";
-import { RolloutStatusBadge, changeSentence, rolloutStatusMeta } from "@/components/domain/status";
-import { countOf, formatDay, formatDayLong, formatMoneyDelta } from "@/components/format";
-import { getRollouts, type Rollout } from "@/components/mock/engine";
+import {
+  HealthBadge,
+  RolloutStatusBadge,
+  changeWords,
+  countOf,
+  rolloutStatusMeta,
+} from "@/components/domain/status";
+import { formatDay, formatDayLong } from "@/components/format";
+import { getDemoStore } from "@/components/demo/store";
+import { getRolloutBundles, type RolloutBundle } from "@/components/demo/rollouts";
 
 export const metadata: Metadata = {
   title: "Price changes",
@@ -24,43 +30,50 @@ export const metadata: Metadata = {
  * storefront, is it about to, or is it over.
  */
 export default function RolloutsPage() {
-  const rollouts = getRollouts();
-  const liveNow = rollouts.filter((rollout) => rolloutStatusMeta(rollout.status).isLive);
-  const notStarted = rollouts.filter(
-    (rollout) => rollout.status === "scheduled" || rollout.status === "draft",
+  const bundles = getRolloutBundles();
+  const liveNow = bundles.filter(
+    (bundle) => bundle.rollout.status === "running" || bundle.rollout.status === "paused",
   );
-  const finished = rollouts.filter(
-    (rollout) => rollout.status === "completed" || rollout.status === "rolled_back",
+  const notStarted = bundles.filter(
+    (bundle) => bundle.rollout.status === "scheduled" || bundle.rollout.status === "draft",
+  );
+  const finished = bundles.filter((bundle) =>
+    ["completed", "rolled_back", "cancelled"].includes(bundle.rollout.status),
   );
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Price changes"
-        description="Every price change you've set up, and what happened to it."
+        description="Every price change you have set up, and what happened to it."
       />
 
       <Section
         title="On your storefront now"
         description="These are live. Each one can be undone in a single step."
+        bundles={liveNow}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
             title="Nothing is live"
             description="No price change is touching your storefront right now."
             action={
-              <ButtonLink href="/products" variant="secondary" iconRight={<IconArrowRight size={15} />}>
+              <ButtonLink
+                href="/products"
+                variant="secondary"
+                iconRight={<IconArrowRight size={15} />}
+              >
                 Look at your products
               </ButtonLink>
             }
           />
         }
-        rollouts={liveNow}
       />
 
       <Section
         title="Not started yet"
         description="Set up, but nothing has changed on your storefront."
+        bundles={notStarted}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
@@ -68,12 +81,12 @@ export default function RolloutsPage() {
             description="Drafts and scheduled changes appear here."
           />
         }
-        rollouts={notStarted}
       />
 
       <Section
         title="Finished"
         description="Changes that ran their course, and ones that were undone."
+        bundles={finished}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
@@ -81,7 +94,6 @@ export default function RolloutsPage() {
             description="Once a change completes or is undone, it stays here with its results."
           />
         }
-        rollouts={finished}
       />
     </div>
   );
@@ -90,25 +102,25 @@ export default function RolloutsPage() {
 function Section({
   title,
   description,
-  rollouts,
+  bundles,
   empty,
 }: {
   title: string;
   description: string;
-  rollouts: Rollout[];
+  bundles: RolloutBundle[];
   empty: ReactNode;
 }) {
   return (
     <Card>
       <CardHeader title={title} description={description} />
-      {rollouts.length === 0 ? (
+      {bundles.length === 0 ? (
         empty
       ) : (
         <CardBody flush>
           <ul className="divide-y divide-border border-t border-border">
-            {rollouts.map((rollout) => (
-              <li key={rollout.id}>
-                <RolloutRow rollout={rollout} />
+            {bundles.map((bundle) => (
+              <li key={bundle.rollout.id}>
+                <RolloutRow bundle={bundle} />
               </li>
             ))}
           </ul>
@@ -118,9 +130,11 @@ function Section({
   );
 }
 
-function RolloutRow({ rollout }: { rollout: Rollout }) {
+function RolloutRow({ bundle }: { bundle: RolloutBundle }) {
+  const { rollout } = bundle;
+  const { shop } = getDemoStore();
   const meta = rolloutStatusMeta(rollout.status);
-  const stage = rollout.stages[rollout.currentStageIndex];
+  const showHealth = rollout.status === "running" || rollout.status === "paused";
 
   return (
     <Link
@@ -131,19 +145,16 @@ function RolloutRow({ rollout }: { rollout: Rollout }) {
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <span className="text-md font-semibold text-ink">{rollout.name}</span>
           <RolloutStatusBadge status={rollout.status} size="sm" />
-          {rollout.realizedProfitDeltaCents !== null ? (
-            <Badge
-              tone={rollout.realizedProfitDeltaCents >= 0 ? "live" : "breach"}
-              size="sm"
-            >
-              {formatMoneyDelta(rollout.realizedProfitDeltaCents, { showCents: false })} profit
-            </Badge>
-          ) : null}
+          {showHealth ? <HealthBadge health={bundle.health} size="sm" /> : null}
         </div>
-        <p className="text-base text-ink-muted">{meta.sentence}</p>
+        <p className="text-base text-ink-muted">
+          {rollout.status === "paused" && rollout.paused_reason
+            ? rollout.paused_reason
+            : meta.sentence}
+        </p>
         <p className="text-sm text-ink-subtle">
-          {countOf(rollout.productIds.length, "product")}, {changeSentence(rollout.change)} ·{" "}
-          {timingSentence(rollout, stage)}
+          {countOf(bundle.live.variants_total, "product")}, {changeWords(rollout, shop.currency)} ·{" "}
+          {timingSentence(bundle)}
         </p>
       </div>
       <IconChevronRight size={17} className="mt-1 shrink-0 text-ink-subtle" />
@@ -151,20 +162,18 @@ function RolloutRow({ rollout }: { rollout: Rollout }) {
   );
 }
 
-function timingSentence(
-  rollout: Rollout,
-  stage: Rollout["stages"][number] | undefined,
-): string {
-  if (rollout.status === "scheduled" && rollout.scheduledFor) {
-    return `Starts ${formatDayLong(rollout.scheduledFor)}`;
+function timingSentence(bundle: RolloutBundle): string {
+  const { rollout } = bundle;
+  if (rollout.status === "scheduled" && rollout.scheduled_start_at) {
+    return `Starts ${formatDayLong(rollout.scheduled_start_at)}`;
   }
   if (rollout.status === "draft") return "Not scheduled";
-  if (rollout.endedAt) return `Ended ${formatDay(rollout.endedAt)}`;
-  if (stage?.startedOn) {
-    return `Step ${rollout.currentStageIndex + 1} of ${rollout.stages.length} since ${formatDay(
-      stage.startedOn,
+  if (rollout.ended_at) return `Ended ${formatDay(rollout.ended_at)}`;
+  if (rollout.stage_entered_at) {
+    return `Step ${rollout.current_stage + 1} of ${rollout.stages.length} since ${formatDay(
+      rollout.stage_entered_at,
     )}`;
   }
-  if (rollout.startedAt) return `Started ${formatDay(rollout.startedAt)}`;
+  if (rollout.started_at) return `Started ${formatDay(rollout.started_at)}`;
   return "Not started";
 }

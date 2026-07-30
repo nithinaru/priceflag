@@ -17,15 +17,133 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 |---|---|
 | **A1 — Design system foundation** | ✅ done |
 | **A2 — Catalog & COGS** | ✅ done |
-| A3 — Propose flow v2 | next |
-| A4 — Rollout monitoring v2 | not started |
+| **A3 — Propose flow v2 + migration onto `lib/`** | ✅ done |
+| A4 — Rollout monitoring v2 | next |
 | A5 — Onboarding & sync | not started |
 | A6 — Post-rollout report & journal v2 | not started |
 | A7 — Polish, a11y, responsive | not started |
 
 ---
 
-## Sprint A3 — planned (not started)
+## Sprint A3 — done
+
+**`components/mock/engine.ts` is deleted.** The whole UI now runs on Lane B's
+types, engine and contracts. `npm run build` and `npm run typecheck` (both passes)
+are green.
+
+### The propose flow (the sprint's actual deliverable)
+
+`/propose` — `components/propose/*` plus a server action.
+
+- **The forecast card renders `contracts/forecast_result.schema.json` and computes
+  nothing.** Order is the argument (R6/R8): `breakeven.sentence` first as the
+  headline, because it is margin arithmetic that holds whatever customers do; then
+  the fitted range *only when the engine produced one*; then the confidence tier
+  with the engine's own `confidence_explanation`; then `warnings` as notices; then
+  `scenarios` + `assumptions` behind a collapsed "Show your work"; then the
+  per-`products` breakdown with `compare_at_action` and `exclusion_reason`.
+- **The range is drawn** — `components/propose/range-bar.tsx`, hand-authored SVG,
+  no chart dependency. One series so no legend box, a dashed "no change" reference
+  line (whether the range crosses zero is the real question), the point estimate as
+  a ringed marker on a recessive band, values direct-labelled at the ends. A range
+  entirely below zero tints as breach for **profit only** — orders falling when a
+  price rises is the expected trade, and painting that red would be editorialising.
+- **The guardrail builder is one sentence with editable blanks** (R10), not a form,
+  because that is the only shape in which a merchant can read back what they have
+  agreed to. Its live preview translates the percentage into units — "you sell
+  about 63.3 units a day, so we would act on a day below roughly 44.3 units" —
+  since that is the number a merchant recognises. **The string on screen is the
+  string stored** in `guardrails.rules[].sentence`; this component is the author of
+  the record, never a view of it.
+- `app/propose/actions.ts` mirrors `POST /api/forecast` and `POST /api/rollouts`
+  as server actions, debounced at 350 ms with last-write-wins. Running the engine
+  server-side also keeps 180 days × 14 variants of history out of the browser.
+- The create action **says what actually happened**: in demo mode nothing is sent
+  to Shopify, and the panel says so rather than implying a write. No button on the
+  screen goes nowhere.
+
+### The migration
+
+`components/demo/` replaces the mock, in two files that hold **no logic**:
+
+- `store.ts` hydrates `generateDemoStore()` into full `Product` / `OrderDay` rows.
+  It pins `endDay` and `now` — the generator defaults its last day to "yesterday",
+  which would make every build differ and every statically-rendered page disagree
+  with the next deploy (CLAUDE.md: no `Date.now()` in demo logic).
+- `rollouts.ts` builds six demo rollouts covering **all seven statuses** by
+  *simulating the evaluator*, not by asserting outcomes: stages from
+  `normalizeStages`, frozen baselines and cohorts from `planRolloutVariants`,
+  expected bands from `bracketBand` + `combineBands` over **pre-change days only**,
+  breach flags and streaks from `evaluateGuardrails`, and the advance / hold /
+  rollback / complete decision from `decideNext`. The rolled-back rollout rolls
+  back because a guardrail fired; the completed one completes because it held up.
+  Verdicts, health and their sentences come from `lib/engine/readings.ts` at render
+  time, so **the UI cannot show a verdict the machine did not compute.**
+- The one invented thing is the **demand response** to a price change
+  (`demand_factor`), because a demo store that cannot show a breach leaves that UI
+  unreachable and untested. It is deterministic, it shapes observed demand rather
+  than the product's behaviour, and it never reaches a forecast.
+- `getLive()` returns the `GET /api/live` shape from `contracts/api.md` verbatim,
+  so B4 replaces it with a `fetch`.
+
+Field mapping applied throughout, per Lane B's REQ-A-003 reply: `variant_gid` as
+identity, snake_case, `cogs_source: 'none'`, `exclusionReasonFor()` as the single
+implementation of R22, `stages[].fraction`, `running`/`paused` + `paused_reason`,
+units derived from `order_days` rather than invented as a product column. Money
+formatting now delegates to `lib/money.formatCents` — one implementation, so a
+price in the UI cannot disagree with one in an email or a CSV.
+
+### New UI states designed this sprint
+
+`band_floored` renders **distinctly** ("Too quiet to judge", and the interval mark
+is replaced by a sentence) — as Lane B asked, "there isn't enough data to check" is
+not "we checked and it's fine". Plus: `assumption`-tier forecast with no fitted
+range, profit-unknown forecast (breakeven undefined, profit columns blank),
+`too_early` health, paused-by-external-change, reverted variants ("Put back"),
+excluded variants inside a forecast, a guardrail whose profit metric cannot be
+evaluated, and a selection where every product is excluded (422
+`no_eligible_variants`).
+
+### Bugs found and fixed in browser QA
+
+- "Days below the expected range" counted **total** days but was compared against
+  a *consecutive*-days limit, so a rollout that dipped twice and recovered showed a
+  red stat while its health said "On track". Now reads the latest `breach_streak`
+  and states the total separately.
+- Two primary actions on the overview when two rollouts are live.
+- A paused rollout wore healthy green on its "products on a new price" stat.
+- A raw ISO date (`2026-07-29`) reached merchant copy via `next_decision_day`.
+- The forecast card printed `confidence_explanation` twice and the breakeven
+  sentence three times, because the engine's `explanation` opens with it.
+- Status badge label clipped the catalog's last column.
+
+### Open items for other lanes
+
+`contracts/requests-lane-a.md` gained three:
+
+- **REQ-A-005** — two copy fixes in strings Lane A renders verbatim: an ISO date
+  inside `ruleConditionHolds`'s reason, and "revert everything automatically" in
+  `defaultGuardrails()` where Lane A's builder says "put every price back
+  automatically". Lane A is not working around either.
+- **REQ-A-006** — **demo mode can never reach the `fitted` tier**, because
+  `buildForecast` needs `elasticity_fits` and those need Supabase + Lane C's run.
+  That is correct fallback behaviour (R32), but it hides an A3 deliverable and
+  CP2's acceptance criterion. Lane A verified the fitted rendering by temporarily
+  injecting a fit during QA and then reverting it — deliberately **not** from
+  `generateDemoStore().truth`, which would be the ground-truth leak CLAUDE.md
+  forbids. Seeding demo fits from a real C2 run would make CP2 demonstrable
+  without credentials.
+- REQ-A-004 (from A2) still open: cost-write action, and a server-side proposal
+  draft to replace the `sessionStorage` hand-off, which still makes `/propose`
+  client-rendered.
+
+### For A4
+
+The rollout page is on real readings, so A4 is the chart plus the kill switch.
+`readings[]` is already the series *and* its band. Two things to honour: a day is
+`below` only when it falls **outside** the interval, and `band_floored` days have
+no honest band to draw. Lane B removed `recharts` at Lane A's request, so the
+chart stays hand-authored SVG unless a request is filed.
 
 A3 is "propose flow v2", and Lane B's B1 landed the real `ForecastResult`
 contract mid-session, so A3 is **a migration plus a build**, not just a build.

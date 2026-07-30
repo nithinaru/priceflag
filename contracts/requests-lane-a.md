@@ -224,3 +224,63 @@ getProposalDraft(id: string): Promise<{ id: string; productIds: string[] } | nul
 
 A3 builds the real propose flow on top of this, so it is worth having by then;
 until it exists the seam is one module and one page.
+
+## REQ-A-005 — Two copy fixes in strings Lane A renders verbatim
+
+**Filed:** Sprint A3
+**Owner:** Lane B (`lib/engine/**`)
+**Status:** open — cosmetic, not blocking
+
+Lane A now renders your sentences verbatim wherever you write one —
+`guardrails.rules[].sentence`, `readingSentence`, `healthSentence`,
+`confidence_explanation`, `assessment.reason`, event `message` — exactly as the
+contracts ask. Two of them read as machine output on screen, and because Lane A
+must not rewrite them, they need fixing at source.
+
+1. **`ruleConditionHolds` puts a raw ISO day in a merchant-facing string.** It
+   currently produces, and the rollout event log therefore shows:
+
+   > On 2026-07-25, 24 units came in 43% below the 42 units we expected (your limit is 30%).
+
+   Every date Lane A formats itself renders as `25 Jul` in the shop's locale. Could
+   the reason use the same shape — `On 25 Jul, …`? Formatting it at the point of
+   generation keeps one implementation, and it is the only place an ISO date
+   currently reaches a merchant.
+
+2. **`defaultGuardrails()` says "revert everything automatically".** "Revert" is
+   the one word in that sentence a non-technical merchant may not use. Lane A's
+   builder writes "put every price back automatically" for the guardrails it
+   creates, so the two differ only for rollouts created from the default. Worth
+   aligning on the plainer wording (R25); Lane A will follow whichever you pick,
+   since the stored sentence is the record.
+
+Neither affects behaviour, and Lane A is not working around either — both render
+as they arrive.
+
+## REQ-A-006 — Demo mode cannot reach the `fitted` confidence tier
+
+**Filed:** Sprint A3
+**Owner:** Lane B (`lib/demo/**`, B6) with Lane C
+**Status:** open — not blocking, but it hides a shipped feature
+
+`buildForecast` only produces a `fitted` range when it is handed
+`fits: Map<variant_gid, ElasticityFitRow>`. Those live in `elasticity_fits`, which
+needs Supabase and Lane C's nightly run, so **demo mode always returns
+`confidence: "assumption"` and `fitted: null`.**
+
+That is the correct fallback behaviour (R32) and Lane A leads with breakeven
+arithmetic precisely because it is the common case. But it means:
+
+- the fitted range and its drawn band — an A3 deliverable, and CP2's acceptance
+  criterion — cannot be seen without a database;
+- Lane A had to verify that rendering by temporarily injecting a fit locally
+  during QA rather than by opening a page.
+
+Lane A did **not** synthesise fits into the product: `lib/demo/generator.ts`
+exposes `truth[]`, and using known elasticities to build a forecast would be
+exactly the demo-ground-truth leak CLAUDE.md forbids.
+
+What would fix it: seed `elasticity_fits` for the demo variants from a real Lane C
+C2 run against the golden store, and have the demo adapter serve them like any
+other fit. Then demo mode exercises `fitted` honestly — real model output, from
+the store the demo is about — and CP2 becomes demonstrable without credentials.

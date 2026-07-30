@@ -1,60 +1,48 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { cn } from "@/components/cn";
 import { CellNote } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { IconCheck, IconClose } from "@/components/ui/icons";
-import {
-  centsToInputValue,
-  formatMoney,
-  parseMoneyToCents,
-  type Cents,
-} from "@/components/format";
-import { saveProductCost } from "@/components/mock/engine";
-import type { CogsSource } from "@/components/mock/engine";
+import { centsToInputValue, formatMoney, parseMoneyToCents } from "@/components/format";
+import { saveCost } from "@/app/products/actions";
+import type { CogsSource } from "@/lib/contracts";
+import type { Cents } from "@/lib/money";
 
 /**
  * Cost, editable in place.
  *
- * Cost is the one number a merchant is expected to supply, and it gates every
- * profit figure in the app (R3), so editing it must be a two-second job from
- * wherever they noticed it was missing — not a trip to the Shopify admin.
- *
  * States: has a cost (with where it came from), has no cost (an explicit
- * invitation, never a blank), editing, saving, failed-to-save.
+ * invitation, never a blank), editing, saving, failed to save.
  */
 export function CostCell({
-  productId,
+  variantGid,
   productTitle,
   priceCents,
   cogsCents,
   cogsSource,
+  currency,
   onSaved,
 }: {
-  productId: string;
+  variantGid: string;
   productTitle: string;
   priceCents: Cents;
   cogsCents: Cents | null;
-  cogsSource: CogsSource | null;
+  cogsSource: CogsSource;
+  currency: string;
   onSaved: (cogsCents: Cents | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => centsToInputValue(cogsCents));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
 
   function startEditing() {
     setDraft(centsToInputValue(cogsCents));
     setError(null);
     setEditing(true);
-  }
-
-  function cancel() {
-    setEditing(false);
-    setError(null);
   }
 
   async function commit() {
@@ -66,28 +54,29 @@ export function CostCell({
       return;
     }
     if (next !== null && next < 0) {
-      setError("A cost can't be negative.");
+      setError("A cost cannot be negative.");
       return;
-    }
-    if (next !== null && next > priceCents) {
-      // Allowed — loss leaders are real — but say so, because a typo looks
-      // exactly like this and a negative margin would silently poison a forecast.
-      toast({
-        tone: "warning",
-        title: "That cost is above the price",
-        description: `${productTitle} would lose ${formatMoney(
-          next - priceCents,
-        )} on every sale. Saved anyway — change it if that was a typo.`,
-      });
     }
     if (next === cogsCents) {
       setEditing(false);
       return;
     }
 
+    // Allowed — loss leaders are real — but a typo looks exactly like this, and a
+    // negative margin would quietly poison every forecast.
+    if (next !== null && next > priceCents) {
+      toast({
+        tone: "warning",
+        title: "That cost is above the price",
+        description: `${productTitle} would lose ${formatMoney(next - priceCents, {
+          currency,
+        })} on every sale. Saved anyway — change it if that was a typo.`,
+      });
+    }
+
     setSaving(true);
     setError(null);
-    const result = await saveProductCost(productId, next);
+    const result = await saveCost(variantGid, next);
     setSaving(false);
 
     if (!result.ok) {
@@ -96,14 +85,15 @@ export function CostCell({
     }
 
     setEditing(false);
-    onSaved(result.cogsCents);
+    onSaved(result.cogs_cents);
     toast({
       tone: "success",
-      title: next === null ? "Cost cleared" : "Cost saved",
-      description:
-        next === null
+      title: result.persisted ? "Cost saved" : "Cost updated on this screen",
+      description: result.persisted
+        ? next === null
           ? `${productTitle} has no cost again, so its profit is unknown.`
-          : `${productTitle} costs ${formatMoney(next)}. Its profit is worked out from that.`,
+          : `${productTitle} costs ${formatMoney(next, { currency })}. Profit is worked out from that.`
+        : `This is the demo store, so nothing was written back to Shopify. On a connected store, ${productTitle} would keep this cost.`,
     });
   }
 
@@ -119,7 +109,6 @@ export function CostCell({
               $
             </span>
             <input
-              ref={inputRef}
               autoFocus
               inputMode="decimal"
               value={draft}
@@ -134,7 +123,8 @@ export function CostCell({
                 }
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  cancel();
+                  setEditing(false);
+                  setError(null);
                 }
               }}
               className={cn(
@@ -156,7 +146,10 @@ export function CostCell({
           </button>
           <button
             type="button"
-            onClick={cancel}
+            onClick={() => {
+              setEditing(false);
+              setError(null);
+            }}
             disabled={saving}
             aria-label={`Stop editing the cost for ${productTitle}`}
             className="rounded-md p-1.5 text-ink-subtle outline-none hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
@@ -191,10 +184,10 @@ export function CostCell({
     <button
       type="button"
       onClick={startEditing}
-      aria-label={`Cost for ${productTitle} is ${formatMoney(cogsCents)}. Edit it.`}
+      aria-label={`Cost for ${productTitle} is ${formatMoney(cogsCents, { currency })}. Edit it.`}
       className="group -mr-1.5 rounded-md px-1.5 py-1 text-right outline-none hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-focus"
     >
-      <span className="block tabular-nums">{formatMoney(cogsCents)}</span>
+      <span className="block tabular-nums">{formatMoney(cogsCents, { currency })}</span>
       {/* Margin lives in the profit column; repeating it here is noise. */}
       <CellNote className="group-hover:text-ink-muted">
         {cogsSource === "shopify" ? "From Shopify" : "Added by you"}

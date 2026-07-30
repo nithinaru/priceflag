@@ -1,37 +1,36 @@
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { formatMoney } from "@/components/format";
-import type { JournalActor, JournalKind } from "@/components/mock/engine";
+import type { JournalActor, JournalSource } from "@/lib/contracts";
+import type { Cents } from "@/lib/money";
 
 /**
- * Who changed a price, in the merchant's terms. "Changed in Shopify" rather
- * than "external" — the journal's whole value is that it explains a change the
- * merchant may not remember making (PRD R18).
+ * Who moved a price, in the merchant's terms. "Changed in Shopify" rather than
+ * "external" — the journal's whole value is explaining a change the merchant may
+ * not remember making, since Shopify keeps no price audit trail (R18).
  */
-export function ActorBadge({ actor, kind }: { actor: JournalActor; kind: JournalKind }) {
-  if (kind === "rollback") {
-    return (
-      <Badge tone="breach" size="sm">
-        Undone
-      </Badge>
-    );
-  }
-  if (actor === "external") {
-    return (
-      <Badge tone="hold" size="sm">
-        Changed in Shopify
-      </Badge>
-    );
-  }
-  if (actor === "you") {
-    return (
-      <Badge tone="neutral" size="sm">
-        You
-      </Badge>
-    );
-  }
+
+const SOURCE: Record<JournalSource, { label: string; tone: BadgeTone }> = {
+  rollout: { label: "Priceflag", tone: "accent" },
+  rollback: { label: "Undone", tone: "breach" },
+  kill_switch: { label: "Everything reverted", tone: "breach" },
+  external: { label: "Changed in Shopify", tone: "hold" },
+  manual: { label: "You", tone: "neutral" },
+  seed: { label: "Before Priceflag", tone: "neutral" },
+};
+
+export function SourceBadge({
+  source,
+  actor,
+}: {
+  source: JournalSource;
+  actor?: JournalActor;
+}) {
+  const meta = SOURCE[source];
+  // A "manual" write by Priceflag itself would be misleading as "You".
+  const label = source === "manual" && actor && actor !== "merchant" ? "Priceflag" : meta.label;
   return (
-    <Badge tone="accent" size="sm">
-      Priceflag
+    <Badge tone={meta.tone} size="sm">
+      {label}
     </Badge>
   );
 }
@@ -42,8 +41,8 @@ export function PriceMove({
   toCents,
   currency = "USD",
 }: {
-  fromCents: number;
-  toCents: number;
+  fromCents: Cents;
+  toCents: Cents;
   currency?: string;
 }) {
   return (

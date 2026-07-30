@@ -9,27 +9,40 @@ import { countOf } from "@/components/format";
 
 /**
  * The undo. It is on every screen where a change is live, because the merchant
- * has to be able to answer "how do I undo this?" without hunting (PRD R16).
+ * has to be able to answer "how do I undo this?" without hunting (R16).
  *
- * Deliberately not hidden behind a menu and not styled as a scary red button:
- * using it is a *good* outcome. The confirm dialog exists only because prices
- * are outward-facing, and it names exactly what will happen.
+ * Deliberately not hidden in a menu and not styled as a scary red button: using
+ * it is a *good* outcome. The confirm dialog exists only because prices are
+ * outward-facing, and it names exactly what will happen.
  *
- * A1 wires the interaction against a mocked call. Lane B's real server action is
- * requested in contracts/requests-lane-a.md (REQ-A-003).
+ * Wired against the response shape of `POST /api/rollouts/[id]/rollback`
+ * (contracts/api.md): `{ ok, affected_skus, message }`, idempotent — calling it
+ * twice restores once. That route lands in B4; until then this resolves locally
+ * and the toast says so, because a demo store must never imply a real write.
  */
+
+type RollbackResponse = {
+  ok: boolean;
+  affected_skus: number;
+  message: string;
+};
+
 export function RollbackButton({
+  rolloutId,
   rolloutName,
   productCount,
   variant = "secondary",
   size = "md",
   label = "Put prices back",
+  demoMode = true,
 }: {
+  rolloutId: string;
   rolloutName: string;
   productCount: number;
   variant?: "primary" | "secondary" | "danger";
   size?: "sm" | "md" | "lg";
   label?: string;
+  demoMode?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
@@ -37,23 +50,25 @@ export function RollbackButton({
 
   async function confirm() {
     setWorking(true);
-    // Mocked: Lane B's rollback action goes here (REQ-A-003).
-    await new Promise((resolve) => window.setTimeout(resolve, 700));
+    const result = await rollback(rolloutId, productCount, demoMode);
     setWorking(false);
     setOpen(false);
+
     toast({
-      tone: "success",
-      title: "Putting prices back",
-      description: `${countOf(
-        productCount,
-        "product",
-      )} will be back at their old price within a minute. You'll see it in your price journal.`,
+      tone: result.ok ? "success" : "error",
+      title: result.ok ? "Putting prices back" : "That did not go through",
+      description: result.message,
     });
   }
 
   return (
     <>
-      <Button variant={variant} size={size} iconLeft={<IconUndo size={15} />} onClick={() => setOpen(true)}>
+      <Button
+        variant={variant}
+        size={size}
+        iconLeft={<IconUndo size={15} />}
+        onClick={() => setOpen(true)}
+      >
         {label}
       </Button>
 
@@ -92,7 +107,10 @@ export function RollbackButton({
           </li>
           <li className="flex gap-2">
             <span aria-hidden="true">•</span>
-            <span>Usually done within a minute. We email you when it finishes.</span>
+            <span>
+              The prices we put back are the ones captured when this change was created — not
+              recalculated now.
+            </span>
           </li>
           <li className="flex gap-2">
             <span aria-hidden="true">•</span>
@@ -102,4 +120,49 @@ export function RollbackButton({
       </Modal>
     </>
   );
+}
+
+async function rollback(
+  rolloutId: string,
+  productCount: number,
+  demoMode: boolean,
+): Promise<RollbackResponse> {
+  if (demoMode) {
+    await new Promise((resolve) => window.setTimeout(resolve, 600));
+    return {
+      ok: true,
+      affected_skus: productCount,
+      message: `This is the demo store, so no real prices moved. On a connected store, ${countOf(
+        productCount,
+        "product",
+      )} would be back at their old price within a minute, each one recorded in your journal.`,
+    };
+  }
+
+  try {
+    const response = await fetch(`/api/rollouts/${rolloutId}/rollback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "Put back from the rollout page" }),
+    });
+    const body: unknown = await response.json();
+    if (!response.ok) {
+      const message =
+        typeof body === "object" && body !== null && "error" in body
+          ? String((body as { error: { message?: string } }).error?.message ?? "")
+          : "";
+      return {
+        ok: false,
+        affected_skus: 0,
+        message: message || "We could not put the prices back. Nothing was changed.",
+      };
+    }
+    return body as RollbackResponse;
+  } catch {
+    return {
+      ok: false,
+      affected_skus: 0,
+      message: "We could not reach Priceflag, so nothing was changed. Try again in a moment.",
+    };
+  }
 }

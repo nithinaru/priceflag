@@ -18,10 +18,10 @@
 
 const KEY = "priceflag:selection:v1";
 
-export function writeSelection(productIds: string[]): void {
+export function writeSelection(variantGids: string[]): void {
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(KEY, JSON.stringify(productIds));
+    window.sessionStorage.setItem(KEY, JSON.stringify(variantGids));
   } catch {
     // Private-browsing quota errors: the preview screen's empty state covers it.
   }

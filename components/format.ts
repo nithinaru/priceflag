@@ -1,14 +1,18 @@
+import { formatCents, type Cents } from "@/lib/money";
+
 /**
- * Formatting is the only place in the app where integer cents become a decimal.
- * Nothing else divides by 100 (BUILD_BRIEF §2.7: money is integer cents).
+ * Presentation helpers.
  *
- * Every formatter here is deterministic and timezone-pinned, so a value renders
- * identically on the server and in the browser. Dates arriving from the engine
- * are store-local calendar days (`YYYY-MM-DD`) or instants (ISO); both are
- * formatted in UTC until Lane B exposes the shop timezone.
+ * Money formatting delegates to `lib/money.formatCents` — one implementation for
+ * the whole app, so a price in the UI can never disagree with a price in an
+ * email or a CSV. Everything here adds are the UI's own affordances: an em dash
+ * for unknown, an explicit sign for deltas, and timezone-pinned dates.
+ *
+ * Money is integer cents everywhere; this file is the only place it becomes a
+ * decimal string (CLAUDE.md).
  */
 
-export type Cents = number;
+export type { Cents };
 
 const DASH = "—";
 /** U+2212 MINUS SIGN — aligns with digits; the ASCII hyphen does not. */
@@ -22,17 +26,21 @@ export function formatMoney(
 ): string {
   if (cents === null || cents === undefined || !Number.isFinite(cents)) return DASH;
   const { currency = "USD", showCents = true } = options;
-  const digits = showCents ? 2 : 0;
-  const formatted = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(Math.abs(cents) / 100);
+  if (!showCents) {
+    const whole = Math.round(Math.abs(cents) / 100);
+    const formatted = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(whole);
+    return cents < 0 ? `${MINUS}${formatted}` : formatted;
+  }
+  const formatted = formatCents(Math.abs(cents), currency);
   return cents < 0 ? `${MINUS}${formatted}` : formatted;
 }
 
-/** Signed money, for deltas. Zero renders as an explicit "no change". */
+/** Signed money, for deltas. Zero renders plainly, not as "+$0". */
 export function formatMoneyDelta(
   cents: Cents | null | undefined,
   options: { currency?: string; showCents?: boolean } = {},
@@ -43,45 +51,30 @@ export function formatMoneyDelta(
   return `${cents > 0 ? "+" : MINUS}${magnitude}`;
 }
 
-/** `0.0625` → `"6.3%"`. Takes a fraction, not a percentage. */
-export function formatPercent(
-  fraction: number | null | undefined,
-  options: { digits?: number } = {},
-): string {
-  if (fraction === null || fraction === undefined || !Number.isFinite(fraction)) return DASH;
-  const { digits = 1 } = options;
-  return `${(Math.abs(fraction) * 100).toFixed(digits)}%`;
-}
-
-/** `-0.0625` → `"−6.3%"`. */
-export function formatPercentDelta(
-  fraction: number | null | undefined,
-  options: { digits?: number } = {},
-): string {
-  if (fraction === null || fraction === undefined || !Number.isFinite(fraction)) return DASH;
-  const { digits = 1 } = options;
-  if (fraction === 0) return `${(0).toFixed(digits)}%`;
-  return `${fraction > 0 ? "+" : MINUS}${formatPercent(fraction, options)}`;
-}
-
 /**
- * Whole percentage points, as merchants write them: `30` → `"30%"`.
- * Used for stage shares and guardrail sentences, which are always whole.
+ * Percentage **points**, the way the contracts carry them: `12.5` → `"12.5%"`
+ * (contracts/README.md — percentages are plain numbers, not fractions).
  */
-export function formatPercentPoints(points: number | null | undefined): string {
+export function formatPct(points: number | null | undefined, digits = 1): string {
   if (points === null || points === undefined || !Number.isFinite(points)) return DASH;
-  return `${Math.round(points)}%`;
+  const rounded = Math.abs(points);
+  const text = digits === 0 ? Math.round(rounded).toString() : rounded.toFixed(digits);
+  return `${text}%`;
 }
 
-export function formatUnits(units: number | null | undefined): string {
-  if (units === null || units === undefined || !Number.isFinite(units)) return DASH;
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(units);
+/** Signed percentage points: `-8.5` → `"−8.5%"`. */
+export function formatPctDelta(points: number | null | undefined, digits = 1): string {
+  if (points === null || points === undefined || !Number.isFinite(points)) return DASH;
+  if (points === 0) return `${digits === 0 ? "0" : (0).toFixed(digits)}%`;
+  return `${points > 0 ? "+" : MINUS}${formatPct(points, digits)}`;
 }
 
-/** `"12 units"` / `"1 unit"`. */
-export function formatUnitsWithLabel(units: number | null | undefined): string {
+export function formatUnits(units: number | null | undefined, digits = 0): string {
   if (units === null || units === undefined || !Number.isFinite(units)) return DASH;
-  return `${formatUnits(units)} ${Math.abs(units) === 1 ? "unit" : "units"}`;
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(units);
 }
 
 export function pluralize(count: number, singular: string, plural?: string): string {
@@ -93,59 +86,55 @@ export function countOf(count: number, singular: string, plural?: string): strin
   return `${formatUnits(count)} ${pluralize(count, singular, plural)}`;
 }
 
-/** `"2026-07-23"` or an ISO instant → `"Jul 23"`. */
+/** `"2026-07-23"` or an ISO instant → `"23 Jul"`. */
 export function formatDay(value: string | null | undefined): string {
   const date = parseDate(value);
   if (!date) return DASH;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
+  return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
+    month: "short",
     timeZone: TIME_ZONE,
   }).format(date);
 }
 
-/** `"Jul 23, 2026"` — for anything that might cross a year boundary. */
 export function formatDayLong(value: string | null | undefined): string {
   const date = parseDate(value);
   if (!date) return DASH;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
+  return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
+    month: "short",
     year: "numeric",
     timeZone: TIME_ZONE,
   }).format(date);
 }
 
-/** `"Jul 23, 6:00 AM"` — journal rows, event logs. */
+/** `"23 Jul, 6:00 am"` — journal rows, event logs. */
 export function formatDateTime(value: string | null | undefined): string {
   const date = parseDate(value);
   if (!date) return DASH;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
+  return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
+    month: "short",
     hour: "numeric",
     minute: "2-digit",
+    hour12: true,
     timeZone: TIME_ZONE,
-  }).format(date);
+  })
+    .format(date)
+    .replace(/\s?([ap])m/i, (_match, meridiem: string) => ` ${meridiem.toLowerCase()}m`);
 }
 
-/** Whole days between two calendar days, inclusive of the first. */
+/** Whole days from `from` to `to`. */
 export function daysBetween(from: string, to: string): number {
   const a = parseDate(from);
   const b = parseDate(to);
   if (!a || !b) return 0;
-  const ms = b.getTime() - a.getTime();
-  return Math.max(0, Math.round(ms / 86_400_000));
-}
-
-/** `"Day 4 of 7"` phrasing for stage progress. */
-export function formatDayOf(current: number, total: number): string {
-  return `Day ${formatUnits(current)} of ${formatUnits(total)}`;
+  return Math.max(0, Math.round((b.getTime() - a.getTime()) / 86_400_000));
 }
 
 function parseDate(value: string | null | undefined): Date | null {
   if (!value) return null;
-  // Bare calendar days are parsed as UTC midnight, matching TIME_ZONE, so
+  // Bare calendar days are read as UTC midnight, matching TIME_ZONE, so
   // "2026-07-23" never renders as the 22nd.
   const iso = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value;
   const date = new Date(iso);
@@ -153,20 +142,15 @@ function parseDate(value: string | null | undefined): Date | null {
 }
 
 /**
- * Margin as a fraction of price. `null` when cost is unknown — the caller must
- * render the "profit unknown — add cost" state rather than a fabricated number
- * (PRD R3).
+ * Margin as percentage points of price. `null` when cost is unknown — the caller
+ * must render "profit unknown — add cost" rather than a fabricated number (R3).
  */
-export function marginFraction(priceCents: Cents, cogsCents: Cents | null): number | null {
+export function marginPct(priceCents: Cents, cogsCents: Cents | null): number | null {
   if (cogsCents === null || priceCents <= 0) return null;
-  return (priceCents - cogsCents) / priceCents;
+  return ((priceCents - cogsCents) / priceCents) * 100;
 }
 
-/**
- * Parses what a merchant types into a money field. Accepts `12`, `12.5`,
- * `$12.50`, `1,299.99`. Returns integer cents, or `null` if there is no number
- * in there at all — the caller decides whether that is an error or a clear.
- */
+/** Parses what a merchant types into a money field. Returns integer cents. */
 export function parseMoneyToCents(input: string): Cents | null {
   const cleaned = input.replace(/[^0-9.-]/g, "");
   if (cleaned === "" || cleaned === "-" || cleaned === "." || cleaned === "-.") return null;

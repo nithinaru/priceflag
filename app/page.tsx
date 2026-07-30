@@ -22,57 +22,47 @@ import {
 } from "@/components/ui";
 import { IconArrowRight, IconFlag, IconTag } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
-import { ActorBadge, PriceMove } from "@/components/domain/journal";
+import { PriceMove, SourceBadge } from "@/components/domain/journal";
 import {
+  HealthBadge,
   RolloutStatusBadge,
-  VerdictBadge,
-  changeSentence,
-  guardrailSentence,
+  GuardrailSummary,
+  changeWords,
+  countOf,
   rolloutStatusMeta,
 } from "@/components/domain/status";
-import {
-  countOf,
-  daysBetween,
-  formatDateTime,
-  formatDay,
-  formatUnits,
-} from "@/components/format";
-import {
-  DEMO_STORE,
-  DEMO_TODAY,
-  getJournal,
-  getLiveSummary,
-  getRollouts,
-} from "@/components/mock/engine";
+import { formatDateTime, formatDay, formatUnits } from "@/components/format";
+import { readingSentence } from "@/lib/engine/readings";
+import { getDemoStore } from "@/components/demo/store";
+import { getJournal, getLive, getRolloutBundle, getRollouts } from "@/components/demo/rollouts";
 
 export const metadata: Metadata = {
   title: "Overview",
 };
 
 /**
- * The glance test lives on this page: what is live right now, is it behaving,
- * and how do I undo it — answered above the fold, in that order.
+ * The glance test lives here: what is live right now, is it behaving, and how do
+ * I undo it — answered above the fold, in that order (R16).
  */
 export default function OverviewPage() {
-  const summary = getLiveSummary();
-  const live = summary.rollout;
-  const activeStage = live?.stages[live.currentStageIndex] ?? null;
+  const { shop } = getDemoStore();
+  const live = getLive();
   const journal = getJournal().slice(0, 4);
   const upcoming = getRollouts().filter(
     (rollout) => rollout.status === "scheduled" || rollout.status === "draft",
   );
 
-  const dayOfStage =
-    activeStage?.startedOn ? daysBetween(activeStage.startedOn, DEMO_TODAY) + 1 : null;
+  const running = live.rollouts.filter((rollout) => rollout.status === "running");
+  const paused = live.rollouts.filter((rollout) => rollout.status === "paused");
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Overview"
-        description={`What Priceflag has live on ${DEMO_STORE.name} right now, and how to undo it.`}
+        description={`What Priceflag has live on ${shop.domain} right now, and how to undo it.`}
       />
 
-      {summary.pausedRollouts.map((rollout) => (
+      {paused.map((rollout) => (
         <Notice
           key={rollout.id}
           tone="hold"
@@ -89,89 +79,12 @@ export default function OverviewPage() {
         </Notice>
       ))}
 
-      {live && activeStage ? (
-        <Card tone={summary.health === "breach" ? "breach" : "live"} edge>
-          <CardHeader
-            eyebrow="Live on your storefront"
-            title={live.name}
-            description={rolloutStatusMeta(live.status).sentence}
-            action={
-              <>
-                <RollbackButton
-                  rolloutName={live.name}
-                  productCount={summary.skusChanged}
-                  variant="secondary"
-                />
-                <ButtonLink
-                  href={`/rollouts/${live.id}`}
-                  variant="primary"
-                  iconRight={<IconArrowRight size={15} />}
-                >
-                  Open this change
-                </ButtonLink>
-              </>
-            }
-          >
-            <div className="pt-1">
-              <RolloutStatusBadge status={live.status} />
-            </div>
-          </CardHeader>
-
-          <CardBody>
-            <StatGroup columns={3}>
-              <Stat
-                label="Products on a new price"
-                value={`${summary.skusChanged} of ${summary.skusSelected}`}
-                note={`Everything selected is ${changeSentence(live.change)}.`}
-                tone="live"
-              />
-              <Stat
-                label="Step"
-                value={`${live.currentStageIndex + 1} of ${live.stages.length}`}
-                note={
-                  dayOfStage
-                    ? `Day ${formatUnits(dayOfStage)} of ${formatUnits(activeStage.holdDays)} of watching orders.`
-                    : "Waiting to start."
-                }
-              />
-              {summary.latestReading ? (
-                <Stat
-                  label={`Orders on ${formatDay(summary.latestReading.date)}`}
-                  value={formatUnits(summary.latestReading.actualUnits)}
-                  tone={summary.health === "breach" ? "breach" : "default"}
-                  note={
-                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span>
-                        We expected {formatUnits(summary.latestReading.expectedLow)}–
-                        {formatUnits(summary.latestReading.expectedHigh)}
-                      </span>
-                      <VerdictBadge verdict={summary.latestReading.verdict} />
-                    </span>
-                  }
-                />
-              ) : (
-                <Stat
-                  label="Orders so far"
-                  value="Not yet"
-                  note="We compare orders once a full day has passed."
-                />
-              )}
-            </StatGroup>
-          </CardBody>
-
-          <CardFooter>
-            <p className="max-w-prose">
-              <span className="font-medium text-ink">Your safety net: </span>
-              {guardrailSentence(live.guardrail)}
-            </p>
-          </CardFooter>
-        </Card>
-      ) : (
+      {running.length === 0 && paused.length === 0 ? (
         <Card>
           <EmptyState
             icon={<IconFlag size={19} />}
             title="No prices are changing right now"
-            description="Nothing Priceflag set is live on your storefront. When you're ready, pick the products you want to reprice and we'll show you what the change should do before anything goes out."
+            description="Nothing Priceflag set is live on your storefront. When you are ready, pick the products you want to reprice and we will show you what the change should do before anything goes out."
             action={
               <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
                 Go to your products
@@ -179,30 +92,104 @@ export default function OverviewPage() {
             }
           />
         </Card>
-      )}
-
-      {live ? (
-        <Notice
-          tone={summary.health === "breach" ? "breach" : summary.health === "watch" ? "hold" : "info"}
-          title={
-            summary.health === "breach"
-              ? "This change is about to be undone"
-              : summary.health === "watch"
-                ? "Worth keeping an eye on"
-                : "Orders are holding up"
-          }
-        >
-          {summary.healthSentence}{" "}
-          {summary.health === "breach" ? (
-            <>The automatic undo runs at the next check.</>
-          ) : (
-            <>
-              We check every day and{" "}
-              <TextLink href={`/rollouts/${live.id}`}>show you the numbers</TextLink> behind it.
-            </>
-          )}
-        </Notice>
       ) : null}
+
+      {live.rollouts.map((summary, index) => {
+        const bundle = getRolloutBundle(summary.id);
+        if (!bundle) return null;
+        const latest = bundle.readings.at(-1) ?? null;
+
+        return (
+          <Card
+            key={summary.id}
+            tone={summary.health === "breaching" ? "breach" : summary.status === "paused" ? "hold" : "live"}
+            edge
+          >
+            <CardHeader
+              eyebrow={index === 0 ? "Live on your storefront" : "Also on your storefront"}
+              title={summary.name}
+              description={rolloutStatusMeta(summary.status).sentence}
+              action={
+                <>
+                  <RollbackButton
+                    rolloutId={summary.id}
+                    rolloutName={summary.name}
+                    productCount={summary.variants_live}
+                    variant="secondary"
+                  />
+                  {/* One primary action per screen: only the first card gets it. */}
+                  <ButtonLink
+                    href={`/rollouts/${summary.id}`}
+                    variant={index === 0 ? "primary" : "secondary"}
+                    iconRight={<IconArrowRight size={15} />}
+                  >
+                    Open this change
+                  </ButtonLink>
+                </>
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <RolloutStatusBadge status={summary.status} />
+                <HealthBadge health={summary.health} size="sm" />
+              </div>
+            </CardHeader>
+
+            <CardBody className="space-y-4">
+              <StatGroup columns={3}>
+                <Stat
+                  label="Products on a new price"
+                  value={`${summary.variants_live} of ${summary.variants_total}`}
+                  // Green means healthy-and-live. A paused rollout is neither.
+                  tone={summary.status === "running" && summary.variants_live > 0 ? "live" : "default"}
+                  note={`Everything selected is being set ${changeWords(bundle.rollout, shop.currency)}.`}
+                />
+                <Stat
+                  label="Step"
+                  value={`${Math.max(summary.stage_index + 1, 1)} of ${summary.stage_count}`}
+                  note={
+                    summary.status !== "running"
+                      ? "Nothing is scheduled while this is paused."
+                      : summary.next_decision_day
+                        ? `We look at the numbers again on ${formatDay(summary.next_decision_day)}.`
+                        : "Waiting for a full day of orders."
+                  }
+                />
+                {latest ? (
+                  <Stat
+                    label="Yesterday"
+                    value={formatUnits(latest.actual_units)}
+                    tone={summary.health === "breaching" ? "breach" : "default"}
+                    note={readingSentence(latest)}
+                  />
+                ) : (
+                  <Stat
+                    label="Orders so far"
+                    value="Not yet"
+                    note="We compare orders once a full day has passed."
+                  />
+                )}
+              </StatGroup>
+
+              <Notice
+                tone={
+                  summary.health === "breaching"
+                    ? "breach"
+                    : summary.health === "watching"
+                      ? "hold"
+                      : "info"
+                }
+                title={healthTitle(summary.health)}
+              >
+                {summary.health_sentence}
+              </Notice>
+            </CardBody>
+
+            <CardFooter>
+              <GuardrailSummary guardrails={bundle.rollout.guardrails} />
+            </CardFooter>
+          </Card>
+        );
+      })}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -223,13 +210,19 @@ export default function OverviewPage() {
               <TBody>
                 {journal.map((entry) => (
                   <TR key={entry.id}>
-                    <TD className="whitespace-nowrap text-ink-muted">{formatDateTime(entry.at)}</TD>
-                    <TD className="font-medium">{entry.productTitle}</TD>
+                    <TD className="whitespace-nowrap text-ink-muted">
+                      {formatDateTime(entry.applied_at)}
+                    </TD>
+                    <TD className="font-medium">{entry.title}</TD>
                     <TD numeric>
-                      <PriceMove fromCents={entry.fromCents} toCents={entry.toCents} />
+                      <PriceMove
+                        fromCents={entry.before_price_cents}
+                        toCents={entry.after_price_cents}
+                        currency={entry.currency}
+                      />
                     </TD>
                     <TD>
-                      <ActorBadge actor={entry.actor} kind={entry.kind} />
+                      <SourceBadge source={entry.source} actor={entry.actor} />
                     </TD>
                   </TR>
                 ))}
@@ -243,11 +236,11 @@ export default function OverviewPage() {
         </Card>
 
         <div className="min-w-0 space-y-6">
-          {summary.productsMissingCost > 0 ? (
+          {live.products_missing_cost > 0 ? (
             <Card tone="hold" edge>
               <CardHeader
                 eyebrow="Worth fixing"
-                title={`${countOf(summary.productsMissingCost, "product")} without a cost`}
+                title={`${countOf(live.products_missing_cost, "product")} without a cost`}
                 description="We can show you revenue for these, but not profit — so a forecast for them would be a guess. Add what each one costs you and the profit numbers appear."
                 action={
                   <ButtonLink href="/products" variant="secondary" size="sm">
@@ -261,20 +254,17 @@ export default function OverviewPage() {
           <Card>
             <CardHeader
               title="Not started yet"
-              description="Changes you've set up but that aren't touching your storefront."
+              description="Changes you have set up that are not touching your storefront."
             />
             {upcoming.length > 0 ? (
               <CardBody>
                 <DetailList>
                   {upcoming.map((rollout) => (
-                    <DetailRow
-                      key={rollout.id}
-                      label={rollout.name}
-                    >
+                    <DetailRow key={rollout.id} label={rollout.name}>
                       <span className="flex flex-wrap items-center justify-end gap-2">
                         <span className="text-base font-normal text-ink-muted">
-                          {countOf(rollout.productIds.length, "product")},{" "}
-                          {changeSentence(rollout.change)}
+                          {countOf(rollout.stages.length, "step")},{" "}
+                          {changeWords(rollout, shop.currency)}
                         </span>
                         <RolloutStatusBadge status={rollout.status} size="sm" />
                       </span>
@@ -286,7 +276,7 @@ export default function OverviewPage() {
               <EmptyState
                 icon={<IconTag size={18} />}
                 title="Nothing waiting"
-                description="Changes you set up but haven't started will show here."
+                description="Changes you set up but have not started will show here."
               />
             )}
             <CardFooter>
@@ -298,4 +288,17 @@ export default function OverviewPage() {
       </div>
     </div>
   );
+}
+
+function healthTitle(health: string): string {
+  switch (health) {
+    case "breaching":
+      return "This change is about to be undone";
+    case "watching":
+      return "Worth keeping an eye on";
+    case "too_early":
+      return "Nothing to compare yet";
+    default:
+      return "Orders are holding up";
+  }
 }

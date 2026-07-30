@@ -16,24 +16,25 @@ import {
   TableEmptyRow,
   TextLink,
 } from "@/components/ui";
-import { ActorBadge, PriceMove } from "@/components/domain/journal";
-import { countOf, formatDateTime, formatPercentDelta } from "@/components/format";
-import { getJournal, getRollout } from "@/components/mock/engine";
+import { PriceMove, SourceBadge } from "@/components/domain/journal";
+import { countOf } from "@/components/domain/status";
+import { formatDateTime, formatPctDelta } from "@/components/format";
+import { getJournal, getRolloutBundle } from "@/components/demo/rollouts";
 
 export const metadata: Metadata = {
   title: "Price journal",
 };
 
 /**
- * Shopify keeps no price audit trail; this is it. Includes changes made outside
- * Priceflag, because a change the merchant does not remember making is exactly
- * the one they will come here to find (PRD R18).
+ * Shopify keeps no price audit trail; this is it. It includes changes made
+ * outside Priceflag, because a change the merchant does not remember making is
+ * exactly the one they will come here to find (R18).
  *
- * Filters and CSV export are Sprint A6.
+ * Filters and CSV export are Sprint A6 (`GET /api/journal` supports both).
  */
 export default function JournalPage() {
   const entries = getJournal();
-  const externalCount = entries.filter((entry) => entry.kind === "external").length;
+  const externalCount = entries.filter((entry) => entry.source === "external").length;
 
   return (
     <div className="space-y-6">
@@ -78,30 +79,40 @@ export default function JournalPage() {
                 </TableEmptyRow>
               ) : (
                 entries.map((entry) => {
-                  const rollout = entry.rolloutId ? getRollout(entry.rolloutId) : undefined;
-                  const change =
-                    entry.fromCents > 0 ? (entry.toCents - entry.fromCents) / entry.fromCents : 0;
+                  const bundle = entry.rollout_id ? getRolloutBundle(entry.rollout_id) : undefined;
+                  const changePct =
+                    entry.before_price_cents > 0
+                      ? ((entry.after_price_cents - entry.before_price_cents) /
+                          entry.before_price_cents) *
+                        100
+                      : 0;
                   return (
                     <TR key={entry.id}>
                       <TD className="whitespace-nowrap text-ink-muted">
-                        {formatDateTime(entry.at)}
+                        {formatDateTime(entry.applied_at)}
                       </TD>
                       <TD>
-                        <div className="font-medium">{entry.productTitle}</div>
-                        <CellNote>{entry.sku}</CellNote>
+                        <div className="font-medium">{entry.title}</div>
+                        <CellNote>{entry.sku ?? "No SKU"}</CellNote>
                       </TD>
                       <TD numeric>
-                        <PriceMove fromCents={entry.fromCents} toCents={entry.toCents} />
+                        <PriceMove
+                          fromCents={entry.before_price_cents}
+                          toCents={entry.after_price_cents}
+                          currency={entry.currency}
+                        />
                       </TD>
-                      <TD numeric>{formatPercentDelta(change, { digits: 1 })}</TD>
+                      <TD numeric>{formatPctDelta(changePct, 1)}</TD>
                       <TD>
-                        <ActorBadge actor={entry.actor} kind={entry.kind} />
+                        <SourceBadge source={entry.source} actor={entry.actor} />
                       </TD>
                       <TD className="max-w-[18rem]">
-                        <div className="text-ink-muted">{entry.reason}</div>
-                        {rollout ? (
+                        <div className="text-ink-muted">{entry.reason ?? "—"}</div>
+                        {bundle ? (
                           <CellNote>
-                            <TextLink href={`/rollouts/${rollout.id}`}>Open this change</TextLink>
+                            <TextLink href={`/rollouts/${bundle.rollout.id}`}>
+                              Open this change
+                            </TextLink>
                           </CellNote>
                         ) : null}
                       </TD>
