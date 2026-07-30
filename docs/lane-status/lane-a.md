@@ -20,9 +20,72 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | **A3 — Propose flow v2 + migration onto `lib/`** | ✅ done |
 | **A4 — Rollout monitoring v2** | ✅ done |
 | **A5 — Onboarding & sync** | ✅ done |
+| **A6 — Post-rollout report & journal v2** | ⚠️ report done; **journal filters have an open hydration bug** |
+| A7 — Polish, a11y, responsive | not started |
 | A5 — Onboarding & sync | not started |
 | A6 — Post-rollout report & journal v2 | not started |
 | A7 — Polish, a11y, responsive | not started |
+
+---
+
+## Sprint A6 — report done, journal filters have an open bug
+
+### 🐛 Open bug — `JournalTable` does not hydrate on a hard load
+
+**Reproduce:** load `http://localhost:3111/journal` directly (full page load). The
+filters and the CSV button render, but nothing responds — changing a select does
+not filter, and no `Clear filters` button appears. Navigate to `/` and click
+*Price journal* in the nav (a soft, client-side navigation) and **everything
+works**.
+
+**Diagnosis so far.** On a hard load the `<select>` DOM nodes carry **zero**
+`__reactProps$*` keys; after a soft navigation they carry three. So the component
+is not hydrating on first load and is fully functional afterwards. Confirmed with
+real browser clicks and key presses, not just synthetic events.
+
+**Ruled out:** the client chunk is bundled and served (`/journal` went from 187 B
+to 3.94 kB and `app/journal/page-*.js` returns 200); `"use client"` is present and
+first in the file; no `server-only` marker anywhere in `lib/`;
+`lib/engine/journal.ts` and `lib/dates.ts` import nothing Node-only and do no
+module-scope work; no console error, no unhandled rejection, and no error event
+fires during mount.
+
+**Not ruled out:** a server/client render mismatch inside the subtree that React
+19 bails out of silently. The next thing to try is bisecting the component —
+render it with the table only, then add the filter row, then the CSV button — and
+checking `next build`'s RSC boundary for `components/domain/journal.tsx`, which is
+imported by both a server page and this client component.
+
+**Not shipped as working.** The journal still renders every entry correctly on
+every load, which is the R18 requirement; only the filtering and export are
+affected, and both are A6 additions rather than regressions.
+
+### What did land
+
+- **`/rollouts/[id]/report`** — the retention loop, rendering
+  `rollout_report.schema.json`. Verified against the completed demo rollout: a 12%
+  price cut sold **23% more units and still lost $1,857 of profit** over 13 days,
+  which is exactly the lesson a clearance teaches.
+- **The honesty rule this page turns on.** `predicted` only exists when the
+  forecast stored on the rollout had a *fitted range*. On the `assumption` tier
+  there was no range, so the report says **"we did not predict a range for this
+  one, so there is nothing to score ourselves against"** and refuses to grade
+  itself. Inventing a prediction after the fact to be judged against would buy a
+  flattering screenshot and cost the product's credibility — this is the screen
+  that decides whether a merchant believes the next forecast.
+- **Demo rollouts now store their forecast** (`Rollout.forecast`), built from
+  history *before* the rollout started, because that is all the merchant could
+  have seen. Report aggregation uses Lane B's `sumReadings`; nothing is invented.
+- **Journal v2** — filters mirroring `GET /api/journal`'s query parameters
+  (`source`, `rollout_id`, `from`/`to`, search) and a CSV export that uses **Lane
+  B's own `journalToCsv`**, so the downloaded file cannot drift from what
+  `/api/journal.csv` will serve in B7. Blocked on the hydration bug above.
+
+### Not started
+
+**A7 (polish, a11y, responsive)** — not begun. The next session should fix the
+hydration bug first, then run A7's contrast and keyboard audit across the eight
+screens that now exist.
 
 ---
 

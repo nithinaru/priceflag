@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   Badge,
+  ButtonLink,
   Card,
   CardBody,
   CardFooter,
@@ -102,14 +103,24 @@ export default async function RolloutPage({ params }: PageProps) {
         }
         description={meta.sentence}
         action={
-          can.rollback ? (
-            <RollbackButton
-              rolloutId={rollout.id}
-              rolloutName={rollout.name}
-              productCount={live.variants_live}
-              variant="primary"
-            />
-          ) : null
+          <>
+            {readings.length > 0 ? (
+              <ButtonLink
+                href={`/rollouts/${rollout.id}/report`}
+                variant={can.rollback ? "secondary" : "primary"}
+              >
+                See the results
+              </ButtonLink>
+            ) : null}
+            {can.rollback ? (
+              <RollbackButton
+                rolloutId={rollout.id}
+                rolloutName={rollout.name}
+                productCount={live.variants_live}
+                variant="primary"
+              />
+            ) : null}
+          </>
         }
       />
 

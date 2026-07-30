@@ -1,4 +1,6 @@
 import { bracketBand, combineBands, type DailyUnits } from "@/lib/engine/bands";
+import { buildForecast } from "@/lib/engine/forecast";
+import type { ForecastResult } from "@/lib/contracts";
 import { evaluateGuardrails, type DailyObservation } from "@/lib/engine/guardrails";
 import { healthSentence, rolloutHealth, type RolloutHealth } from "@/lib/engine/readings";
 import { decideNext, normalizeStages, planRolloutVariants } from "@/lib/engine/rollout";
@@ -488,7 +490,10 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
           ? `${stageEnteredOn[currentStage]}T10:00:00.000Z`
           : null,
       guardrails,
-      forecast: null,
+      // The forecast as of proposal time. Stored on the rollout on purpose: the
+      // post-rollout report has to compare against what was actually promised,
+      // not against what the engine would say today (R20/R30).
+      forecast: forecastAtProposal(products, spec, store),
       scheduled_start_at: spec.scheduledStartAt ?? null,
       started_at: spec.startDay ? `${spec.startDay}T10:00:00.000Z` : null,
       ended_at:
@@ -641,6 +646,32 @@ export function getLive(): LiveResponse {
 }
 
 /* -------------------------------------------------------------- internals */
+
+/**
+ * What the forecast said when this rollout was created — built from history
+ * **before** it started, because that is all the merchant could have seen.
+ */
+function forecastAtProposal(
+  products: readonly Product[],
+  spec: RolloutSpec,
+  store: ReturnType<typeof getDemoStore>,
+): ForecastResult | null {
+  if (spec.startDay === null) return null;
+  try {
+    return buildForecast({
+      shop: { currency: store.shop.currency, timezone: store.shop.timezone },
+      products: [...products],
+      orderDays: store.orderDays.filter((row) => row.day < spec.startDay!),
+      change:
+        spec.change.type === "percent"
+          ? { type: "percent", percent: spec.change.percent }
+          : { type: "absolute", absolute_cents: spec.change.absolute_cents },
+      now: new Date(`${spec.startDay}T10:00:00.000Z`),
+    });
+  } catch {
+    return null;
+  }
+}
 
 function indexOrderDays(rows: readonly OrderDay[]): Map<string, number> {
   const index = new Map<string, number>();

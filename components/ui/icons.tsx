@@ -44,6 +44,16 @@ export function IconFlag(props: IconProps) {
   );
 }
 
+export function IconDownload(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5v11" />
+      <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+      <path d="M4.5 18.5v1a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1" />
+    </Icon>
+  );
+}
+
 export function IconSettings(props: IconProps) {
   return (
     <Icon {...props}>
