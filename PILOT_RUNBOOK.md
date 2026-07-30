@@ -245,8 +245,8 @@ Worth knowing before "fixing" them:
 
 | | |
 |---|---|
-| Deployment | https://priceflagv1.vercel.app |
-| Vercel project | `prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`) |
+| Deployment | https://priceflag-app.vercel.app (project `priceflag-app`) |
+| Vercel project | `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`). **`prj_gzNZ…` / `priceflag.vercel.app` is the company homepage — not this app, do not deploy to it.** |
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
 | Evaluator | `/api/cron/evaluate`, hourly via GitHub Actions `evaluator.yml`; needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass` |

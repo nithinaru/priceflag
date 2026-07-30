@@ -12,8 +12,8 @@ telemetry, the evaluator, deploys.
 | **CP4** | ✅ passed, 18 hops observed — the full three-lane chain has now run |
 | **`npm audit`** | 0 vulnerabilities |
 | **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
-| **Deployed to Vercel?** | ✅ **https://priceflagv1.vercel.app** — build succeeded, `/api/health` returns `ok: true` |
-| **Evaluator cron on Vercel** | ✅ **Now in `vercel.json`** — added only after B5 acceptance passed locally (below) |
+| **Deployed to Vercel?** | ✅ **https://priceflag-app.vercel.app** (project `priceflag-app`) — `/api/health` 200, gate 401s everything else |
+| **Evaluator schedule** | ✅ **GitHub Actions, hourly.** Deliberately NOT in `vercel.json` — see below |
 | **Contract requests** | Lane A 1–3 + REQ-A-001/002/003, Lane C 1–9 → [answered below](#contract-requests-serviced) |
 
 ---
@@ -328,8 +328,15 @@ Two things fixed along the way:
 
 ## Vercel — deployed
 
-**https://priceflagv1.vercel.app** — the target domain was available and is
-claimed. Nothing was substituted.
+**https://priceflag-app.vercel.app** — project `priceflag-app`
+(`prj_RU8NlBDoR7t89BNqn5BagOpmpnmm`), git-linked to `nithinaru/priceflag@main`.
+
+> **The old project is not ours any more.** `prj_gzNZ…` (now named `priceflagv1`)
+> was repurposed as the company homepage: Git disconnected, an old static
+> deployment promoted to production, and it still holds `priceflag.vercel.app`.
+> Nothing in this lane touches it — not its domains, not its deployments, not its
+> Git settings. Any earlier note here pointing at `priceflagv1.vercel.app` as *the
+> app* is stale by definition and has been corrected.
 
 - Deployment: `priceflag-1gcbs3p8i-nithin-arus-projects.vercel.app`, state READY.
 - Linked to the **existing** project `prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` on
@@ -359,7 +366,7 @@ Two things `scripts/vercel-setup.sh` deliberately does **not** do:
    local filesystem, which is read-only on Vercel, so demo mode would fail there
    in a confusing way.
 
-If `priceflagv1.vercel.app` turns out to be taken globally, the script says so and
+If the target domain turns out to be taken globally, the script says so and
 leaves the deployment on its default URL rather than silently picking another
 subdomain; the substitution would be recorded here.
 
@@ -767,7 +774,7 @@ people to ignore it.
     ML_INGEST_SECRET: ${{ secrets.ML_INGEST_SECRET }}
     BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
   run: |
-    curl -sS -X POST "https://priceflagv1.vercel.app/api/ml/ingest" \
+    curl -sS -X POST "https://priceflag-app.vercel.app/api/ml/ingest" \
       -H "Authorization: Bearer $ML_INGEST_SECRET" \
       -H "x-vercel-protection-bypass: $BYPASS" \
       -H 'content-type: application/json' \
@@ -786,6 +793,42 @@ wire. `VERCEL_AUTOMATION_BYPASS_SECRET` is already set as a repo secret.
 
 **Timing note for Lane C:** run the nightly on history through *yesterday*, so the
 forecast covers today and the evaluator finds a band for the day it judges.
+
+## Production claim sweep (after the project move)
+
+The stale-alias episode showed that a production claim is only as good as the
+deployment it was measured against — and the app has since moved to a new Vercel
+project entirely. Every production assertion in this file was re-run against
+**https://priceflag-app.vercel.app** on the current build.
+
+**Re-verified, still true:**
+
+| Claim | Result |
+|---|---|
+| `/api/health` reaches the migrated database | `ok:true`, `adapter.detail: "supabase reachable, schema present"` |
+| `/api/sync/status` returns a valid `sync_progress` payload | 200, `stage:done`, 26 products |
+| The access gate 401s everything unauthenticated | `/` `/api/journal` `/api/kill-switch` all 401 |
+| `?access=` and Basic both work | 307 + cookie; 200 |
+| `/api/cron/evaluate` needs its bearer | 401 without, 200 with |
+| The ML ingest honesty gate rejects and records | bad secret 401; `gate_passed:false` → 200 `accepted:false`, `rows_written:0`, run recorded |
+| The GitHub Actions evaluator reaches the app | run 30580363463, `HTTP 200` against the new URL |
+
+**Corrected, because they were false or stale:**
+
+1. **"Deployed to Vercel: https://priceflagv1.vercel.app."** That host belongs to
+   the repurposed project now. The app is `priceflag-app.vercel.app`.
+2. **"Evaluator cron on Vercel: now in `vercel.json`."** Wrong twice over. It was
+   removed (GitHub Actions is the only scheduler), and while it *was* there it
+   made every deploy fail outright, because a Hobby account rejects any expression
+   running more than daily. That is what left the alias serving a pre-B5 build.
+3. **"Redeployed … now carries the cron."** It never did.
+
+**A limit worth stating:** the 150 smoke assertions cover `lib/` and the engine.
+**They do not execute the workflow shell** — the `curl`, the status-code branches
+and the `python3` summary in `.github/workflows/evaluator.yml` are only ever
+exercised by really running the workflow. The green run above is the only evidence
+that file works, and a change to it needs another real run, not a green `npm run
+smoke`.
 
 ## Contract requests — REQ-A-005 and REQ-A-007 ✅
 
@@ -1057,8 +1100,10 @@ says we cannot predict demand is two contradictory claims on one screen. Fixed.
 - **`PILOT_RUNBOOK.md`** — fastest-undo first, then triage, then the manual
   restore-from-journal SQL, then a "things that are working as intended" section
   so an on-call person does not "fix" the low-volume floor at 2am.
-- **Redeployed**: https://priceflagv1.vercel.app now carries the cron, the
-  journal, the kill switch and the evaluator.
+- **Redeployed** to https://priceflag-app.vercel.app, carrying the journal, the
+  kill switch, the evaluator and the ML ingest path. (An earlier version of this
+  line claimed the deploy "carries the cron" — it never did, and the cron does not
+  belong there at all. See the sweep below.)
 
 ### Verified in production
 
