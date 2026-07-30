@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/guardrails.schema.json",
+  "title": "Guardrails",
+  "description": "The abort conditions, decided before anything goes live (R10). Built by Lane A's sentence-with-blanks UI, stored immutably on the rollout, evaluated by Lane B's cron. Every rule reads as one plain sentence; `sentence` is what the merchant saw when they agreed to it and must be persisted verbatim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "rules", "auto_rollback"],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "auto_rollback": {
+      "type": "boolean",
+      "description": "false = alert only; the evaluator pauses and emails instead of reverting. Open pilot question in the PRD, so it is a first-class field."
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "metric", "comparison", "threshold_pct", "consecutive_days", "scope", "action", "sentence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable within the rollout; referenced by breach events." },
+        "metric": {
+          "enum": ["units", "revenue", "profit"],
+          "description": "profit rules are only evaluated when every affected variant has COGS; otherwise the rule is skipped and the skip is journalled, never silently treated as passing."
+        },
+        "comparison": {
+          "enum": ["below_expected_pct", "below_absolute"],
+          "description": "below_expected_pct compares to the expected band (model or bracket). below_absolute compares to a fixed daily floor."
+        },
+        "threshold_pct": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "description": "Required for below_expected_pct. 30 means 'more than 30% below expected', i.e. actual < expected * 0.70."
+        },
+        "absolute_floor": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Required for below_absolute: units/day, or cents/day for revenue and profit metrics."
+        },
+        "consecutive_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14,
+          "description": "Days in a row the condition must hold before the action fires. 1 is allowed but noisy for small stores."
+        },
+        "scope": {
+          "enum": ["rollout", "product"],
+          "description": "rollout = the selection in aggregate (quieter, the default). product = any single affected variant trips it."
+        },
+        "action": {
+          "enum": ["rollback_all", "pause"],
+          "description": "rollback_all restores every price this rollout changed, from the baselines captured at creation. pause stops advancing and emails."
+        },
+        "min_expected_units": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Low-volume floor. When expected units for the day are below this, the day cannot register a breach on its own — random zeros are not evidence. Lane B defaults it to 3.0 when omitted (see lib/engine/guardrails.ts)."
+        },
+        "sentence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exactly what the merchant read, e.g. 'If daily units fall more than 30% below expected for 2 days in a row, revert everything automatically.'"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "comparison": { "const": "below_expected_pct" } }, "required": ["comparison"] },
+          "then": { "properties": { "threshold_pct": { "type": "number" } }, "required": ["threshold_pct"] }
+        },
+        {
+          "if": { "properties": { "comparison": { "const": "below_absolute" } }, "required": ["comparison"] },
+          "then": { "properties": { "absolute_floor": { "type": "number" } }, "required": ["absolute_floor"] }
+        }
+      ]
+    }
+  }
+}

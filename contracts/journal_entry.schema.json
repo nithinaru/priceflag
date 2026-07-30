@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/journal_entry.schema.json",
+  "title": "JournalEntry",
+  "description": "One price change, ever, from any source — including changes made by hand in the Shopify admin (R18). Shopify keeps no price audit trail; this is it. Append-only: entries are never updated or deleted, and the `before_*` values are what makes every change reversible.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "id",
+    "variant_gid",
+    "product_gid",
+    "source",
+    "actor",
+    "status",
+    "before_price_cents",
+    "after_price_cents",
+    "applied_at"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+    "product_gid": { "type": "string", "pattern": "^gid://shopify/Product/[0-9]+$" },
+    "title": { "type": "string", "description": "Denormalised for the CSV export and for entries whose variant was later deleted." },
+    "sku": { "type": ["string", "null"] },
+    "rollout_id": { "type": ["string", "null"], "format": "uuid" },
+    "rollout_name": { "type": ["string", "null"] },
+    "stage_index": { "type": ["integer", "null"], "minimum": 0 },
+    "source": {
+      "enum": ["rollout", "rollback", "external", "kill_switch", "manual", "seed"],
+      "description": "external = detected via products/update, i.e. somebody changed the price outside Priceflag. Those pause any rollout touching the variant (R4)."
+    },
+    "actor": {
+      "enum": ["priceflag", "merchant", "shopify_admin", "system"],
+      "description": "Who caused it. `shopify_admin` means the change arrived from outside and we only observed it."
+    },
+    "reason": { "type": "string", "description": "Plain language, e.g. 'Stage 2 of Spring margin repair (50% of selection).'" },
+    "status": {
+      "enum": ["applied", "failed", "skipped_noop"],
+      "description": "skipped_noop = the price already equalled the target, so nothing was written. Compare-before-write idempotency makes this common and it is not an error."
+    },
+    "before_price_cents": { "type": "integer", "minimum": 0 },
+    "after_price_cents": { "type": "integer", "minimum": 0 },
+    "before_compare_at_cents": { "type": ["integer", "null"], "minimum": 0 },
+    "after_compare_at_cents": { "type": ["integer", "null"], "minimum": 0 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "error": { "type": ["string", "null"], "description": "Present when status=failed: the Shopify userError or transport failure, verbatim." },
+    "applied_at": { "type": "string", "format": "date-time" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

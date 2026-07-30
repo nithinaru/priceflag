@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/proposal_request.schema.json",
+  "title": "ProposalRequest",
+  "description": "What Lane A's propose flow submits. Used as the body of POST /api/forecast (dry run, no writes) and POST /api/rollouts (creates a draft rollout). The same shape for both so the forecast the merchant approved is the forecast stored with the rollout.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "variant_gids", "change"],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "name": { "type": "string", "maxLength": 120, "description": "Merchant's label. Lane B generates one when omitted." },
+    "variant_gids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+      "description": "Ineligible variants (gift cards, subscription products, non-active) may be submitted; Lane B returns them as excluded rather than erroring (R22)."
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["percent", "absolute"] },
+        "percent": { "type": "number", "minimum": -90, "maximum": 400, "description": "-10 = a 10% cut. Required when type=percent." },
+        "absolute_cents": { "type": "integer", "description": "Signed cents. Required when type=absolute." },
+        "rounding": { "enum": ["none", "end_99", "end_95", "end_00"], "default": "none" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "percent" } }, "required": ["type"] },
+          "then": { "required": ["percent"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "absolute" } }, "required": ["type"] },
+          "then": { "required": ["absolute_cents"] }
+        }
+      ]
+    },
+    "horizon_days": { "type": "integer", "minimum": 7, "maximum": 365, "default": 90 },
+    "stages": {
+      "type": "array",
+      "description": "Omit for the default 25% / 50% / 100% plan with 3, 3, 4 day holds. A single-variant selection collapses to a time canary regardless of what is sent here.",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fraction", "hold_days"],
+        "properties": {
+          "fraction": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "description": "Cumulative share of the selection live at this stage. Must be non-decreasing and the last must be 1."
+          },
+          "hold_days": { "type": "integer", "minimum": 1, "maximum": 30 }
+        }
+      }
+    },
+    "guardrails": {
+      "$ref": "https://priceflag.app/contracts/guardrails.schema.json",
+      "description": "Omit on POST /api/forecast. Required on POST /api/rollouts — no rollout starts without a conscious guardrail decision."
+    },
+    "scheduled_start_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "R14. null or omitted = start when the merchant hits go."
+    },
+    "notify_emails": {
+      "type": "array",
+      "items": { "type": "string", "format": "email" },
+      "maxItems": 5,
+      "description": "Defaults to the shop's stored notification addresses."
+    }
+  }
+}

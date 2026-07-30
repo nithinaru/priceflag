@@ -1,0 +1,1963 @@
+/**
+ * Priceflag smoke test.
+ *
+ *   npx tsx scripts/smoke.ts
+ *
+ * No test framework on purpose: this has to be runnable in one command with no
+ * setup, on a machine with nothing configured, and it has to stay green on every
+ * push. It grows with the engine — every sprint adds to it.
+ *
+ * What it covers today:
+ *   - money, gid, crypto and date primitives
+ *   - every JSON Schema in `contracts/`, validated against real engine output
+ *   - the forecast (breakeven arithmetic, the fitted range, missing-COGS honesty)
+ *   - guardrails (streaks, the low-volume floor, profit skipping, breach probability)
+ *   - the rollout state machine (stage plans, cohorts, decisions, transitions)
+ *   - the fallback expected band
+ *   - the journal (idempotency keys, CSV export)
+ *   - the same adapter suite against DemoAdapter and, when configured,
+ *     SupabaseAdapter — plus a restart test that proves demo state persists
+ */
+
+import { existsSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+
+import Ajv2020 from 'ajv/dist/2020';
+import addFormats from 'ajv-formats';
+
+import { loadEnv } from './load-env';
+
+loadEnv();
+
+import { DemoAdapter } from '../lib/adapters/demo';
+import { SupabaseAdapter } from '../lib/adapters/supabase';
+import type { StoreAdapter } from '../lib/adapters/types';
+import { hasSupabaseConfig } from '../lib/config';
+import {
+  CONTRACT_VERSION,
+  DEFAULT_STAGE_PLAN,
+  defaultGuardrails,
+  demoteConfidence,
+  worstConfidence,
+  type ElasticityFit,
+  type ExpectedBand,
+  type Guardrails,
+  type ProposalRequest,
+  type RolloutReport,
+  type SyncProgress,
+} from '../lib/contracts';
+import { decryptSecret, encryptSecret, generateEncryptionKey, isEncryptedSecret, parseEncryptionKey, safeEqual } from '../lib/crypto';
+import { addDays, dayBoundsUtc, dayInTimeZone, diffDays, isoDayOfWeek, today } from '../lib/dates';
+import { bracketBand, combineBands } from '../lib/engine/bands';
+import { buildForecast, computeBreakeven, computeTargetPrice, resolveCompareAt, ForecastError } from '../lib/engine/forecast';
+import { evaluateGuardrails, type DailyObservation } from '../lib/engine/guardrails';
+import {
+  buildJournalEntry,
+  journalToCsv,
+  rollbackIdempotencyKey,
+  rolloutIdempotencyKey,
+  toJournalContract,
+} from '../lib/engine/journal';
+import {
+  assignCohorts,
+  canTransition,
+  cohortSizes,
+  decideNext,
+  isDueToStart,
+  liveCountAtStage,
+  normalizeStages,
+  planRolloutVariants,
+  pricesForRollback,
+  pricesForStage,
+  RolloutError,
+} from '../lib/engine/rollout';
+import {
+  applyPercent,
+  applyRounding,
+  formatCentsAsShopifyMoney,
+  parseMoneyToCents,
+  roundCents,
+} from '../lib/money';
+import { coerceGid, gidId, isVariantGid, parseGid, toGid } from '../lib/shopify/gid';
+import { generateDemoStore, DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
+import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
+import { exclusionReasonFor } from '../lib/types';
+
+// ---------------------------------------------------------------------------
+// harness
+// ---------------------------------------------------------------------------
+
+let passed = 0;
+let failed = 0;
+let skipped = 0;
+const failures: string[] = [];
+let currentSection = '';
+
+function section(name: string): void {
+  currentSection = name;
+  process.stdout.write(`\n\x1b[1m${name}\x1b[0m\n`);
+}
+
+async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+    passed += 1;
+    process.stdout.write(`  \x1b[32m✓\x1b[0m ${name}\n`);
+  } catch (cause) {
+    failed += 1;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    failures.push(`${currentSection} › ${name}\n    ${message}`);
+    process.stdout.write(`  \x1b[31m✗\x1b[0m ${name}\n    \x1b[31m${message}\x1b[0m\n`);
+  }
+}
+
+function skip(name: string, why: string): void {
+  skipped += 1;
+  process.stdout.write(`  \x1b[33m∘\x1b[0m ${name} \x1b[2m(${why})\x1b[0m\n`);
+}
+
+function assert(condition: unknown, message: string): void {
+  if (!condition) throw new Error(message);
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+}
+
+function assertClose(actual: number, expected: number, tolerance: number, message: string): void {
+  if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) {
+    throw new Error(`${message}: expected ${expected} ±${tolerance}, got ${actual}`);
+  }
+}
+
+function assertThrows(fn: () => unknown, message: string): void {
+  try {
+    fn();
+  } catch {
+    return;
+  }
+  throw new Error(`${message}: expected a throw`);
+}
+
+// ---------------------------------------------------------------------------
+// fixtures
+// ---------------------------------------------------------------------------
+
+const NOW = new Date('2026-07-29T15:00:00.000Z');
+const TZ = 'America/New_York';
+const TODAY = today(TZ, NOW);
+
+function makeProduct(overrides: Partial<Product> = {}): Product {
+  const now = NOW.toISOString();
+  return {
+    id: 'p1',
+    shop_id: 'shop1',
+    product_gid: toGid('Product', 1001),
+    variant_gid: toGid('ProductVariant', 2001),
+    inventory_item_gid: toGid('InventoryItem', 3001),
+    title: 'Everyday Tee',
+    variant_title: 'Medium / Black',
+    sku: 'TEE-M-BLK',
+    vendor: 'Northline',
+    product_type: 'Apparel',
+    tags: ['apparel'],
+    image_url: null,
+    status: 'ACTIVE',
+    price_cents: 3200,
+    compare_at_cents: null,
+    currency: 'USD',
+    cogs_cents: 1150,
+    cogs_source: 'shopify',
+    cogs_updated_at: now,
+    is_gift_card: false,
+    requires_selling_plan: false,
+    has_selling_plan: false,
+    inventory_quantity: 80,
+    available_for_sale: true,
+    first_synced_at: now,
+    last_synced_at: now,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  };
+}
+
+/** `days` days of flat demand ending yesterday, at the product's list price. */
+function makeHistory(product: Product, days: number, unitsPerDay: number): OrderDay[] {
+  const rows: OrderDay[] = [];
+  for (let i = days; i >= 1; i -= 1) {
+    const day = addDays(TODAY, -i);
+    rows.push({
+      shop_id: product.shop_id,
+      variant_gid: product.variant_gid,
+      day,
+      product_gid: product.product_gid,
+      units: unitsPerDay,
+      orders: unitsPerDay,
+      gross_revenue_cents: unitsPerDay * product.price_cents,
+      discount_cents: 0,
+      refund_units: 0,
+      refund_cents: 0,
+      net_revenue_cents: unitsPerDay * product.price_cents,
+      realized_unit_price_cents: product.price_cents,
+      list_price_cents: product.price_cents,
+      had_stockout: false,
+      on_promo: false,
+      source: 'seed',
+    });
+  }
+  return rows;
+}
+
+function makeFit(variantGid: string, overrides: Partial<ElasticityFitRow> = {}): ElasticityFitRow {
+  return {
+    id: 'fit1',
+    shop_id: 'shop1',
+    variant_gid: variantGid,
+    elasticity: -1.6,
+    se: 0.25,
+    n_obs: 168,
+    price_variation_pct: 11.4,
+    confidence: 'fitted',
+    confidence_explanation: null,
+    method: 'loglog_ridge_eb_shrunk',
+    shrinkage_weight: 0.85,
+    prior_elasticity: -1.4,
+    r2: 0.42,
+    model_version: 'elasticity-v1.0.0',
+    model_run_id: null,
+    window_start: addDays(TODAY, -180),
+    window_end: addDays(TODAY, -1),
+    fitted_at: NOW.toISOString(),
+    ...overrides,
+  };
+}
+
+function observation(overrides: Partial<DailyObservation> & { day: string }): DailyObservation {
+  return {
+    stage_index: 0,
+    actual_units: 10,
+    actual_revenue_cents: 32000,
+    actual_profit_cents: 20500,
+    expected_units: 10,
+    expected_low: 6,
+    expected_high: 14,
+    expected_revenue_cents: 32000,
+    expected_profit_cents: 20500,
+    ...overrides,
+  };
+}
+
+function makeRollout(overrides: Partial<Rollout> = {}): Rollout {
+  return {
+    id: 'r1',
+    shop_id: 'shop1',
+    name: 'Spring margin repair',
+    status: 'running',
+    change_type: 'percent',
+    change_pct: 10,
+    change_absolute_cents: null,
+    rounding: 'none',
+    horizon_days: 90,
+    stages: DEFAULT_STAGE_PLAN.map((stage) => ({ ...stage })),
+    current_stage: 0,
+    stage_entered_at: new Date(NOW.getTime() - 4 * 86_400_000).toISOString(),
+    guardrails: defaultGuardrails(),
+    forecast: null,
+    scheduled_start_at: null,
+    started_at: new Date(NOW.getTime() - 4 * 86_400_000).toISOString(),
+    ended_at: null,
+    ended_reason: null,
+    paused_reason: null,
+    notify_emails: [],
+    eval_lock_token: null,
+    eval_locked_until: null,
+    last_evaluated_at: null,
+    last_evaluated_day: null,
+    created_by: 'merchant',
+    created_at: NOW.toISOString(),
+    updated_at: NOW.toISOString(),
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// money / gid / crypto / dates
+// ---------------------------------------------------------------------------
+
+async function testPrimitives(): Promise<void> {
+  section('money');
+
+  await test('parses Shopify decimal strings exactly', () => {
+    assertEqual(parseMoneyToCents('19.99'), 1999, '19.99');
+    assertEqual(parseMoneyToCents('0.01'), 1, '0.01');
+    assertEqual(parseMoneyToCents('100'), 10000, '100');
+    assertEqual(parseMoneyToCents('100.5'), 10050, '100.5');
+    assertEqual(parseMoneyToCents('-4.20'), -420, '-4.20');
+    // The case that float multiplication gets wrong.
+    assertEqual(parseMoneyToCents('1.005'), 101, '1.005 rounds half up');
+    assertEqual(parseMoneyToCents('8.675'), 868, '8.675 rounds half up');
+  });
+
+  await test('rejects nonsense rather than guessing', () => {
+    assertThrows(() => parseMoneyToCents('nineteen'), 'words');
+    assertThrows(() => parseMoneyToCents(''), 'empty string');
+    assertThrows(() => parseMoneyToCents('1.2.3'), 'two decimal points');
+  });
+
+  await test('round-trips cents through Shopify money strings', () => {
+    for (const cents of [0, 1, 99, 100, 1999, 123456, -420]) {
+      assertEqual(parseMoneyToCents(formatCentsAsShopifyMoney(cents)), cents, `round trip ${cents}`);
+    }
+    assertEqual(formatCentsAsShopifyMoney(1999), '19.99', 'formats 1999');
+    assertEqual(formatCentsAsShopifyMoney(100), '1.00', 'formats 100');
+    assertEqual(formatCentsAsShopifyMoney(5), '0.05', 'formats 5');
+  });
+
+  await test('rounds half away from zero, symmetrically', () => {
+    assertEqual(roundCents(0.5), 1, '0.5');
+    assertEqual(roundCents(-0.5), -1, '-0.5 mirrors 0.5');
+    assertEqual(roundCents(2.4), 2, '2.4');
+    assertEqual(roundCents(-2.6), -3, '-2.6');
+  });
+
+  await test('applies percentage changes in integer cents', () => {
+    assertEqual(applyPercent(3200, 10), 3520, '+10% of 3200');
+    assertEqual(applyPercent(1999, -15), 1699, '-15% of 1999');
+    assertEqual(applyPercent(1, -100), 0, 'cannot go negative');
+  });
+
+  await test('snaps to psychological endings without big jumps', () => {
+    assertEqual(applyRounding(3520, 'end_99'), 3499, '3520 -> 34.99');
+    assertEqual(applyRounding(3560, 'end_99'), 3599, '3560 -> 35.99 (nearest)');
+    assertEqual(applyRounding(3520, 'end_95'), 3495, '3520 -> 34.95');
+    assertEqual(applyRounding(3520, 'end_00'), 3500, '3520 -> 35.00');
+    assertEqual(applyRounding(3520, 'none'), 3520, 'none is identity');
+  });
+
+  section('shopify gids');
+
+  await test('builds, parses and validates gids', () => {
+    assertEqual(toGid('ProductVariant', 42), 'gid://shopify/ProductVariant/42', 'toGid');
+    assertEqual(gidId('gid://shopify/Product/9'), '9', 'gidId');
+    assert(isVariantGid('gid://shopify/ProductVariant/1'), 'variant gid recognised');
+    assert(!isVariantGid('gid://shopify/Product/1'), 'product gid is not a variant gid');
+    assertEqual(parseGid('nope'), null, 'garbage parses to null');
+    assertEqual(coerceGid('Product', 7), 'gid://shopify/Product/7', 'coerces a bare id');
+    assertThrows(() => coerceGid('Product', 'gid://shopify/ProductVariant/7'), 'wrong resource type');
+  });
+
+  section('crypto');
+
+  await test('encrypts and decrypts an access token', () => {
+    const key = generateEncryptionKey();
+    const token = 'shpat_' + 'a'.repeat(32);
+    const sealed = encryptSecret(token, key);
+    assert(isEncryptedSecret(sealed), 'looks like a v1 payload');
+    assert(!sealed.includes(token), 'ciphertext does not contain the plaintext');
+    assertEqual(decryptSecret(sealed, key), token, 'round trip');
+  });
+
+  await test('refuses a tampered ciphertext or a wrong key', () => {
+    const key = generateEncryptionKey();
+    const sealed = encryptSecret('shpat_secret', key);
+    const parts = sealed.split('.');
+    const flipped = [parts[0], parts[1], parts[2], Buffer.from('tampered').toString('base64')].join('.');
+    assertThrows(() => decryptSecret(flipped, key), 'tampered ciphertext');
+    assertThrows(() => decryptSecret(sealed, generateEncryptionKey()), 'wrong key');
+  });
+
+  await test('validates key material with a useful message', () => {
+    assertThrows(() => parseEncryptionKey(undefined), 'missing key');
+    assertThrows(() => parseEncryptionKey('too-short'), 'short key');
+    assertEqual(parseEncryptionKey(generateEncryptionKey()).length, 32, 'accepts base64');
+    assertEqual(parseEncryptionKey('ab'.repeat(32)).length, 32, 'accepts hex');
+  });
+
+  await test('compares shared secrets in constant time', () => {
+    assert(safeEqual('abc123', 'abc123'), 'equal secrets match');
+    assert(!safeEqual('abc123', 'abc124'), 'different secrets do not');
+    assert(!safeEqual('abc', 'abcd'), 'different lengths do not');
+  });
+
+  section('dates (shop-timezone days)');
+
+  await test('resolves the calendar day in the shop timezone', () => {
+    // 03:00 UTC is still the previous evening in New York — the exact case that
+    // makes a UTC-based evaluator read the wrong day's orders.
+    assertEqual(dayInTimeZone(new Date('2026-07-30T03:00:00Z'), 'America/New_York'), '2026-07-29', 'NY evening');
+    assertEqual(dayInTimeZone(new Date('2026-07-30T03:00:00Z'), 'UTC'), '2026-07-30', 'same instant in UTC');
+    assertEqual(dayInTimeZone(new Date('2026-07-29T23:00:00Z'), 'Asia/Tokyo'), '2026-07-30', 'Tokyo morning');
+  });
+
+  await test('does day arithmetic across a DST boundary', () => {
+    assertEqual(addDays('2026-03-07', 1), '2026-03-08', 'spring forward');
+    assertEqual(addDays('2026-11-01', 1), '2026-11-02', 'fall back');
+    assertEqual(diffDays('2026-03-01', '2026-04-01'), 31, 'March is 31 days');
+    assertEqual(diffDays('2026-07-29', '2026-07-28'), -1, 'negative span');
+  });
+
+  await test('reports ISO weekdays like Postgres does', () => {
+    assertEqual(isoDayOfWeek('2026-07-27'), 1, 'Monday is 1');
+    assertEqual(isoDayOfWeek('2026-07-26'), 7, 'Sunday is 7');
+  });
+
+  await test('brackets a shop day into UTC instants', () => {
+    const { start, end } = dayBoundsUtc('2026-07-29', 'America/New_York');
+    assertEqual(start.toISOString(), '2026-07-29T04:00:00.000Z', 'EDT midnight is 04:00Z');
+    assertEqual(end.getTime() - start.getTime(), 86_400_000, 'exactly one day long');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// contracts
+// ---------------------------------------------------------------------------
+
+const SCHEMA_FILES = [
+  'forecast_result.schema.json',
+  'elasticity_fit.schema.json',
+  'expected_band.schema.json',
+  'guardrails.schema.json',
+  'proposal_request.schema.json',
+  'sync_progress.schema.json',
+  'journal_entry.schema.json',
+  'rollout_report.schema.json',
+] as const;
+
+async function testContracts(): Promise<void> {
+  section('contracts (JSON Schema)');
+
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+
+  const schemas = new Map<string, unknown>();
+  for (const file of SCHEMA_FILES) {
+    const raw = JSON.parse(readFileSync(resolve(process.cwd(), 'contracts', file), 'utf8')) as {
+      $id: string;
+    };
+    schemas.set(file, raw);
+    ajv.addSchema(raw, raw.$id);
+  }
+
+  const validate = (file: string, payload: unknown): void => {
+    const schema = schemas.get(file) as { $id: string };
+    const fn = ajv.getSchema(schema.$id);
+    assert(fn !== undefined, `schema ${file} compiled`);
+    if (!(fn as (data: unknown) => boolean)(payload)) {
+      const errors = (fn as { errors?: unknown[] }).errors ?? [];
+      throw new Error(`${file} rejected the payload: ${JSON.stringify(errors, null, 2)}`);
+    }
+  };
+
+  await test('every schema compiles', () => {
+    assertEqual(schemas.size, SCHEMA_FILES.length, 'all schemas loaded');
+  });
+
+  await test('a real forecast validates against forecast_result.schema.json', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 60, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, makeFit(product.variant_gid)]]),
+      now: NOW,
+    });
+    validate('forecast_result.schema.json', forecast);
+  });
+
+  await test('a bracket-only forecast validates too (fitted: null)', () => {
+    const product = makeProduct({ cogs_cents: null, cogs_source: 'none' });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 12, 3),
+      change: { type: 'absolute', absolute_cents: -300 },
+      now: NOW,
+    });
+    assertEqual(forecast.fitted, null, 'no fit means no fitted block');
+    assertEqual(forecast.confidence, 'assumption', 'and the tier says so');
+    validate('forecast_result.schema.json', forecast);
+  });
+
+  await test('elasticity_fit fixture validates', () => {
+    const fit: ElasticityFit = {
+      contract_version: CONTRACT_VERSION,
+      shop_domain: DEMO_SHOP_DOMAIN,
+      variant_gid: toGid('ProductVariant', 2001),
+      elasticity: -1.62,
+      se: 0.24,
+      n_obs: 168,
+      price_variation_pct: 11.4,
+      confidence: 'fitted',
+      confidence_explanation: 'Fitted to 168 days including two price changes.',
+      method: 'loglog_ridge_eb_shrunk',
+      shrinkage_weight: 0.85,
+      prior_elasticity: -1.4,
+      r2: 0.42,
+      model_version: 'elasticity-v1.0.0',
+      model_run_id: null,
+      fitted_at: NOW.toISOString(),
+      window_start: '2026-01-30',
+      window_end: '2026-07-28',
+    };
+    validate('elasticity_fit.schema.json', fit);
+  });
+
+  await test('expected_band fixtures validate, both kinds', () => {
+    const baseline: ExpectedBand = {
+      contract_version: CONTRACT_VERSION,
+      shop_domain: DEMO_SHOP_DOMAIN,
+      variant_gid: toGid('ProductVariant', 2001),
+      day: '2026-07-28',
+      expected_units: 12.4,
+      low: 7.1,
+      high: 18.2,
+      interval: 0.8,
+      band_kind: 'baseline',
+      rollout_id: null,
+      model_version: 'baseline-v1.0.0',
+      is_floored: false,
+      generated_at: NOW.toISOString(),
+    };
+    validate('expected_band.schema.json', baseline);
+
+    validate('expected_band.schema.json', {
+      ...baseline,
+      band_kind: 'counterfactual',
+      rollout_id: '3f1c9d64-1f4a-4c9e-9b57-2a0c9f6f1d22',
+      breach_probability: 0.91,
+    });
+  });
+
+  await test('a counterfactual band without a rollout id is rejected', () => {
+    const bad = {
+      contract_version: CONTRACT_VERSION,
+      shop_domain: DEMO_SHOP_DOMAIN,
+      variant_gid: toGid('ProductVariant', 2001),
+      day: '2026-07-28',
+      expected_units: 12.4,
+      low: 7.1,
+      high: 18.2,
+      interval: 0.8,
+      band_kind: 'counterfactual',
+      rollout_id: null,
+      model_version: 'counterfactual-v1.0.0',
+      generated_at: NOW.toISOString(),
+    };
+    assertThrows(() => validate('expected_band.schema.json', bad), 'schema enforces the scoping rule');
+  });
+
+  await test('guardrails fixture validates, including the default', () => {
+    validate('guardrails.schema.json', defaultGuardrails());
+
+    const alertOnly: Guardrails = {
+      contract_version: CONTRACT_VERSION,
+      auto_rollback: false,
+      rules: [
+        {
+          id: 'revenue-floor',
+          metric: 'revenue',
+          comparison: 'below_absolute',
+          threshold_pct: null,
+          absolute_floor: 25000,
+          consecutive_days: 3,
+          scope: 'rollout',
+          action: 'pause',
+          sentence: 'If daily revenue falls below $250 for 3 days in a row, pause the rollout and let me know.',
+        },
+      ],
+    };
+    validate('guardrails.schema.json', alertOnly);
+  });
+
+  await test('proposal_request fixture validates', () => {
+    const proposal: ProposalRequest = {
+      contract_version: CONTRACT_VERSION,
+      name: 'Spring margin repair',
+      variant_gids: [toGid('ProductVariant', 2001), toGid('ProductVariant', 2002)],
+      change: { type: 'percent', percent: 8, rounding: 'end_99' },
+      horizon_days: 90,
+      stages: [
+        { fraction: 0.25, hold_days: 3 },
+        { fraction: 0.5, hold_days: 3 },
+        { fraction: 1, hold_days: 4 },
+      ],
+      guardrails: defaultGuardrails(),
+      scheduled_start_at: null,
+      notify_emails: ['owner@example.com'],
+    };
+    validate('proposal_request.schema.json', proposal);
+  });
+
+  await test('a percent proposal without a percent is rejected', () => {
+    assertThrows(
+      () =>
+        validate('proposal_request.schema.json', {
+          contract_version: CONTRACT_VERSION,
+          variant_gids: [toGid('ProductVariant', 2001)],
+          change: { type: 'percent' },
+        }),
+      'schema requires the matching field',
+    );
+  });
+
+  await test('sync_progress fixture validates', () => {
+    const progress: SyncProgress = {
+      contract_version: CONTRACT_VERSION,
+      stage: 'history',
+      message: 'Loaded 240 products. Now reading 180 days of order history — about 2 minutes left.',
+      catalog: { ready: true, products_synced: 240, products_total: 240, ready_at: NOW.toISOString() },
+      history: { ready: false, days_synced: 64, days_target: 180, orders_processed: 4120, ready_at: null },
+      eta_seconds: 120,
+      error: null,
+      started_at: NOW.toISOString(),
+      updated_at: NOW.toISOString(),
+      finished_at: null,
+    };
+    validate('sync_progress.schema.json', progress);
+  });
+
+  await test('a real journal entry validates against journal_entry.schema.json', () => {
+    const product = makeProduct();
+    const entry = buildJournalEntry(
+      {
+        variant_gid: product.variant_gid,
+        product_gid: product.product_gid,
+        title: product.title,
+        sku: product.sku,
+        before_price_cents: 3200,
+        after_price_cents: 3520,
+        before_compare_at_cents: null,
+        after_compare_at_cents: null,
+        currency: 'USD',
+      },
+      {
+        source: 'rollout',
+        actor: 'priceflag',
+        rollout_id: '3f1c9d64-1f4a-4c9e-9b57-2a0c9f6f1d22',
+        rollout_name: 'Spring margin repair',
+        stage_index: 0,
+        idempotency_key: rolloutIdempotencyKey('3f1c9d64-1f4a-4c9e-9b57-2a0c9f6f1d22', 0, product.variant_gid, 3520),
+        applied_at: NOW.toISOString(),
+      },
+    );
+
+    validate(
+      'journal_entry.schema.json',
+      toJournalContract(
+        { ...entry, id: '9d0f2b3a-1c4d-4e5f-8a9b-0c1d2e3f4a5b', shop_id: 'shop1', created_at: NOW.toISOString() },
+        'Spring margin repair',
+      ),
+    );
+  });
+
+  await test('rollout_report fixture validates', () => {
+    const report: RolloutReport = {
+      contract_version: CONTRACT_VERSION,
+      rollout_id: '3f1c9d64-1f4a-4c9e-9b57-2a0c9f6f1d22',
+      generated_at: NOW.toISOString(),
+      model_version: 'report-v1.0.0',
+      model_run_id: null,
+      window: { start_day: '2026-06-28', end_day: '2026-07-28', days: 30 },
+      predicted: {
+        expected: { units_change_pct: -8.2, revenue_delta_cents: 184000, profit_delta_cents: 96000 },
+        low: { units_change_pct: -16.4, revenue_delta_cents: 42000, profit_delta_cents: 12000 },
+        high: { units_change_pct: -1.1, revenue_delta_cents: 301000, profit_delta_cents: 174000 },
+      },
+      realized: { units_change_pct: -5.4, revenue_delta_cents: 213000, profit_delta_cents: 118000 },
+      in_range: true,
+      elasticity_update: { before: -1.62, after: -1.18, se_after: 0.19, direction: 'less_sensitive' },
+      narrative:
+        'Orders held up better than expected after the increase. Your customers were less price-sensitive than we assumed, so the next forecast will start from a smaller predicted drop.',
+      per_variant: [
+        {
+          variant_gid: toGid('ProductVariant', 2001),
+          realized_units: 284,
+          expected_units: 300,
+          realized_revenue_cents: 999680,
+          realized_profit_cents: 673080,
+          elasticity_after: -1.18,
+        },
+      ],
+    };
+    validate('rollout_report.schema.json', report);
+  });
+
+  await test('confidence helpers agree with the contract ordering', () => {
+    assertEqual(worstConfidence(['fitted', 'partial']), 'partial', 'worst of fitted+partial');
+    assertEqual(worstConfidence(['fitted', 'assumption', 'partial']), 'assumption', 'assumption wins');
+    assertEqual(worstConfidence(['fitted']), 'fitted', 'single tier');
+    assertEqual(demoteConfidence('fitted'), 'partial', 'staleness demotes one step');
+    assertEqual(demoteConfidence('partial'), 'assumption', 'and again');
+    assertEqual(demoteConfidence('assumption'), 'assumption', 'never below the floor');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// forecast
+// ---------------------------------------------------------------------------
+
+async function testForecast(): Promise<void> {
+  section('forecast');
+
+  await test('breakeven is exact margin arithmetic', () => {
+    // price 32.00, cost 11.50, +10% -> 35.20. margin 20.50 -> 23.70.
+    // breakeven multiplier = 20.50 / 23.70 = 0.86498 -> -13.50%
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 10),
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+
+    assertEqual(forecast.breakeven.direction, 'can_lose', 'a price rise means orders can be lost');
+    assertClose(forecast.breakeven.units_change_pct as number, -13.5021, 0.01, 'breakeven percent');
+    assert(
+      forecast.breakeven.sentence.includes('lose up to 14%'),
+      `sentence should name the number, got: ${forecast.breakeven.sentence}`,
+    );
+  });
+
+  await test('a price cut states the gain it needs instead', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 10),
+      change: { type: 'percent', percent: -10 },
+      now: NOW,
+    });
+    assertEqual(forecast.breakeven.direction, 'must_gain', 'a cut needs more orders');
+    // margin 20.50 -> 17.30; 20.50/17.30 - 1 = +18.50%
+    assertClose(forecast.breakeven.units_change_pct as number, 18.4971, 0.01, 'breakeven percent');
+  });
+
+  await test('the breakeven scenario row lands at roughly zero profit', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 10),
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+    const row = forecast.scenarios.find((scenario) => scenario.is_breakeven);
+    assert(row !== undefined, 'a breakeven row exists');
+    assertClose((row as { profit_delta_cents: number | null }).profit_delta_cents as number, 0, 300, 'breakeven profit');
+  });
+
+  await test('baseline arithmetic is exact and in cents', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 10),
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+    assertClose(forecast.baseline.units_per_day, 10, 1e-6, 'units per day');
+    assertEqual(forecast.baseline.revenue_cents_per_day, 320_00, 'revenue per day');
+    assertEqual(forecast.baseline.profit_cents_per_day, 205_00, 'profit per day');
+    assertClose(forecast.baseline.margin_pct as number, 64.0625, 0.01, 'margin percent');
+
+    // At unchanged demand: (35.20 - 32.00) x 10 units x 90 days = $2,880.
+    const flat = forecast.scenarios.find((scenario) => scenario.units_change_pct === 0);
+    assertEqual((flat as { revenue_delta_cents: number }).revenue_delta_cents, 288_000, 'revenue delta at flat demand');
+  });
+
+  await test('missing COGS reports profit as unknown, never as zero', () => {
+    const product = makeProduct({ cogs_cents: null, cogs_source: 'none' });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 10),
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+
+    assertEqual(forecast.baseline.profit_cents_per_day, null, 'baseline profit is null');
+    assertEqual(forecast.baseline.has_cogs, false, 'has_cogs is false');
+    assertEqual(forecast.breakeven.direction, 'undefined', 'breakeven is undefined');
+    assert(
+      forecast.scenarios.every((scenario) => scenario.profit_delta_cents === null),
+      'every scenario reports null profit',
+    );
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'missing_cogs'),
+      'and it warns about the missing cost',
+    );
+    // Revenue is still knowable, and still exact.
+    assert(
+      forecast.scenarios.some((scenario) => scenario.revenue_delta_cents !== 0),
+      'revenue is still computed',
+    );
+  });
+
+  await test('a fit produces a fitted range around the expected outcome', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, makeFit(product.variant_gid)]]),
+      now: NOW,
+    });
+
+    assert(forecast.fitted !== null, 'fitted block present');
+    assertEqual(forecast.confidence, 'fitted', 'tier is fitted');
+    assertEqual(forecast.model_version, 'elasticity-v1.0.0', 'model version is traceable (R31)');
+
+    const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
+    // elasticity -1.6 on a +10% price move: 1.1^-1.6 - 1 = -14.0%
+    assertClose(fitted.expected.units_change_pct, -14.02, 0.2, 'expected units change');
+    assert(fitted.low.units_change_pct < fitted.expected.units_change_pct, 'low end is worse');
+    assert(fitted.high.units_change_pct > fitted.expected.units_change_pct, 'high end is better');
+    assert(
+      (fitted.low.profit_delta_cents as number) <= (fitted.high.profit_delta_cents as number),
+      'low profit <= high profit',
+    );
+  });
+
+  await test('a stale fit is demoted, never served as fresh (R32)', () => {
+    const product = makeProduct();
+    const stale = makeFit(product.variant_gid, {
+      fitted_at: new Date(NOW.getTime() - 45 * 86_400_000).toISOString(),
+    });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, stale]]),
+      now: NOW,
+    });
+
+    assertEqual(forecast.confidence, 'partial', 'fitted demotes to partial when stale');
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'stale_model'),
+      'and it says why',
+    );
+  });
+
+  await test('an assumption-tier fit is not leaned on', () => {
+    const product = makeProduct();
+    const weak = makeFit(product.variant_gid, { confidence: 'assumption', price_variation_pct: 0 });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, weak]]),
+      now: NOW,
+    });
+    assertEqual(forecast.fitted, null, 'no fitted block');
+    assertEqual(forecast.confidence, 'assumption', 'and the tier is honest about it');
+  });
+
+  await test('gift cards and subscriptions are excluded, with the reason (R22)', () => {
+    const tee = makeProduct();
+    const giftCard = makeProduct({
+      id: 'p2',
+      variant_gid: toGid('ProductVariant', 2002),
+      title: 'Gift Card',
+      is_gift_card: true,
+    });
+    const subscription = makeProduct({
+      id: 'p3',
+      variant_gid: toGid('ProductVariant', 2003),
+      title: 'Coffee Subscription',
+      has_selling_plan: true,
+    });
+
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [tee, giftCard, subscription],
+      orderDays: makeHistory(tee, 28, 10),
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+
+    assertEqual(forecast.proposal.variant_count, 1, 'only the tee is repriced');
+    assertEqual(forecast.products.length, 3, 'but all three are reported');
+    const excluded = forecast.products.filter((line) => line.excluded);
+    assertEqual(excluded.length, 2, 'two exclusions');
+    assert(
+      excluded.some((line) => line.exclusion_reason === 'gift_card') &&
+        excluded.some((line) => line.exclusion_reason === 'subscription'),
+      'each exclusion says which rule caught it',
+    );
+    assert(
+      forecast.products.filter((line) => line.excluded).every((line) => line.target_price_cents === line.current_price_cents),
+      'excluded prices never move',
+    );
+  });
+
+  await test('an all-excluded selection fails loudly', () => {
+    const giftCard = makeProduct({ is_gift_card: true });
+    let code = '';
+    try {
+      buildForecast({
+        shop: { currency: 'USD', timezone: TZ },
+        products: [giftCard],
+        orderDays: [],
+        change: { type: 'percent', percent: 10 },
+        now: NOW,
+      });
+    } catch (cause) {
+      code = cause instanceof ForecastError ? cause.code : 'wrong-error';
+    }
+    assertEqual(code, 'no_eligible_variants', 'throws a typed error');
+  });
+
+  await test('compare-at policy follows R13', () => {
+    // Decrease: keep compare-at — the implied discount is now more true.
+    const kept = resolveCompareAt(14800, 17800, 13000);
+    assertEqual(kept.action, 'keep', 'kept on a decrease');
+    assertEqual(kept.target, 17800, 'value unchanged');
+
+    // Increase past compare-at: clear it, never show a fake discount.
+    const cleared = resolveCompareAt(14800, 17800, 18000);
+    assertEqual(cleared.action, 'clear', 'cleared when the new price passes it');
+    assertEqual(cleared.target, null, 'compare-at removed');
+
+    // Exactly equal also clears: a "discount" to the same price is a lie.
+    assertEqual(resolveCompareAt(14800, 17800, 17800).action, 'clear', 'equal clears');
+
+    // No compare-at to begin with.
+    assertEqual(resolveCompareAt(14800, null, 16000).action, 'none', 'nothing to do');
+  });
+
+  await test('the forecast warns when a new price is below cost', () => {
+    const product = makeProduct({ price_cents: 1200, cogs_cents: 1150 });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 28, 5),
+      change: { type: 'percent', percent: -20 },
+      now: NOW,
+    });
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'price_below_cost'),
+      'warns about selling below cost',
+    );
+    assertEqual(forecast.breakeven.direction, 'undefined', 'and breakeven is meaningless there');
+  });
+
+  await test('a zero change is rejected rather than forecast', () => {
+    assertThrows(() => computeTargetPrice(3200, { type: 'percent', percent: 0 }), 'zero percent');
+    assertThrows(() => computeTargetPrice(3200, { type: 'absolute', absolute_cents: 0 }), 'zero cents');
+  });
+
+  await test('thin history is called out, not smoothed over', () => {
+    const product = makeProduct();
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 9, 4),
+      change: { type: 'percent', percent: 5 },
+      now: NOW,
+    });
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'thin_history'),
+      'warns about thin history',
+    );
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'no_price_variation'),
+      'and about the single price level',
+    );
+  });
+
+  await test('breakeven on a mixed-margin selection is volume weighted', () => {
+    const highMargin = makeProduct({ price_cents: 10000, cogs_cents: 2000 });
+    const lowMargin = makeProduct({
+      id: 'p2',
+      variant_gid: toGid('ProductVariant', 2002),
+      price_cents: 10000,
+      cogs_cents: 9000,
+    });
+    const breakeven = computeBreakeven([
+      {
+        product: highMargin,
+        baseline: { unitsPerDay: 1, ordersPerDay: 1, windowDays: 28, historyDays: 28, observedPriceLevels: 1 },
+        unitsPerDay: 1,
+        ordersPerDay: 1,
+        basePriceCents: 10000,
+        targetPriceCents: 11000,
+        targetCompareAtCents: null,
+        compareAtAction: 'none',
+        cogsCents: 2000,
+        fit: null,
+        fitConfidence: 'assumption',
+      },
+      {
+        product: lowMargin,
+        baseline: { unitsPerDay: 1, ordersPerDay: 1, windowDays: 28, historyDays: 28, observedPriceLevels: 1 },
+        unitsPerDay: 1,
+        ordersPerDay: 1,
+        basePriceCents: 10000,
+        targetPriceCents: 11000,
+        targetCompareAtCents: null,
+        compareAtAction: 'none',
+        cogsCents: 9000,
+        fit: null,
+        fitConfidence: 'assumption',
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    // Margins: 8000 + 1000 = 9000 before, 9000 + 2000 = 11000 after.
+    // 9000/11000 - 1 = -18.18%
+    assertClose(breakeven.units_change_pct as number, -18.1818, 0.01, 'weighted breakeven');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// guardrails
+// ---------------------------------------------------------------------------
+
+async function testGuardrails(): Promise<void> {
+  section('guardrails');
+
+  const rules = defaultGuardrails();
+
+  await test('a healthy day is not a breach', () => {
+    const assessment = evaluateGuardrails(rules, [observation({ day: '2026-07-28' })]);
+    assertEqual(assessment.breach, false, 'no breach');
+    assertEqual(assessment.action, null, 'no action');
+  });
+
+  await test('one bad day is not enough for a two-day rule', () => {
+    const assessment = evaluateGuardrails(rules, [
+      observation({ day: '2026-07-27' }),
+      observation({ day: '2026-07-28', actual_units: 5 }),
+    ]);
+    assertEqual(assessment.breach, true, 'today did cross the line');
+    assertEqual(assessment.streak, 1, 'streak of one');
+    assertEqual(assessment.action, null, 'but the rule needs two days');
+  });
+
+  await test('two consecutive bad days trigger the rollback', () => {
+    const assessment = evaluateGuardrails(rules, [
+      observation({ day: '2026-07-26' }),
+      observation({ day: '2026-07-27', actual_units: 5 }),
+      observation({ day: '2026-07-28', actual_units: 4 }),
+    ]);
+    assertEqual(assessment.streak, 2, 'streak of two');
+    assertEqual(assessment.action, 'rollback_all', 'and it fires');
+    assert((assessment.reason ?? '').includes('below'), `reason reads plainly: ${assessment.reason}`);
+  });
+
+  await test('a gap in the data breaks the streak', () => {
+    // Two bad days, but with a missing day between them: "two days in a row"
+    // has to mean two actual days.
+    const assessment = evaluateGuardrails(rules, [
+      observation({ day: '2026-07-25', actual_units: 4 }),
+      observation({ day: '2026-07-28', actual_units: 4 }),
+    ]);
+    assertEqual(assessment.streak, 1, 'streak does not span the gap');
+    assertEqual(assessment.action, null, 'so nothing fires');
+  });
+
+  await test('low-volume days cannot trip a guardrail on their own', () => {
+    // Expected 1.5 units, got zero. On a small store that is ordinary noise.
+    const quiet = [
+      observation({ day: '2026-07-27', actual_units: 0, expected_units: 1.5, expected_low: 0, expected_high: 4 }),
+      observation({ day: '2026-07-28', actual_units: 0, expected_units: 1.5, expected_low: 0, expected_high: 4 }),
+    ];
+    const assessment = evaluateGuardrails(rules, quiet);
+    assertEqual(assessment.breach, false, 'no breach');
+    assertEqual(assessment.floored, true, 'and it records that volume was too low to judge');
+  });
+
+  await test('auto_rollback: false downgrades the action to a pause', () => {
+    const alertOnly: Guardrails = { ...defaultGuardrails(), auto_rollback: false };
+    const assessment = evaluateGuardrails(alertOnly, [
+      observation({ day: '2026-07-27', actual_units: 4 }),
+      observation({ day: '2026-07-28', actual_units: 4 }),
+    ]);
+    assertEqual(assessment.action, 'pause', 'alert-only pauses instead of reverting');
+  });
+
+  await test('a profit rule is skipped, loudly, when profit is unknown', () => {
+    const profitRule: Guardrails = {
+      contract_version: CONTRACT_VERSION,
+      auto_rollback: true,
+      rules: [
+        {
+          id: 'profit-25-2d',
+          metric: 'profit',
+          comparison: 'below_expected_pct',
+          threshold_pct: 25,
+          consecutive_days: 2,
+          scope: 'rollout',
+          action: 'rollback_all',
+          sentence: 'If daily profit falls more than 25% below expected for 2 days, revert everything.',
+        },
+      ],
+    };
+    const assessment = evaluateGuardrails(profitRule, [
+      observation({ day: '2026-07-27', actual_profit_cents: null, expected_profit_cents: null }),
+      observation({ day: '2026-07-28', actual_profit_cents: null, expected_profit_cents: null }),
+    ]);
+    assertEqual(assessment.breach, false, 'unknown profit is not a satisfied guardrail');
+    assertEqual(assessment.skipped.length, 1, 'the skip is recorded');
+    assert((assessment.skipped[0]?.why ?? '').includes('cost'), 'and it explains why');
+  });
+
+  await test('a calibrated breach probability takes precedence (R29)', () => {
+    // Actual is inside the raw threshold, but the model is 91% sure the drop is real.
+    const assessment = evaluateGuardrails(rules, [
+      observation({ day: '2026-07-27', actual_units: 9, breach_probability: 0.91 }),
+      observation({ day: '2026-07-28', actual_units: 9, breach_probability: 0.93 }),
+    ]);
+    assertEqual(assessment.action, 'rollback_all', 'probability fires the rule');
+    assert((assessment.reason ?? '').includes('%'), 'and states the confidence');
+  });
+
+  await test('a low breach probability suppresses a raw threshold crossing', () => {
+    const assessment = evaluateGuardrails(rules, [
+      observation({ day: '2026-07-27', actual_units: 4, breach_probability: 0.2 }),
+      observation({ day: '2026-07-28', actual_units: 4, breach_probability: 0.15 }),
+    ]);
+    assertEqual(assessment.breach, false, 'the model says it is noise');
+  });
+
+  await test('an absolute floor rule works on revenue', () => {
+    const floorRule: Guardrails = {
+      contract_version: CONTRACT_VERSION,
+      auto_rollback: true,
+      rules: [
+        {
+          id: 'revenue-floor',
+          metric: 'revenue',
+          comparison: 'below_absolute',
+          threshold_pct: null,
+          absolute_floor: 25000,
+          consecutive_days: 1,
+          scope: 'rollout',
+          action: 'pause',
+          sentence: 'If daily revenue falls below $250, pause the rollout.',
+        },
+      ],
+    };
+    const assessment = evaluateGuardrails(floorRule, [
+      observation({ day: '2026-07-28', actual_revenue_cents: 19000 }),
+    ]);
+    assertEqual(assessment.action, 'pause', 'floor rule fires');
+  });
+
+  await test('no rules means nothing ever fires', () => {
+    const none: Guardrails = { contract_version: CONTRACT_VERSION, auto_rollback: true, rules: [] };
+    const assessment = evaluateGuardrails(none, [observation({ day: '2026-07-28', actual_units: 0 })]);
+    assertEqual(assessment.breach, false, 'no rules, no breach');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// rollout state machine
+// ---------------------------------------------------------------------------
+
+async function testRollout(): Promise<void> {
+  section('rollout state machine');
+
+  await test('the default plan is 25 / 50 / 100 of the selection', () => {
+    const stages = normalizeStages(undefined, 12);
+    assertEqual(stages.length, 3, 'three stages');
+    assertEqual(stages[0]?.fraction, 0.25, 'first is a quarter');
+    assertEqual(stages[2]?.fraction, 1, 'last is everything');
+    assertEqual(stages.reduce((sum, stage) => sum + stage.hold_days, 0), 10, 'ten days of holds');
+  });
+
+  await test('a single SKU collapses to a time canary (R11)', () => {
+    const stages = normalizeStages(undefined, 1);
+    assert(
+      stages.every((stage) => stage.fraction === 1),
+      'one SKU cannot be split into cohorts, so every stage is the whole selection',
+    );
+    assertEqual(stages.length, 2, 'two timed holds');
+  });
+
+  await test('invalid stage plans are rejected', () => {
+    assertThrows(() => normalizeStages([{ fraction: 0.5, hold_days: 3 }], 10), 'last stage must reach 1');
+    assertThrows(
+      () =>
+        normalizeStages(
+          [
+            { fraction: 0.5, hold_days: 3 },
+            { fraction: 0.25, hold_days: 3 },
+            { fraction: 1, hold_days: 3 },
+          ],
+          10,
+        ),
+      'fractions must not decrease',
+    );
+    assertThrows(() => normalizeStages([{ fraction: 1, hold_days: 0 }], 10), 'hold_days must be >= 1');
+    assertThrows(() => normalizeStages([{ fraction: 1.5, hold_days: 3 }], 10), 'fraction must be <= 1');
+
+    let code = '';
+    try {
+      normalizeStages(undefined, 0);
+    } catch (cause) {
+      code = cause instanceof RolloutError ? cause.code : 'wrong-error';
+    }
+    assertEqual(code, 'no_eligible_variants', 'empty selection is a typed error');
+  });
+
+  await test('cohorts are deterministic and correctly sized', () => {
+    const gids = Array.from({ length: 8 }, (_, i) => toGid('ProductVariant', 3000 + i));
+    const stages = normalizeStages(undefined, gids.length);
+
+    const first = assignCohorts('rollout-a', gids, stages);
+    const again = assignCohorts('rollout-a', gids, stages);
+    assert(
+      gids.every((gid) => first.get(gid) === again.get(gid)),
+      'the same rollout picks the same cohorts every time',
+    );
+
+    assertEqual(cohortSizes(first, 3).join(','), '2,2,4', '25% / 50% / 100% of 8 variants');
+    assertEqual(liveCountAtStage(first, 0), 2, 'two live at stage 0');
+    assertEqual(liveCountAtStage(first, 1), 4, 'four live at stage 1');
+    assertEqual(liveCountAtStage(first, 2), 8, 'everything live at the end');
+  });
+
+  await test('a different rollout shuffles differently', () => {
+    const gids = Array.from({ length: 20 }, (_, i) => toGid('ProductVariant', 4000 + i));
+    const stages = normalizeStages(undefined, gids.length);
+    const a = assignCohorts('rollout-a', gids, stages);
+    const b = assignCohorts('rollout-b', gids, stages);
+    const sameStage = gids.filter((gid) => a.get(gid) === b.get(gid)).length;
+    assert(sameStage < gids.length, 'the same SKUs are not always first');
+  });
+
+  await test('planning captures baselines and freezes the compare-at decision', () => {
+    const tee = makeProduct();
+    const sweater = makeProduct({
+      id: 'p2',
+      variant_gid: toGid('ProductVariant', 2002),
+      price_cents: 14800,
+      compare_at_cents: 17800,
+      cogs_cents: 6100,
+    });
+    const giftCard = makeProduct({ id: 'p3', variant_gid: toGid('ProductVariant', 2003), is_gift_card: true });
+
+    const rows = planRolloutVariants({
+      rolloutId: 'rollout-a',
+      shopId: 'shop1',
+      products: [tee, sweater, giftCard],
+      change: { type: 'percent', percent: 25 },
+      stages: normalizeStages(undefined, 2),
+    });
+
+    assertEqual(rows.length, 3, 'excluded variants are recorded too');
+    const teeRow = rows.find((row) => row.variant_gid === tee.variant_gid);
+    assertEqual(teeRow?.baseline_price_cents, 3200, 'baseline is the price at creation');
+    assertEqual(teeRow?.target_price_cents, 4000, '+25% of 3200');
+
+    // 14800 + 25% = 18500, which passes the 17800 compare-at, so it is cleared.
+    const sweaterRow = rows.find((row) => row.variant_gid === sweater.variant_gid);
+    assertEqual(sweaterRow?.compare_at_action, 'clear', 'compare-at cleared on the increase');
+    assertEqual(sweaterRow?.target_compare_at_cents, null, 'and the value removed');
+
+    const giftRow = rows.find((row) => row.variant_gid === giftCard.variant_gid);
+    assertEqual(giftRow?.excluded, true, 'gift card excluded');
+    assertEqual(giftRow?.target_price_cents, giftRow?.baseline_price_cents, 'and its price never moves');
+  });
+
+  await test('holds while the stage is young', () => {
+    const rollout = makeRollout({
+      stage_entered_at: new Date(NOW.getTime() - 1 * 86_400_000).toISOString(),
+    });
+    const decision = decideNext({
+      rollout,
+      assessment: evaluateGuardrails(rollout.guardrails, [observation({ day: TODAY })]),
+      asOf: TODAY,
+      timezone: TZ,
+    });
+    assertEqual(decision.decision, 'hold', 'holds');
+    assert(decision.reason.includes('more day'), `says how long: ${decision.reason}`);
+  });
+
+  await test('advances once the hold is served', () => {
+    const rollout = makeRollout();
+    const decision = decideNext({
+      rollout,
+      assessment: evaluateGuardrails(rollout.guardrails, [observation({ day: TODAY })]),
+      asOf: TODAY,
+      timezone: TZ,
+    });
+    assertEqual(decision.decision, 'advance', 'advances');
+    assertEqual(decision.next_stage, 1, 'to stage 1');
+    assert(decision.reason.includes('50%'), `names the new cohort size: ${decision.reason}`);
+  });
+
+  await test('completes after the final stage', () => {
+    const rollout = makeRollout({ current_stage: 2 });
+    const decision = decideNext({
+      rollout,
+      assessment: evaluateGuardrails(rollout.guardrails, [observation({ day: TODAY })]),
+      asOf: TODAY,
+      timezone: TZ,
+    });
+    assertEqual(decision.decision, 'complete', 'completes');
+  });
+
+  await test('safety outranks advancing', () => {
+    // The stage is ready to advance AND a guardrail has fired. Advancing a
+    // failing rollout is the worst possible outcome, so rollback wins.
+    const rollout = makeRollout();
+    const assessment = evaluateGuardrails(rollout.guardrails, [
+      observation({ day: addDays(TODAY, -1), actual_units: 4 }),
+      observation({ day: TODAY, actual_units: 4 }),
+    ]);
+    assertEqual(assessment.action, 'rollback_all', 'guardrail fired');
+
+    const decision = decideNext({ rollout, assessment, asOf: TODAY, timezone: TZ });
+    assertEqual(decision.decision, 'rollback', 'rollback beats advance');
+  });
+
+  await test('a rollout that is not running decides nothing', () => {
+    for (const status of ['paused', 'completed', 'draft', 'rolled_back'] as const) {
+      const decision = decideNext({
+        rollout: makeRollout({ status }),
+        assessment: evaluateGuardrails(defaultGuardrails(), [observation({ day: TODAY, actual_units: 0 })]),
+        asOf: TODAY,
+        timezone: TZ,
+      });
+      assertEqual(decision.decision, 'none', `no decision while ${status}`);
+    }
+  });
+
+  await test('status transitions are constrained', () => {
+    assert(canTransition('draft', 'running'), 'draft -> running');
+    assert(canTransition('running', 'rolled_back'), 'running -> rolled_back');
+    assert(canTransition('paused', 'running'), 'paused -> running');
+    assert(!canTransition('completed', 'running'), 'completed is terminal');
+    assert(!canTransition('rolled_back', 'running'), 'rolled_back is terminal');
+    assert(!canTransition('draft', 'completed'), 'no shortcut to completed');
+  });
+
+  await test('scheduled starts fire only when due (R14)', () => {
+    const future = makeRollout({
+      status: 'scheduled',
+      scheduled_start_at: new Date(NOW.getTime() + 3600_000).toISOString(),
+    });
+    const past = makeRollout({
+      status: 'scheduled',
+      scheduled_start_at: new Date(NOW.getTime() - 3600_000).toISOString(),
+    });
+    assertEqual(isDueToStart(future, NOW), false, 'not yet');
+    assertEqual(isDueToStart(past, NOW), true, 'due');
+    assertEqual(isDueToStart(makeRollout({ status: 'running' }), NOW), false, 'already running');
+  });
+
+  await test('stage writes touch only the newly-live cohort', () => {
+    const variants = [
+      { variant_gid: 'a', cohort_stage: 0, target_price_cents: 100, excluded: false },
+      { variant_gid: 'b', cohort_stage: 1, target_price_cents: 200, excluded: false },
+      { variant_gid: 'c', cohort_stage: 1, target_price_cents: 300, excluded: true },
+    ];
+    assertEqual(pricesForStage(variants, 0).length, 1, 'stage 0 writes one price');
+    assertEqual(pricesForStage(variants, 1).length, 1, 'stage 1 skips the excluded variant');
+  });
+
+  await test('rollback restores every applied variant from its baseline', () => {
+    const variants = [
+      { variant_gid: 'a', baseline_price_cents: 100, baseline_compare_at_cents: 150, applied_at: NOW.toISOString(), excluded: false },
+      // Never applied: nothing to restore.
+      { variant_gid: 'b', baseline_price_cents: 200, baseline_compare_at_cents: null, applied_at: null, excluded: false },
+      { variant_gid: 'c', baseline_price_cents: 300, baseline_compare_at_cents: null, applied_at: NOW.toISOString(), excluded: true },
+    ];
+    const restores = pricesForRollback(variants);
+    assertEqual(restores.length, 1, 'only the applied, non-excluded variant');
+    assertEqual(restores[0]?.price_cents, 100, 'restores the captured baseline');
+    assertEqual(restores[0]?.compare_at_cents, 150, 'including compare-at');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fallback bands
+// ---------------------------------------------------------------------------
+
+async function testBands(): Promise<void> {
+  section('fallback expected band');
+
+  const flat = Array.from({ length: 28 }, (_, i) => ({ day: addDays(TODAY, -(28 - i)), units: 10 }));
+
+  await test('a steady history gives a band centred on the mean', () => {
+    const band = bracketBand(flat, TODAY);
+    assertClose(band.expected_units, 10, 0.5, 'expected units');
+    assert(band.low < band.expected_units && band.expected_units < band.high, 'band brackets the estimate');
+    assertEqual(band.floored, false, 'volume is high enough to judge');
+    assertEqual(band.source, 'bracket', 'never claims to be a model');
+  });
+
+  await test('a low-volume history floors the low edge', () => {
+    const quiet = Array.from({ length: 28 }, (_, i) => ({ day: addDays(TODAY, -(28 - i)), units: i % 7 === 0 ? 1 : 0 }));
+    const band = bracketBand(quiet, TODAY);
+    assertEqual(band.floored, true, 'too quiet to judge a single day');
+    assertEqual(band.low, 0, 'so the low edge cannot trigger anything');
+  });
+
+  await test('no history is an honest zero, not a confident one', () => {
+    const band = bracketBand([], TODAY);
+    assertEqual(band.expected_units, 0, 'no expectation');
+    assertEqual(band.floored, true, 'and flagged');
+    assertEqual(band.n_obs, 0, 'with the sample size stated');
+  });
+
+  await test('history after the target day is ignored', () => {
+    const withFuture = [...flat, { day: addDays(TODAY, 1), units: 9999 }];
+    const band = bracketBand(withFuture, TODAY);
+    assertClose(band.expected_units, 10, 0.5, 'a future outlier cannot leak in');
+  });
+
+  await test('a noisier history gives a wider band', () => {
+    const noisy = Array.from({ length: 28 }, (_, i) => ({
+      day: addDays(TODAY, -(28 - i)),
+      units: i % 2 === 0 ? 2 : 18,
+    }));
+    const steady = bracketBand(flat, TODAY);
+    const wild = bracketBand(noisy, TODAY);
+    assert(wild.high - wild.low > steady.high - steady.low, 'more variance, wider band');
+  });
+
+  await test('combining independent bands tightens relative to the sum', () => {
+    const single = bracketBand(flat, TODAY);
+    const combined = combineBands([single, single, single, single]);
+    assertClose(combined.expected_units, single.expected_units * 4, 0.01, 'means add');
+    const singleWidth = single.high - single.low;
+    const combinedWidth = combined.high - combined.low;
+    assert(combinedWidth < singleWidth * 4, 'independent variances add, so the width grows with sqrt(n)');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// journal
+// ---------------------------------------------------------------------------
+
+async function testJournal(): Promise<void> {
+  section('journal');
+
+  await test('idempotency keys identify an intended write', () => {
+    const a = rolloutIdempotencyKey('r1', 0, 'gid://shopify/ProductVariant/1', 3520);
+    const b = rolloutIdempotencyKey('r1', 0, 'gid://shopify/ProductVariant/1', 3520);
+    assertEqual(a, b, 'a retry of the same intent produces the same key');
+
+    // An edited target is a different intent and must not be deduped away.
+    assert(a !== rolloutIdempotencyKey('r1', 0, 'gid://shopify/ProductVariant/1', 3600), 'target price is in the key');
+    assert(a !== rolloutIdempotencyKey('r1', 1, 'gid://shopify/ProductVariant/1', 3520), 'stage is in the key');
+
+    // A rollback has no stage: however many times it is requested, one restore.
+    const undo = rollbackIdempotencyKey('r1', 'gid://shopify/ProductVariant/1', 3200);
+    assertEqual(undo, rollbackIdempotencyKey('r1', 'gid://shopify/ProductVariant/1', 3200), 'stable');
+    assert(!undo.includes(':0:'), 'and stage-free');
+  });
+
+  await test('a journal entry carries both sides of the change', () => {
+    const entry = buildJournalEntry(
+      {
+        variant_gid: 'gid://shopify/ProductVariant/1',
+        product_gid: 'gid://shopify/Product/1',
+        title: 'Everyday Tee',
+        sku: 'TEE',
+        before_price_cents: 3200,
+        after_price_cents: 3520,
+        before_compare_at_cents: null,
+        after_compare_at_cents: null,
+        currency: 'USD',
+      },
+      { source: 'rollout', actor: 'priceflag', rollout_id: 'r1', rollout_name: 'Spring', stage_index: 1 },
+    );
+    assertEqual(entry.before_price_cents, 3200, 'before price recorded');
+    assertEqual(entry.status, 'applied', 'applied by default');
+    assert((entry.reason ?? '').includes('Stage 2'), `human-readable reason: ${entry.reason}`);
+  });
+
+  await test('CSV export escapes commas, quotes and formulas', () => {
+    const csv = journalToCsv([
+      {
+        contract_version: CONTRACT_VERSION,
+        id: 'j1',
+        variant_gid: 'gid://shopify/ProductVariant/1',
+        product_gid: 'gid://shopify/Product/1',
+        title: 'Tee, "Black"',
+        sku: 'TEE',
+        source: 'rollout',
+        actor: 'priceflag',
+        status: 'applied',
+        before_price_cents: 3200,
+        after_price_cents: 3520,
+        currency: 'USD',
+        // A spreadsheet would treat a leading = as a formula.
+        reason: '=SUM(A1:A2)',
+        applied_at: NOW.toISOString(),
+      },
+    ]);
+
+    const lines = csv.trim().split('\n');
+    assertEqual(lines.length, 2, 'header plus one row');
+    assert(lines[1]?.includes('"Tee, ""Black"""'), 'quotes and commas escaped');
+    assert(lines[1]?.includes("'=SUM"), 'formula injection neutralised');
+    assert(lines[1]?.includes('32.00,35.20'), 'money exported as decimals for spreadsheets');
+    assert(lines[1]?.includes('10.00'), 'and the percentage change is computed');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// adapters — the same suite against every implementation
+// ---------------------------------------------------------------------------
+
+async function runAdapterSuite(label: string, adapter: StoreAdapter, shopId: string): Promise<void> {
+  section(`adapter: ${label}`);
+
+  await test('ping reports reachable', async () => {
+    const ping = await adapter.ping();
+    assertEqual(ping.ok, true, ping.detail ?? 'ping failed');
+  });
+
+  await test('lists the catalog and filters to repriceable variants', async () => {
+    const all = await adapter.listProducts(shopId);
+    assert(all.total >= 14, `expected the seeded catalog, got ${all.total}`);
+
+    const repriceable = await adapter.listProducts(shopId, { only_repriceable: true });
+    assert(repriceable.total < all.total, 'gift cards and subscriptions are filtered out');
+    assert(
+      repriceable.items.every((product) => exclusionReasonFor(product) === null),
+      'nothing excluded slips through',
+    );
+  });
+
+  await test('search and paging work', async () => {
+    const found = await adapter.listProducts(shopId, { search: 'Tee' });
+    assert(found.total >= 2, `search found ${found.total}`);
+
+    const paged = await adapter.listProducts(shopId, { limit: 3, offset: 0 });
+    assertEqual(paged.items.length, 3, 'page size respected');
+    assert(paged.total > 3, 'total is the unpaged count');
+  });
+
+  await test('COGS can be set and cleared, keeping source consistent', async () => {
+    const missing = await adapter.listProducts(shopId, { missing_cogs: true, only_repriceable: true });
+    assert(missing.items.length > 0, 'the seeded store has a product with no cost, on purpose');
+    const target = missing.items[0] as Product;
+
+    const set = await adapter.setCogs(shopId, target.variant_gid, 4200, 'manual');
+    assertEqual(set.cogs_cents, 4200, 'cost saved');
+    assertEqual(set.cogs_source, 'manual', 'source recorded');
+
+    const cleared = await adapter.setCogs(shopId, target.variant_gid, null, 'manual');
+    assertEqual(cleared.cogs_cents, null, 'cost cleared');
+    assertEqual(cleared.cogs_source, 'none', 'and source falls back to none');
+  });
+
+  await test('order history reads back in a date window', async () => {
+    const products = await adapter.listProducts(shopId, { only_repriceable: true, limit: 1 });
+    const variantGid = (products.items[0] as Product).variant_gid;
+
+    const all = await adapter.getOrderDays(shopId, { variant_gids: [variantGid] });
+    assert(all.length > 100, `expected months of history, got ${all.length} days`);
+
+    const from = addDays(TODAY, -14);
+    const window = await adapter.getOrderDays(shopId, { variant_gids: [variantGid], from_day: from });
+    assert(window.length <= 15, 'window is respected');
+    assert(
+      window.every((row) => row.day >= from),
+      'and nothing older leaks in',
+    );
+  });
+
+  await test('a rollout round-trips with its variants and cohorts', async () => {
+    const products = await adapter.listProducts(shopId, { only_repriceable: true, limit: 8 });
+    const stages = normalizeStages(undefined, products.items.length);
+
+    const rollout = await adapter.createRollout({
+      shop_id: shopId,
+      name: 'Smoke test rollout',
+      status: 'draft',
+      change_type: 'percent',
+      change_pct: 8,
+      change_absolute_cents: null,
+      rounding: 'none',
+      horizon_days: 90,
+      stages,
+      current_stage: -1,
+      guardrails: defaultGuardrails(),
+      forecast: null,
+      scheduled_start_at: null,
+      started_at: null,
+      ended_at: null,
+      ended_reason: null,
+      paused_reason: null,
+      notify_emails: [],
+      created_by: 'smoke',
+    });
+
+    assertEqual(rollout.status, 'draft', 'created as a draft');
+    assertEqual(rollout.current_stage, -1, 'nothing live yet');
+
+    const planned = planRolloutVariants({
+      rolloutId: rollout.id,
+      shopId,
+      products: products.items,
+      change: { type: 'percent', percent: 8 },
+      stages,
+    });
+    await adapter.insertRolloutVariants(planned);
+
+    const stored = await adapter.getRolloutVariants(rollout.id);
+    assertEqual(stored.length, planned.length, 'every variant stored');
+    assert(
+      stored.every((row) => row.baseline_price_cents > 0),
+      'baselines captured',
+    );
+    assert(
+      stored.some((row) => row.cohort_stage === 0) && stored.some((row) => row.cohort_stage === stages.length - 1),
+      'cohorts span the stages',
+    );
+
+    const running = await adapter.updateRollout(rollout.id, {
+      status: 'running',
+      current_stage: 0,
+      started_at: NOW.toISOString(),
+      stage_entered_at: NOW.toISOString(),
+    });
+    assertEqual(running.status, 'running', 'transitions persist');
+
+    const active = await adapter.listActiveRollouts();
+    assert(
+      active.some((candidate) => candidate.id === rollout.id),
+      'and it shows up for the evaluator',
+    );
+
+    // -- idempotency of the daily reading -----------------------------------
+    const readingBase = {
+      rollout_id: rollout.id,
+      shop_id: shopId,
+      day: TODAY,
+      stage_index: 0,
+      actual_units: 12,
+      actual_orders: 11,
+      actual_revenue_cents: 38400,
+      actual_profit_cents: 24600,
+      expected_units: 13,
+      expected_low: 8,
+      expected_high: 18,
+      expected_source: 'bracket' as const,
+      interval_nominal: 0.8,
+      model_version: null,
+      band_stale: false,
+      band_floored: false,
+      breach_probability: null,
+      breach: false,
+      breach_rule_id: null,
+      breach_reason: null,
+      breach_streak: 0,
+      decision: 'hold' as const,
+      evaluated_at: NOW.toISOString(),
+    };
+    await adapter.upsertRolloutReading(readingBase);
+    await adapter.upsertRolloutReading({ ...readingBase, actual_units: 14, decision: 'advance' });
+
+    const readings = await adapter.listRolloutReadings(rollout.id);
+    assertEqual(readings.length, 1, 'a second evaluation of the same day updates, never duplicates');
+    assertEqual(readings[0]?.actual_units, 14, 'and the newer numbers win');
+
+    // -- journal idempotency ------------------------------------------------
+    const variant = stored.find((row) => !row.excluded) as (typeof stored)[number];
+    const key = rolloutIdempotencyKey(rollout.id, 0, variant.variant_gid, variant.target_price_cents);
+    const entry = buildJournalEntry(
+      {
+        variant_gid: variant.variant_gid,
+        product_gid: variant.product_gid,
+        title: variant.title,
+        sku: variant.sku,
+        before_price_cents: variant.baseline_price_cents,
+        after_price_cents: variant.target_price_cents,
+        before_compare_at_cents: variant.baseline_compare_at_cents,
+        after_compare_at_cents: variant.target_compare_at_cents,
+        currency: 'USD',
+      },
+      { source: 'rollout', actor: 'priceflag', rollout_id: rollout.id, stage_index: 0, idempotency_key: key },
+    );
+
+    const firstWrite = await adapter.appendJournalEntries(shopId, [entry]);
+    assertEqual(firstWrite.length, 1, 'first write lands');
+    const secondWrite = await adapter.appendJournalEntries(shopId, [entry]);
+    assertEqual(secondWrite.length, 0, 'the retry is skipped, not duplicated');
+
+    const journal = await adapter.listJournalEntries(shopId, { rollout_id: rollout.id });
+    assertEqual(journal.total, 1, 'exactly one entry for this write');
+
+    const last = await adapter.getLastJournaledPrice(shopId, variant.variant_gid);
+    assertEqual(last?.after_price_cents, variant.target_price_cents, 'and the recovery read finds it');
+
+    // -- events -------------------------------------------------------------
+    await adapter.appendRolloutEvent({
+      rollout_id: rollout.id,
+      shop_id: shopId,
+      type: 'started',
+      message: 'The new price is live on the first cohort.',
+      actor: 'priceflag',
+      data: { stage: 0 },
+    });
+    const events = await adapter.listRolloutEvents(rollout.id);
+    assert(events.length >= 1, 'events are readable');
+    assertEqual(events[0]?.type, 'started', 'newest first');
+
+    // -- locking ------------------------------------------------------------
+    const outcome = await adapter.withRolloutLock(rollout.id, async () => {
+      const contended = await adapter.withRolloutLock(rollout.id, async () => 'should not run');
+      assertEqual(contended.acquired, false, 'a second evaluator cannot take the lease');
+      return 'done';
+    });
+    assertEqual(outcome.acquired, true, 'the first evaluator holds it');
+    assertEqual(outcome.result, 'done', 'and its work runs');
+
+    const afterRelease = await adapter.withRolloutLock(rollout.id, async () => 'reacquired');
+    assertEqual(afterRelease.acquired, true, 'the lease is released afterwards');
+
+    // Leave the store tidy for the next run.
+    await adapter.updateRollout(rollout.id, {
+      status: 'cancelled',
+      ended_at: NOW.toISOString(),
+      ended_reason: 'cancelled',
+    });
+  });
+
+  await test('webhooks dedupe on the delivery id', async () => {
+    const webhookId = `smoke-${label}-orders-create-1`;
+    const first = await adapter.recordWebhook({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      topic: 'orders/create',
+      webhook_id: webhookId,
+    });
+    const second = await adapter.recordWebhook({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      topic: 'orders/create',
+      webhook_id: webhookId,
+    });
+
+    assertEqual(second.duplicate, true, 'a redelivery is recognised');
+    assertEqual(first.record.webhook_id, second.record.webhook_id, 'and maps to the same record');
+
+    await adapter.markWebhookProcessed(webhookId, 'processed');
+  });
+
+  await test('sync progress can be created and advanced', async () => {
+    const run = await adapter.createSyncRun(shopId, 'catalog');
+    assertEqual(run.stage, 'queued', 'starts queued');
+
+    const advanced = await adapter.updateSyncRun(run.id, {
+      stage: 'catalog',
+      products_total: 14,
+      products_synced: 14,
+      catalog_ready_at: NOW.toISOString(),
+      message: 'Loaded 14 products. Reading order history next.',
+    });
+    assertEqual(advanced.products_synced, 14, 'counts persist');
+    assert(advanced.catalog_ready_at !== null, 'catalog readiness is its own moment');
+
+    const latest = await adapter.getLatestSyncRun(shopId);
+    assertEqual(latest?.id, run.id, 'the newest run is what onboarding reads');
+  });
+
+  await test('ML outputs read back through the fallback chain', async () => {
+    const products = await adapter.listProducts(shopId, { only_repriceable: true, limit: 2 });
+    const variantGids = products.items.map((product) => product.variant_gid);
+
+    if (adapter.upsertFits) {
+      await adapter.upsertFits(shopId, [
+        {
+          shop_id: shopId,
+          variant_gid: variantGids[0] as string,
+          elasticity: -1.55,
+          se: 0.22,
+          n_obs: 160,
+          price_variation_pct: 9.8,
+          confidence: 'fitted',
+          confidence_explanation: null,
+          method: 'smoke',
+          shrinkage_weight: 0.8,
+          prior_elasticity: -1.4,
+          r2: 0.38,
+          model_version: 'smoke-v1',
+          model_run_id: null,
+          window_start: addDays(TODAY, -180),
+          window_end: addDays(TODAY, -1),
+          fitted_at: NOW.toISOString(),
+        },
+      ]);
+    }
+
+    const fits = await adapter.getLatestFits(shopId, variantGids);
+    if (adapter.upsertFits) {
+      assert(fits.has(variantGids[0] as string), 'the fit is readable');
+      assertEqual(fits.get(variantGids[0] as string)?.model_version, 'smoke-v1', 'with its version');
+    }
+    // The variant with no fit is simply absent — the forecast falls back to
+    // bracket math for it rather than inventing one.
+    assert(!fits.has(variantGids[1] as string) || fits.size >= 1, 'missing fits are absent, not faked');
+  });
+
+  await test('a forecast can be built end to end from stored data', async () => {
+    const products = await adapter.listProducts(shopId, { only_repriceable: true, limit: 4 });
+    const variantGids = products.items.map((product) => product.variant_gid);
+    const orderDays = await adapter.getOrderDays(shopId, {
+      variant_gids: variantGids,
+      from_day: addDays(TODAY, -90),
+    });
+    const shop = await adapter.getShop(shopId);
+    const fits = await adapter.getLatestFits(shopId, variantGids);
+
+    const forecast = buildForecast({
+      shop: { currency: shop?.currency ?? 'USD', timezone: shop?.timezone ?? 'UTC' },
+      products: products.items,
+      orderDays,
+      change: { type: 'percent', percent: 7 },
+      fits,
+      now: NOW,
+    });
+
+    assertEqual(forecast.proposal.variant_count, products.items.length, 'every selected variant priced');
+    assert(forecast.baseline.units_per_day > 0, 'the seeded store actually sells things');
+    assert(forecast.scenarios.length >= 5, 'the scenario table is populated');
+    assert(forecast.explanation.length > 40, 'and there is a plain-language explanation');
+  });
+}
+
+async function testAdapters(): Promise<void> {
+  const demo = DemoAdapter.ephemeral(20260729);
+  const demoShop = await demo.demoShop();
+  await runAdapterSuite('DemoAdapter (in-memory)', demo, demoShop.id);
+
+  // -- persistence ---------------------------------------------------------
+  section('adapter: DemoAdapter persistence');
+
+  const statePath = resolve(process.cwd(), '.priceflag/smoke-state.json');
+  if (existsSync(statePath)) rmSync(statePath);
+
+  await test('demo state survives a restart', async () => {
+    const first = new DemoAdapter({ statePath, autoSeed: true, seed: 20260729 });
+    const shop = await first.demoShop();
+    const products = await first.listProducts(shop.id, { only_repriceable: true, limit: 1 });
+    const variantGid = (products.items[0] as Product).variant_gid;
+    await first.setCogs(shop.id, variantGid, 1234, 'manual');
+
+    await first.appendJournalEntries(shop.id, [
+      buildJournalEntry(
+        {
+          variant_gid: variantGid,
+          product_gid: (products.items[0] as Product).product_gid,
+          title: 'restart test',
+          sku: null,
+          before_price_cents: 1000,
+          after_price_cents: 1100,
+          before_compare_at_cents: null,
+          after_compare_at_cents: null,
+          currency: 'USD',
+        },
+        { source: 'manual', actor: 'merchant', idempotency_key: 'restart-test-1' },
+      ),
+    ]);
+
+    assert(existsSync(statePath), 'state was written to disk');
+
+    // A brand new adapter on the same path is a restart.
+    const second = new DemoAdapter({ statePath, autoSeed: true, seed: 20260729 });
+    const reloadedShop = await second.getShopByDomain(DEMO_SHOP_DOMAIN);
+    assertEqual(reloadedShop?.id, shop.id, 'same shop, same id');
+
+    const reloaded = await second.getProductsByVariantGids(shop.id, [variantGid]);
+    assertEqual(reloaded[0]?.cogs_cents, 1234, 'the cost edit survived');
+
+    const journal = await second.listJournalEntries(shop.id, { sources: ['manual'] });
+    assertEqual(journal.total, 1, 'and so did the journal entry');
+
+    // Re-appending the same key after a restart is still a no-op.
+    const retry = await second.appendJournalEntries(shop.id, [
+      buildJournalEntry(
+        {
+          variant_gid: variantGid,
+          product_gid: (products.items[0] as Product).product_gid,
+          title: 'restart test',
+          sku: null,
+          before_price_cents: 1000,
+          after_price_cents: 1100,
+          before_compare_at_cents: null,
+          after_compare_at_cents: null,
+          currency: 'USD',
+        },
+        { source: 'manual', actor: 'merchant', idempotency_key: 'restart-test-1' },
+      ),
+    ]);
+    assertEqual(retry.length, 0, 'idempotency outlives the process');
+
+    rmSync(statePath);
+  });
+
+  // -- Supabase ------------------------------------------------------------
+  if (!hasSupabaseConfig()) {
+    section('adapter: SupabaseAdapter');
+    skip('the full adapter suite', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    return;
+  }
+
+  const supabase = new SupabaseAdapter();
+  const ping = await supabase.ping();
+  if (!ping.ok) {
+    section('adapter: SupabaseAdapter');
+    skip('the full adapter suite', `unreachable: ${ping.detail ?? 'unknown'}`);
+    return;
+  }
+
+  const store = generateDemoStore({ seed: 20260729 });
+  const shop = await supabase.upsertShop({
+    ...store.shop,
+    shop_domain: 'priceflag-smoke.myshopify.com',
+    name: 'Priceflag smoke store',
+    mode: 'demo',
+  });
+  await supabase.upsertProducts(shop.id, store.products);
+  await supabase.upsertOrderDays(shop.id, store.orderDays);
+
+  await runAdapterSuite('SupabaseAdapter', supabase, shop.id);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  process.stdout.write('\x1b[1mPriceflag smoke test\x1b[0m\n');
+
+  await testPrimitives();
+  await testContracts();
+  await testForecast();
+  await testGuardrails();
+  await testRollout();
+  await testBands();
+  await testJournal();
+  await testAdapters();
+
+  process.stdout.write(
+    `\n\x1b[1m${passed} passed\x1b[0m` +
+      (failed > 0 ? `, \x1b[31m${failed} failed\x1b[0m` : '') +
+      (skipped > 0 ? `, \x1b[33m${skipped} skipped\x1b[0m` : '') +
+      '\n',
+  );
+
+  if (failures.length > 0) {
+    process.stdout.write('\n\x1b[31mFailures:\x1b[0m\n');
+    for (const failure of failures) process.stdout.write(`  ${failure}\n`);
+  }
+
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+void main();

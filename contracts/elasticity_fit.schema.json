@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/elasticity_fit.schema.json",
+  "title": "ElasticityFit",
+  "description": "One fitted price elasticity for one variant. Written by Lane C into `elasticity_fits`, read by Lane B's forecast endpoint. One row per (shop, variant, model_version); the freshest row wins.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "shop_domain",
+    "variant_gid",
+    "elasticity",
+    "se",
+    "n_obs",
+    "price_variation_pct",
+    "confidence",
+    "model_version",
+    "fitted_at"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "shop_domain": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.myshopify\\.com$" },
+    "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+    "elasticity": {
+      "type": "number",
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Own-price elasticity, normally negative: -1.6 means a 1% price rise gives 1.6% fewer units. Positive values are permitted but Lane B demotes confidence to `assumption` and warns."
+    },
+    "se": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Standard error of `elasticity` (bootstrap). Drives the fitted range's width. null only if the method genuinely cannot produce one."
+    },
+    "n_obs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Product-days used in the fit."
+    },
+    "price_variation_pct": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Spread of observed prices in the fitting window, as a percent of the mean price. The single best predictor of whether this fit is trustworthy."
+    },
+    "confidence": {
+      "enum": ["fitted", "partial", "assumption"],
+      "description": "Lane C's honest self-assessment by data richness. `assumption` means 'do not lean on this' — Lane B will serve bracket math instead."
+    },
+    "confidence_explanation": {
+      "type": "string",
+      "description": "Optional one-liner in plain language, e.g. 'this price has never changed, so we used a store-wide average'."
+    },
+    "method": {
+      "type": "string",
+      "description": "Free-form, e.g. 'loglog_ridge_eb_shrunk'. For debugging and model cards, never rendered to merchants."
+    },
+    "shrinkage_weight": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "0 = the estimate is entirely the portfolio prior, 1 = entirely this variant's own data."
+    },
+    "prior_elasticity": { "type": ["number", "null"] },
+    "r2": { "type": ["number", "null"] },
+    "model_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Matches model_runs.model_version (R31) — every number is traceable to the run that made it."
+    },
+    "model_run_id": { "type": ["string", "null"], "format": "uuid" },
+    "fitted_at": { "type": "string", "format": "date-time" },
+    "window_start": { "type": ["string", "null"], "format": "date" },
+    "window_end": { "type": ["string", "null"], "format": "date" }
+  }
+}

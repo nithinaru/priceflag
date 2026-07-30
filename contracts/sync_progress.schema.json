@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/sync_progress.schema.json",
+  "title": "SyncProgress",
+  "description": "What onboarding polls (GET /api/sync/status). Designed so the UI can say what is loaded, what is still coming, and what is usable right now (R24) — the catalog becomes usable long before 180 days of order history finishes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "stage", "catalog", "history", "message", "started_at", "updated_at"],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "stage": {
+      "enum": ["queued", "catalog", "history", "aggregating", "done", "error"],
+      "description": "Monotonic except for `error`. Consumers must treat an unknown value as `queued`."
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Merchant-facing plain language for the current stage, e.g. 'Loaded 240 products. Now reading 180 days of order history — about 2 minutes left.'"
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "products_synced", "products_total"],
+      "properties": {
+        "ready": { "type": "boolean", "description": "true = the catalog is usable now, even if history is still loading." },
+        "products_synced": { "type": "integer", "minimum": 0, "description": "Variants written so far." },
+        "products_total": { "type": ["integer", "null"], "minimum": 0, "description": "null until known." },
+        "ready_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "days_synced", "days_target"],
+      "properties": {
+        "ready": { "type": "boolean", "description": "true = enough history for forecasts fitted to this store." },
+        "days_synced": { "type": "integer", "minimum": 0 },
+        "days_target": { "type": "integer", "minimum": 0, "description": "180 by default." },
+        "orders_processed": { "type": "integer", "minimum": 0 },
+        "ready_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "eta_seconds": { "type": ["integer", "null"], "minimum": 0, "description": "null when unknown — the UI must not invent one." },
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "enum": ["auth_expired", "rate_limited", "scope_missing", "shopify_error", "internal"] },
+            "message": { "type": "string", "minLength": 1, "description": "Plain language plus the one action the merchant can take." },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "started_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

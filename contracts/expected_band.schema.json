@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/expected_band.schema.json",
+  "title": "ExpectedBand",
+  "description": "Expected units for one variant on one day with NO price change, plus an honest interval. Written by Lane C into `expected_bands`, consumed by Lane B's evaluator and drawn as the uncertainty band in Lane A's rollout chart. The band's calibration is a SAFETY property: it decides auto-rollback (R29).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "shop_domain",
+    "variant_gid",
+    "day",
+    "expected_units",
+    "low",
+    "high",
+    "interval",
+    "band_kind",
+    "model_version",
+    "generated_at"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "shop_domain": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.myshopify\\.com$" },
+    "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+    "day": { "type": "string", "format": "date", "description": "Shop-timezone calendar day." },
+    "expected_units": { "type": "number", "minimum": 0 },
+    "low": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Lower edge of the interval. Must be <= expected_units. For low-volume SKUs this is floored (a Poisson-plausible zero is not a breach)."
+    },
+    "high": { "type": "number", "minimum": 0, "description": "Upper edge; must be >= expected_units." },
+    "interval": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Nominal coverage of [low, high], e.g. 0.8 for an 80% interval."
+    },
+    "band_kind": {
+      "enum": ["baseline", "counterfactual"],
+      "description": "baseline = business-as-usual forecast (C3). counterfactual = conditioned on pre-change data for a specific rollout (C5); requires rollout_id."
+    },
+    "rollout_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "Required when band_kind=counterfactual, null otherwise."
+    },
+    "breach_probability": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "C5: P(true effect is worse than the guardrail threshold). When present and the model has beaten thresholds on the harness, the evaluator prefers this over raw threshold crossing (R29)."
+    },
+    "model_version": { "type": "string", "minLength": 1 },
+    "model_run_id": { "type": ["string", "null"], "format": "uuid" },
+    "is_floored": {
+      "type": "boolean",
+      "description": "true when the low edge was widened by the low-volume floor rather than coming from the residual quantiles."
+    },
+    "generated_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "band_kind": { "const": "counterfactual" } }, "required": ["band_kind"] },
+      "then": { "properties": { "rollout_id": { "type": "string", "format": "uuid" } }, "required": ["rollout_id"] }
+    }
+  ]
+}

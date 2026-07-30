@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/forecast_result.schema.json",
+  "title": "ForecastResult",
+  "description": "What the UI's forecast card renders for one proposal. Produced by lib/engine/forecast.ts. Money is integer cents; percentages are plain numbers where 12.5 means 12.5%; deltas are totals over `horizon_days` unless the field name says per_day.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "generated_at",
+    "currency",
+    "horizon_days",
+    "confidence",
+    "confidence_explanation",
+    "proposal",
+    "baseline",
+    "breakeven",
+    "scenarios",
+    "fitted",
+    "explanation",
+    "assumptions",
+    "warnings",
+    "products"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "model_version": {
+      "type": ["string", "null"],
+      "description": "The model_runs.model_version behind `fitted`. null when the result is pure bracket math."
+    },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "horizon_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+    "confidence": {
+      "enum": ["fitted", "partial", "assumption"],
+      "description": "Worst tier across the selected variants. Consumers must treat an unknown value as `assumption`."
+    },
+    "confidence_explanation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One line of plain language, merchant-facing. No statistics vocabulary (R25)."
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_type", "change_pct", "change_absolute_cents", "rounding", "variant_count"],
+      "properties": {
+        "change_type": { "enum": ["percent", "absolute"] },
+        "change_pct": {
+          "type": ["number", "null"],
+          "minimum": -90,
+          "maximum": 400,
+          "description": "Set when change_type=percent. -10 means a 10% price cut."
+        },
+        "change_absolute_cents": {
+          "type": ["integer", "null"],
+          "description": "Set when change_type=absolute. Signed; -250 means $2.50 off."
+        },
+        "rounding": { "enum": ["none", "end_99", "end_95", "end_00"] },
+        "variant_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "description": "Recent trading reality for the selection, before any change.",
+      "additionalProperties": false,
+      "required": [
+        "history_days",
+        "units_per_day",
+        "orders_per_day",
+        "revenue_cents_per_day",
+        "profit_cents_per_day",
+        "margin_pct",
+        "avg_price_cents",
+        "avg_unit_cost_cents",
+        "has_cogs"
+      ],
+      "properties": {
+        "history_days": { "type": "integer", "minimum": 0 },
+        "units_per_day": { "type": "number", "minimum": 0 },
+        "orders_per_day": { "type": "number", "minimum": 0 },
+        "revenue_cents_per_day": { "type": "integer", "minimum": 0 },
+        "profit_cents_per_day": {
+          "type": ["integer", "null"],
+          "description": "null when any selected variant has no COGS — render 'profit unknown — add cost' (R3)."
+        },
+        "margin_pct": { "type": ["number", "null"] },
+        "avg_price_cents": { "type": "integer", "minimum": 0 },
+        "avg_unit_cost_cents": { "type": ["integer", "null"], "minimum": 0 },
+        "has_cogs": { "type": "boolean" }
+      }
+    },
+    "breakeven": {
+      "type": "object",
+      "description": "Pure margin arithmetic — always true regardless of any model. Lead with this (R6).",
+      "additionalProperties": false,
+      "required": ["units_change_pct", "direction", "sentence"],
+      "properties": {
+        "units_change_pct": {
+          "type": ["number", "null"],
+          "description": "Unit change at which profit is unchanged. Negative = you can afford to lose that many. null when COGS is unknown or the new price is below cost."
+        },
+        "direction": {
+          "enum": ["can_lose", "must_gain", "undefined"],
+          "description": "undefined when unit economics make breakeven meaningless (no COGS, or price below cost)."
+        },
+        "sentence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Merchant-facing, e.g. 'You can lose up to 14% of orders and still make the same profit.'"
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "description": "The 'show your work' table (R8). Each row is a what-if on unit demand; deltas are totals over horizon_days.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "units_change_pct",
+          "units_total",
+          "revenue_delta_cents",
+          "profit_delta_cents",
+          "is_breakeven"
+        ],
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "units_change_pct": { "type": "number" },
+          "units_total": { "type": "number", "minimum": 0 },
+          "revenue_delta_cents": { "type": "integer" },
+          "profit_delta_cents": { "type": ["integer", "null"] },
+          "is_breakeven": { "type": "boolean" }
+        }
+      }
+    },
+    "fitted": {
+      "description": "Model-driven prediction. null when confidence is `assumption` — then the scenario table is the whole story.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "elasticity",
+            "elasticity_se",
+            "n_obs",
+            "price_variation_pct",
+            "source",
+            "expected",
+            "low",
+            "high"
+          ],
+          "properties": {
+            "elasticity": { "type": "number" },
+            "elasticity_se": { "type": ["number", "null"], "minimum": 0 },
+            "n_obs": { "type": "integer", "minimum": 0 },
+            "price_variation_pct": { "type": "number", "minimum": 0 },
+            "source": {
+              "enum": ["model", "portfolio_prior"],
+              "description": "portfolio_prior = shrunk toward the store-wide prior because this variant's own history was thin."
+            },
+            "expected": { "$ref": "#/$defs/outcome" },
+            "low": { "$ref": "#/$defs/outcome" },
+            "high": { "$ref": "#/$defs/outcome" }
+          }
+        }
+      ]
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plain-language paragraph tying breakeven and the fitted range together. Every number on screen must be traceable to this or the scenario table."
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Every assumption the number rests on, in plain language."
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "enum": [
+              "missing_cogs",
+              "price_below_cost",
+              "thin_history",
+              "no_price_variation",
+              "stale_model",
+              "excluded_variants",
+              "wide_range",
+              "compare_at_cleared"
+            ]
+          },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "products": {
+      "type": "array",
+      "description": "Per-variant breakdown. Excluded variants are included with excluded=true so the UI can explain why (R22).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "variant_gid",
+          "title",
+          "current_price_cents",
+          "target_price_cents",
+          "compare_at_cents",
+          "compare_at_action",
+          "cogs_cents",
+          "cogs_source",
+          "baseline_units_per_day",
+          "confidence",
+          "excluded",
+          "exclusion_reason"
+        ],
+        "properties": {
+          "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+          "title": { "type": "string" },
+          "current_price_cents": { "type": "integer", "minimum": 0 },
+          "target_price_cents": { "type": "integer", "minimum": 0 },
+          "compare_at_cents": { "type": ["integer", "null"], "minimum": 0 },
+          "compare_at_action": {
+            "enum": ["keep", "clear", "none"],
+            "description": "R13: keep on a decrease, clear when the new price meets or passes compare-at, none when there is no compare-at."
+          },
+          "cogs_cents": { "type": ["integer", "null"], "minimum": 0 },
+          "cogs_source": { "enum": ["shopify", "manual", "none"] },
+          "baseline_units_per_day": { "type": "number", "minimum": 0 },
+          "confidence": { "enum": ["fitted", "partial", "assumption"] },
+          "excluded": { "type": "boolean" },
+          "exclusion_reason": {
+            "type": ["string", "null"],
+            "enum": ["gift_card", "subscription", "not_active", "zero_price", null]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units_change_pct", "revenue_delta_cents", "profit_delta_cents"],
+      "properties": {
+        "units_change_pct": { "type": "number" },
+        "revenue_delta_cents": { "type": "integer" },
+        "profit_delta_cents": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

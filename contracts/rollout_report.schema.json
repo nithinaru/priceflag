@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/rollout_report.schema.json",
+  "title": "RolloutReport",
+  "description": "Post-rollout report: realized vs predicted, with a plain-language narrative (R20). Written by Lane C (C6) into `rollout_reports`, rendered by Lane A. `in_range` is the honesty metric the PRD calls the moat (R30) — measuring it at all is the point, so it is reported even when the answer is unflattering.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "rollout_id",
+    "generated_at",
+    "model_version",
+    "window",
+    "predicted",
+    "realized",
+    "in_range",
+    "narrative"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "rollout_id": { "type": "string", "format": "uuid" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "model_version": { "type": "string", "minLength": 1 },
+    "model_run_id": { "type": ["string", "null"], "format": "uuid" },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_day", "end_day", "days"],
+      "properties": {
+        "start_day": { "type": "string", "format": "date" },
+        "end_day": { "type": "string", "format": "date" },
+        "days": { "type": "integer", "minimum": 1, "description": "30 for the R30 calibration metric." }
+      }
+    },
+    "predicted": { "$ref": "#/$defs/outcomeBand" },
+    "realized": { "$ref": "#/$defs/outcome" },
+    "in_range": {
+      "type": "boolean",
+      "description": "Did realized profit land inside the predicted range? Aggregated across rollouts this is the calibration number in Success Metrics."
+    },
+    "elasticity_update": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["before", "after"],
+          "properties": {
+            "before": { "type": ["number", "null"] },
+            "after": { "type": "number" },
+            "se_after": { "type": ["number", "null"], "minimum": 0 },
+            "direction": {
+              "enum": ["less_sensitive", "more_sensitive", "as_expected"],
+              "description": "Drives the narrative sentence, e.g. 'your customers were less price-sensitive than assumed'."
+            }
+          }
+        }
+      ]
+    },
+    "narrative": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two or three merchant-facing sentences. No statistics vocabulary (R25)."
+    },
+    "per_variant": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variant_gid", "realized_units", "expected_units", "realized_revenue_cents"],
+        "properties": {
+          "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+          "realized_units": { "type": "number", "minimum": 0 },
+          "expected_units": { "type": "number", "minimum": 0 },
+          "realized_revenue_cents": { "type": "integer" },
+          "realized_profit_cents": { "type": ["integer", "null"] },
+          "elasticity_after": { "type": ["number", "null"] }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units_change_pct", "revenue_delta_cents", "profit_delta_cents"],
+      "properties": {
+        "units_change_pct": { "type": "number" },
+        "revenue_delta_cents": { "type": "integer" },
+        "profit_delta_cents": { "type": ["integer", "null"] }
+      }
+    },
+    "outcomeBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected", "low", "high"],
+      "properties": {
+        "expected": { "$ref": "#/$defs/outcome" },
+        "low": { "$ref": "#/$defs/outcome" },
+        "high": { "$ref": "#/$defs/outcome" }
+      }
+    }
+  }
+}
