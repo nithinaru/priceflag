@@ -15,6 +15,15 @@
       "pooled_pinball_q10": 0.8441841317365268,
       "pooled_pinball_q90": 1.3339240269461077
     },
+    "bracket_band_backtest": {
+      "n_skus": 24,
+      "n_scored_days": 1336,
+      "median_wape": 0.5720247169326236,
+      "median_mape": 0.6190916922893861,
+      "pooled_coverage_80": 0.8031437125748503,
+      "pooled_pinball_q10": 0.794377112612981,
+      "pooled_pinball_q90": 1.2779959637352165
+    },
     "bracket_elasticity_recovery": {
       "all_skus": {
         "n": 24,

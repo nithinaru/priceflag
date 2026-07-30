@@ -104,6 +104,39 @@ def test_fits_frame_contract_columns():
     assert df["explanation"].str.len().gt(20).all()
 
 
+def test_contract_rows_validate_against_lane_b_schema():
+    """Every emitted row must validate against Lane B's committed
+    elasticity_fit.schema.json (additionalProperties: false — a stray field
+    or a missing required one fails loudly here, not in Lane B's writer)."""
+    import json
+    import pathlib
+
+    import jsonschema
+
+    schema = json.loads(
+        (pathlib.Path(__file__).resolve().parents[2] / "contracts" / "elasticity_fit.schema.json").read_text()
+    )
+    store = generate_store(GoldenConfig(n_skus=6, days=120, seed=3))
+    fits = fit_store(store.orders, seed=0)
+    gids = {f.sku: f"gid://shopify/ProductVariant/{1000 + i}" for i, f in enumerate(fits)}
+    rows = E.fits_contract_rows(
+        fits,
+        shop_domain="golden.myshopify.com",
+        fitted_at="2026-07-29T00:00:00Z",
+        variant_gids=gids,
+        window_start="2026-03-04",
+        window_end="2026-07-01",
+    )
+    assert len(rows) == len(fits)
+    validator = jsonschema.Draft202012Validator(schema)
+    for row in rows:
+        validator.validate(row)
+    tiers = {r["confidence"] for r in rows}
+    assert tiers <= {"fitted", "partial", "assumption"}
+    shrunk = [r for r in rows if r["confidence"] != "assumption"]
+    assert all(0.0 <= r["shrinkage_weight"] <= 1.0 for r in shrunk)
+
+
 def test_fits_frame_empty_keeps_contract_columns():
     df = fits_frame([])
     assert df.empty

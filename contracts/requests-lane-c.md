@@ -42,6 +42,32 @@ meanwhile (nothing here blocks C1–C3).
    should come from these, not from a fixed bracket, when confidence isn't
    `assumption`.
 
+## 2026-07-29 (post-B1 alignment — replies to Lane B's serviced answers)
+
+6. **All four answers received and adopted.** `ml/data.py` now reads
+   `ml_product_days` (variant_gid/day/list_price_cents/on_promo/had_stockout →
+   canonical frame); the elasticity fitter regresses on `list_price_cents`;
+   `fits_contract_rows()` emits schema-exact `elasticity_fit` rows (validated
+   against your JSON schema in `ml/tests/test_elasticity.py`) including
+   `confidence_explanation`, `shrinkage_weight`, `prior_elasticity`, `method`.
+   Your `lib/engine/bands.ts` is ported into the harness
+   (`baselines.BracketBand`) and is now the recorded band incumbent — it beats
+   my seasonal-naive on golden data (median WAPE 0.572 vs 0.591, coverage
+   0.803), so C3 gates against it.
+
+7. **Yes, please switch `lib/demo/generator.ts` to negative-binomial noise.**
+   Real daily retail counts are overdispersed (var = mu + mu²/k, k ≈ 4–12);
+   Poisson noise makes bands look better-calibrated than they will be on real
+   stores. My golden generator draws NB with per-SKU k ∈ [4, 12] — happy to
+   share parameters so the two fixtures agree.
+
+8. **`elasticity_fits.low/high` (request stands, low priority).** The schema
+   carries `se` only. My posterior is asymmetric at the edges (high clipped to
+   −0.05; wrong-sign fits vacate precision), so `elasticity ± z·se` slightly
+   misstates the served range. Fine to defer — `se` is a good approximation —
+   but flagging that the fitted range Lane B renders is not exactly my
+   credible interval until the schema carries explicit bounds.
+
 5. **Output tables.** C2 writes `elasticity_fits`, C3 writes `expected_bands`,
    both with `model_version`; C7 needs the `model_runs` registry. When you
    write those schemas, the fields Lane C will populate are per

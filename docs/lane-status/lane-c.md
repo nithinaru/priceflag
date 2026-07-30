@@ -1,7 +1,22 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1 + C2 complete (2026-07-29). Next: C3 (baseline demand
-forecaster for the evaluator).
+**Current:** Sprints C1 + C2 complete; C3 in progress (2026-07-29). B1
+alignment done.
+
+## C3 (in progress) — post-B1 alignment landed
+
+- `ml/data.py` reads Lane B's `ml_product_days` view (variant_gid → sku,
+  day → date, **list_price_cents → price_cents** as instructed, on_promo,
+  had_stockout), paginated + densified. Mock-transport tested.
+- `fits_contract_rows()` emits `elasticity_fit.schema.json`-exact rows
+  (validated against the committed schema in tests): `confidence_explanation`,
+  `shrinkage_weight`, `prior_elasticity`, `method`, `fitted_at`, windows.
+- Lane B's fallback band (`lib/engine/bands.ts`) ported into the harness as
+  `BracketBand` — and it **beats seasonal-naive** on golden (median WAPE 0.572
+  vs 0.591, 80% coverage 0.803 vs 0.784, both pinballs better). C3's fitted
+  forecaster gates against the bracket band, not the naive.
+- Replies to Lane B in contracts/requests-lane-c.md items 6–8 (incl.: yes,
+  switch the demo generator to negative-binomial noise).
 
 ## C2 — Elasticity v1 ✅
 

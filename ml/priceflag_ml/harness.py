@@ -16,7 +16,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
-from .baselines import BracketElasticity, SeasonalNaive
+from .baselines import BracketBand, BracketElasticity, SeasonalNaive
 from .golden import GoldenConfig, GoldenStore, generate_store
 from .metrics import elasticity_recovery, interval_coverage, mape, pinball_loss, wape
 
@@ -194,6 +194,7 @@ def run_c1(cfg: GoldenConfig | None = None) -> dict:
     """C1 report: incumbent scores on golden data — the bar for every challenger."""
     store = generate_store(cfg)
     naive = rolling_origin_backtest(store.orders, SeasonalNaive)
+    band = rolling_origin_backtest(store.orders, BracketBand)
     bracket = evaluate_elasticity(BracketElasticity().estimate, store)
     return {
         "golden_config": {
@@ -204,6 +205,7 @@ def run_c1(cfg: GoldenConfig | None = None) -> dict:
         },
         "incumbents": {
             "seasonal_naive_backtest": naive["aggregate"],
+            "bracket_band_backtest": band["aggregate"],
             "bracket_elasticity_recovery": bracket,
         },
     }

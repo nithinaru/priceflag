@@ -5,10 +5,12 @@ Two sources behind one shape:
 - ``load_golden`` — the synthetic golden store (always available; what tests
   and the harness run against until Lane B provides real DB access).
 - ``SupabaseSource`` — read-only pull from Supabase PostgREST using
-  ``SUPABASE_URL`` + ``SUPABASE_ML_READONLY_KEY``. Column names follow the
-  draft understanding of Lane B's `order_days` contract; they will be
-  reconciled when `contracts/db/` lands (tracked in
-  contracts/requests-lane-c.md). Nothing in this module ever writes.
+  ``SUPABASE_URL`` + ``SUPABASE_ML_READONLY_KEY``, via Lane B's stable read
+  surface: the ``ml_product_days`` view (contracts/db/schema.md). View columns
+  map onto the canonical frame as sku=variant_gid, date=day,
+  price_cents=list_price_cents (the elasticity regressor — NOT the realized
+  price, which absorbs discounts), revenue_cents=net_revenue_cents,
+  promo=on_promo, stockout=had_stockout. Nothing in this module ever writes.
 
 Canonical tidy frame (one row per shop x SKU x *consecutive calendar day* —
 the harness enforces contiguity)::
@@ -69,14 +71,13 @@ def densify_daily(orders: pd.DataFrame) -> pd.DataFrame:
 
 
 class SupabaseSource:
-    """Read-only PostgREST client for the `order_days` table.
+    """Read-only PostgREST client for Lane B's `ml_product_days` view.
 
-    Assumed columns (pending Lane B's committed contract):
-    ``shop_id, sku, date, units, revenue_cents, price_cents, promo, stockout``.
-    Missing optional columns (`promo`, `stockout`, `price_cents`) are filled
-    with safe defaults so the harness can still run. Results are paginated
-    (PostgREST caps responses at its max-rows setting; a naive single GET
-    silently truncates) and densified to one row per calendar day.
+    Missing optional columns are filled with safe defaults so the harness can
+    still run. Results are paginated (PostgREST caps responses at its max-rows
+    setting; a naive single GET silently truncates) and densified to one row
+    per calendar day. Note: until Lane B's B6 grants the read-only role its
+    SELECT policies, this role sees zero rows (RLS on, no policies).
     """
 
     def __init__(self, url: str, key: str, client=None) -> None:
@@ -104,16 +105,29 @@ class SupabaseSource:
             self._client = httpx.Client(timeout=60.0)
         return self._client
 
-    def order_days(self, shop_id: str) -> pd.DataFrame:
+    # ml_product_days view column -> canonical frame column
+    VIEW_COLUMN_MAP = {
+        "shop_domain": "shop_id",
+        "variant_gid": "sku",
+        "day": "date",
+        "units": "units",
+        "list_price_cents": "price_cents",
+        "net_revenue_cents": "revenue_cents",
+        "on_promo": "promo",
+        "had_stockout": "stockout",
+    }
+
+    def order_days(self, shop_domain: str) -> pd.DataFrame:
         client = self._get_client()
         pages: list[pd.DataFrame] = []
         offset = 0
         while True:
             resp = client.get(
-                f"{self._base}/order_days",
+                f"{self._base}/ml_product_days",
                 params={
-                    "shop_id": f"eq.{shop_id}",
-                    "order": "sku,date",
+                    "shop_domain": f"eq.{shop_domain}",
+                    "select": ",".join(self.VIEW_COLUMN_MAP),
+                    "order": "variant_gid,day",
                     "limit": str(_PAGE_SIZE),
                     "offset": str(offset),
                 },
@@ -129,9 +143,10 @@ class SupabaseSource:
 
         if not pages:
             return pd.DataFrame(columns=CANONICAL_COLUMNS)
-        df = pd.concat(pages, ignore_index=True)
+        df = pd.concat(pages, ignore_index=True).rename(columns=self.VIEW_COLUMN_MAP)
         df["date"] = pd.to_datetime(df["date"])
         for col, default in (("promo", False), ("stockout", False), ("price_cents", 0)):
             if col not in df.columns:
                 df[col] = default
+            df[col] = df[col].fillna(default)
         return densify_daily(df[CANONICAL_COLUMNS])

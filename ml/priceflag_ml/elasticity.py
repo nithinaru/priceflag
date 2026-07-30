@@ -89,6 +89,8 @@ class SkuFit:
     nonpromo_variation_pct: float
     confidence: str
     explanation: str
+    shrinkage_weight: float | None = None  # 1 = all own data, 0 = all prior
+    prior_elasticity: float | None = None
     model_version: str = MODEL_VERSION
 
 
@@ -401,6 +403,8 @@ def fit_store(orders: pd.DataFrame, seed: int = 0) -> list[SkuFit]:
                 nonpromo_variation_pct=np_var,
                 confidence=confidence,
                 explanation=explanation,
+                shrinkage_weight=float(w_data / (w_data + w_prior)),
+                prior_elasticity=float(mu),
             )
         )
     return fits
@@ -447,6 +451,52 @@ def fits_frame(fits: list[SkuFit], fitted_at: str | None = None) -> pd.DataFrame
             }
         )
     return pd.DataFrame(rows)
+
+
+CONTRACT_METHOD = "poisson_irls_eb_shrunk"
+
+
+def fits_contract_rows(
+    fits: list[SkuFit],
+    shop_domain: str,
+    fitted_at: str,
+    variant_gids: dict[str, str] | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+) -> list[dict]:
+    """Rows shaped exactly for `contracts/elasticity_fit.schema.json`.
+
+    The schema is `additionalProperties: false`, so this emits only contract
+    fields — notably NOT the internal low/high credible bounds (Lane B derives
+    the served range from `se`; a request to add explicit bounds is on file).
+    `variant_gids` maps internal sku ids to Shopify variant gids; entries
+    missing from the map are passed through unchanged.
+    """
+    gids = variant_gids or {}
+    rows = []
+    for f in fits:
+        row = {
+            "contract_version": "1.0.0",
+            "shop_domain": shop_domain,
+            "variant_gid": gids.get(f.sku, f.sku),
+            "elasticity": f.elasticity,
+            "se": f.se,
+            "n_obs": f.n_obs,
+            "price_variation_pct": f.price_variation_pct,
+            "confidence": f.confidence,
+            "confidence_explanation": f.explanation,
+            "method": CONTRACT_METHOD,
+            "shrinkage_weight": f.shrinkage_weight,
+            "prior_elasticity": f.prior_elasticity,
+            "model_version": f.model_version,
+            "fitted_at": fitted_at,
+        }
+        if window_start is not None:
+            row["window_start"] = window_start
+        if window_end is not None:
+            row["window_end"] = window_end
+        rows.append(row)
+    return rows
 
 
 class RidgeElasticity:

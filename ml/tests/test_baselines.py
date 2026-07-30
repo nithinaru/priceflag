@@ -1,10 +1,11 @@
-"""Incumbent behavior: seasonal-naive correctness and band sanity."""
+"""Incumbent behavior: seasonal-naive correctness, the ported bracket band,
+and band sanity."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from priceflag_ml.baselines import BracketElasticity, SeasonalNaive
+from priceflag_ml.baselines import BracketBand, BracketElasticity, SeasonalNaive
 
 
 def _daily_frame(units, start="2026-01-05"):  # 2026-01-05 is a Monday
@@ -86,6 +87,38 @@ def test_band_calibration_near_nominal_on_stationary_data():
         hits.extend((actual >= fc["low"].to_numpy()) & (actual <= fc["high"].to_numpy()))
     coverage = np.mean(hits)
     assert 0.70 <= coverage <= 0.90, f"80% band covered {coverage:.3f}"
+
+
+def test_bracket_band_matches_ts_semantics():
+    """Hand-checkable port of lib/engine/bands.ts: 28-day window, dow mean
+    shrunk with prior strength 2, sd = sqrt(max(sample_var, expected))."""
+    df = _daily_frame([10.0] * 28)  # constant series
+    fc = BracketBand().fit(df).forecast(1)
+    # constant history: overall = dow = expected = 10; var 0 -> sd sqrt(10)
+    assert fc["expected"].iloc[0] == pytest.approx(10.0)
+    assert fc["low"].iloc[0] == pytest.approx(10.0 - 1.2816 * np.sqrt(10.0), abs=1e-3)
+    assert fc["high"].iloc[0] == pytest.approx(10.0 + 1.2816 * np.sqrt(10.0), abs=1e-3)
+
+
+def test_bracket_band_dow_shrinkage_weighting():
+    # 28 days ending Sunday 2026-02-01; forecast Monday 2026-02-02.
+    dates = pd.date_range("2026-01-05", periods=28, freq="D")
+    units = np.full(28, 7.0)
+    units[dates.weekday == 0] = 21.0  # Mondays triple
+    df = pd.DataFrame({"date": dates, "units": units, "stockout": False})
+    fc = BracketBand().fit(df).forecast(1)
+    assert pd.Timestamp(fc["date"].iloc[0]).weekday() == 0
+    overall = units.mean()
+    n_mon = int((dates.weekday == 0).sum())
+    w = n_mon / (n_mon + 2)  # DOW_PRIOR_STRENGTH = 2
+    assert fc["expected"].iloc[0] == pytest.approx(w * 21.0 + (1 - w) * overall)
+
+
+def test_bracket_band_low_volume_floor():
+    df = _daily_frame([0, 1, 0, 0, 1, 0, 0] * 4)  # expected < 3 units
+    fc = BracketBand().fit(df).forecast(7)
+    assert (fc["low"] == 0).all()  # floored: a plausible zero is not a breach
+    assert (fc["high"] > 0).all()
 
 
 def test_bracket_elasticity_is_fixed_assumption():

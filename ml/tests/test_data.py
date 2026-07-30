@@ -72,46 +72,51 @@ def _mock_source(rows: list[dict], page_size: int) -> tuple[SupabaseSource, list
     return SupabaseSource("https://example.supabase.co", "test-key", client=client), seen
 
 
+def _view_row(day, units, gid="gid://shopify/ProductVariant/1", **extra):
+    row = {
+        "shop_domain": "s1.myshopify.com",
+        "variant_gid": gid,
+        "day": day,
+        "units": units,
+        "net_revenue_cents": units * 5000,
+        "list_price_cents": 5000,
+        "on_promo": False,
+        "had_stockout": False,
+    }
+    row.update(extra)
+    return row
+
+
 def test_supabase_order_days_paginates_past_server_cap(monkeypatch):
     """PostgREST caps responses at max-rows; a single GET silently truncates.
     The client must page until a short page arrives."""
     monkeypatch.setattr(data, "_PAGE_SIZE", 3)
     dates = pd.date_range("2026-01-01", periods=7, freq="D")
-    rows = [
-        {
-            "shop_id": "s1",
-            "sku": "A",
-            "date": str(d.date()),
-            "units": i + 1,
-            "revenue_cents": (i + 1) * 5000,
-            "price_cents": 5000,
-            "promo": False,
-            "stockout": False,
-        }
-        for i, d in enumerate(dates)
-    ]
+    rows = [_view_row(str(d.date()), i + 1) for i, d in enumerate(dates)]
     src, seen = _mock_source(rows, page_size=3)
-    out = src.order_days("s1")
+    out = src.order_days("s1.myshopify.com")
     assert len(out) == 7  # 3 + 3 + 1 across three pages
     assert len(seen) == 3
     assert [p["offset"] for p in seen] == ["0", "3", "6"]
     assert out["units"].tolist() == [1, 2, 3, 4, 5, 6, 7]
+    assert (out["sku"] == "gid://shopify/ProductVariant/1").all()
+    assert (out["price_cents"] == 5000).all()
 
 
-def test_supabase_order_days_fills_missing_optional_columns(monkeypatch):
+def test_supabase_order_days_maps_view_columns_and_densifies(monkeypatch):
     monkeypatch.setattr(data, "_PAGE_SIZE", 100)
     rows = [
-        {"shop_id": "s1", "sku": "A", "date": "2026-01-01", "units": 2, "revenue_cents": 10000},
-        {"shop_id": "s1", "sku": "A", "date": "2026-01-03", "units": 1, "revenue_cents": 5000},
+        _view_row("2026-01-01", 2, on_promo=True),
+        _view_row("2026-01-03", 1, had_stockout=True),
     ]
     src, _ = _mock_source(rows, page_size=100)
-    out = src.order_days("s1")
+    out = src.order_days("s1.myshopify.com")
     assert list(out.columns) == CANONICAL_COLUMNS
-    # missing day densified, optional columns defaulted
-    assert len(out) == 3
-    assert out["promo"].dtype == bool and not out["promo"].any()
-    assert out["stockout"].dtype == bool and not out["stockout"].any()
+    assert len(out) == 3  # missing day densified
+    assert out["promo"].tolist() == [True, False, False]
+    assert out["stockout"].tolist() == [False, False, True]
     assert np.issubdtype(out["date"].dtype, np.datetime64)
+    assert out["revenue_cents"].tolist() == [10000, 0, 5000]
 
 
 def test_supabase_order_days_empty_result(monkeypatch):

@@ -7,6 +7,19 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Champions (current)
 
+### bracket-band-ts-port-1.0 — expected band (the incumbent C3 must beat)
+
+- **What:** faithful Python port of Lane B's shipped fallback band
+  (`lib/engine/bands.ts`): trailing 28-day mean, day-of-week mean shrunk
+  toward the overall mean (prior strength 2), interval = z80 ·
+  sqrt(max(sample_var, mean)), low edge floored to 0 when expected < 3 units.
+  This is what the evaluator actually uses until C3's bands are fresh.
+- **Scores (rolling-origin, horizon 14, 4 origins, golden seed 7):**
+  median WAPE **0.572** · median MAPE 0.619 · pooled 80% coverage **0.803** ·
+  pinball q10 0.794 · q90 1.278.
+- **Note:** it beats seasonal-naive on every metric — so the C3 gate is
+  against THIS band, not the weaker naive.
+
 ### seasonal-naive-0.2 — baseline demand forecaster (incumbent since C1)
 
 - **What:** point = robust seasonal naive (mean of last ≤4 clean same-weekday

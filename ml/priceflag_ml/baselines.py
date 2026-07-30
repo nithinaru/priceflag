@@ -105,9 +105,65 @@ class SeasonalNaive:
         return pd.DataFrame({"date": dates, "expected": expected, "low": low, "high": high})
 
 
-# v0 bracket stand-in (see module docstring): a fixed assumption used when no
-# fit exists. Point and range chosen to match the PRD's "conservative /
-# expected / aggressive" scenario framing for DTC goods.
+class BracketBand:
+    """Faithful Python port of Lane B's `lib/engine/bands.ts` fallback band —
+    the band incumbent C3's fitted forecasters must beat (their words: "worth
+    porting into your harness as a scorable baseline").
+
+    Point: trailing 28-day mean, day-of-week mean shrunk toward the overall
+    mean with prior strength 2. Interval: z80 * sqrt(max(sample_var, mean))
+    (overdispersed-Poisson). Low edge floored to 0 when expected < 3 units
+    (`floored`). Stockout days are NOT excluded — the TS incumbent does not
+    see a stockout flag, and the port must score what actually ships.
+    """
+
+    model_version = "bracket-band-ts-port-1.0"
+    WINDOW_DAYS = 28  # lib/contracts.ts BASELINE_WINDOW_DAYS
+    MIN_EXPECTED = 3.0  # lib/contracts.ts DEFAULT_MIN_EXPECTED_UNITS
+    DOW_PRIOR_STRENGTH = 2.0
+
+    def __init__(self) -> None:
+        self._history: pd.DataFrame | None = None
+
+    def fit(self, history: pd.DataFrame) -> "BracketBand":
+        if len(history) == 0:
+            raise ValueError("BracketBand.fit: empty history")
+        self._history = history.sort_values("date").reset_index(drop=True)
+        return self
+
+    def _band_for(self, target: pd.Timestamp) -> tuple[float, float, float]:
+        df = self._history
+        window = df[(df["date"] >= target - pd.Timedelta(days=self.WINDOW_DAYS)) & (df["date"] < target)]
+        if len(window) == 0:
+            return 0.0, 0.0, 0.0
+        y = window["units"].to_numpy(dtype=float)
+        overall = float(y.mean())
+        same_dow = y[pd.DatetimeIndex(window["date"]).weekday.to_numpy() == target.weekday()]
+        dow_mean = float(same_dow.mean()) if len(same_dow) else overall
+        w = len(same_dow) / (len(same_dow) + self.DOW_PRIOR_STRENGTH)
+        expected = w * dow_mean + (1 - w) * overall
+        sample_var = float(y.var(ddof=1)) if len(y) >= 2 else 0.0
+        sd = np.sqrt(max(sample_var, expected))
+        low = 0.0 if expected < self.MIN_EXPECTED else max(0.0, expected - Z80 * sd)
+        high = max(expected + Z80 * sd, expected)
+        return expected, low, high
+
+    def forecast(self, horizon: int) -> pd.DataFrame:
+        if self._history is None:
+            raise RuntimeError("fit() before forecast()")
+        last = pd.Timestamp(self._history["date"].iloc[-1])
+        dates = pd.date_range(last + pd.Timedelta(days=1), periods=horizon, freq="D")
+        rows = [self._band_for(d) for d in dates]
+        expected, low, high = (np.array(v) for v in zip(*rows))
+        return pd.DataFrame({"date": dates, "expected": expected, "low": low, "high": high})
+
+
+# Fixed assumption bracket used when no fit exists. NOTE (post-B1): Lane B's
+# real fallback (`lib/engine/forecast.ts`) carries NO elasticity at all — it is
+# pure breakeven arithmetic plus a scenario grid, and `assumption` means "no
+# estimate". These constants therefore live on only as (a) the EB prior
+# fallback for stores with too few identifiable SKUs and (b) a scorable
+# strawman on the recovery harness — they are never served as if they were v0's.
 BRACKET_POINT = -1.2
 BRACKET_LOW = -2.2  # more price-sensitive scenario
 BRACKET_HIGH = -0.6  # less price-sensitive scenario
