@@ -764,10 +764,16 @@ export class DemoAdapter implements StoreAdapter {
   }
 
   async getLatestSyncRun(shopId: string): Promise<SyncRun | null> {
-    const rows = this.state.syncRuns
-      .filter((row) => row.shop_id === shopId)
-      .sort((a, b) => b.started_at.localeCompare(a.started_at));
-    return rows.length > 0 ? clone(rows[0] as SyncRun) : null;
+    // Ties on started_at are broken by insertion order, later wins. Two runs can
+    // land in the same millisecond, and a sort alone would then return whichever
+    // the stable sort happened to keep — meaning a fresh sync could report the
+    // previous run's progress.
+    let latest: SyncRun | null = null;
+    for (const row of this.state.syncRuns) {
+      if (row.shop_id !== shopId) continue;
+      if (latest === null || row.started_at >= latest.started_at) latest = row;
+    }
+    return latest === null ? null : clone(latest);
   }
 
   async updateSyncRun(syncRunId: string, patch: SyncRunPatch): Promise<SyncRun> {

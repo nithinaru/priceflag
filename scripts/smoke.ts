@@ -94,6 +94,8 @@ import {
   verifyOAuthState,
 } from '../lib/shopify/oauth';
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
+import { AdminGraphqlClient } from '../lib/shopify/client';
+import { runSync, syncOrderDays, syncProducts, syncProgressFromRun } from '../lib/sync';
 import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
 import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
@@ -740,6 +742,460 @@ async function testShopifyAuth(): Promise<void> {
       () => resolveShopFromRequest(request, { allowQueryParam: false }),
       'refused without a session token',
     );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// sync pipeline (Sprint B3) — against a mocked Admin API
+// ---------------------------------------------------------------------------
+
+/** Dispatches on the operation name in the query, so tests need no network. */
+function mockAdminApi(responses: Record<string, unknown>): typeof fetch {
+  return (async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { query: string; variables: Record<string, unknown> };
+    const match = /query (\w+)/.exec(body.query);
+    const operation = match?.[1] ?? 'unknown';
+
+    const handler = responses[operation];
+    const data = typeof handler === 'function' ? (handler as (v: Record<string, unknown>) => unknown)(body.variables) : handler;
+    if (data === undefined) throw new Error(`mock has no response for operation ${operation}`);
+
+    return new Response(
+      JSON.stringify({
+        data,
+        extensions: {
+          cost: {
+            requestedQueryCost: 10,
+            actualQueryCost: 10,
+            throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1990, restoreRate: 100 },
+          },
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as unknown as typeof fetch;
+}
+
+function gqlVariant(id: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: toGid('ProductVariant', id),
+    title: 'Default Title',
+    sku: `SKU-${id}`,
+    price: '32.00',
+    compareAtPrice: null,
+    inventoryQuantity: 10,
+    availableForSale: true,
+    sellingPlanGroupsCount: { count: 0 },
+    inventoryItem: { id: toGid('InventoryItem', id), unitCost: { amount: '11.50' } },
+    ...overrides,
+  };
+}
+
+function gqlProduct(id: number, variants: Record<string, unknown>[], overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: toGid('Product', id),
+    title: `Product ${id}`,
+    status: 'ACTIVE',
+    vendor: 'Northline',
+    productType: 'Apparel',
+    tags: ['apparel'],
+    isGiftCard: false,
+    requiresSellingPlan: false,
+    sellingPlanGroupsCount: { count: 0 },
+    featuredMedia: { preview: { image: { url: 'https://cdn.example/img.png' } } },
+    variants: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: variants },
+    ...overrides,
+  };
+}
+
+async function testSync(): Promise<void> {
+  section('sync — catalog');
+
+  const credentials = {
+    shopDomain: 'acme-dev.myshopify.com',
+    accessToken: 'shpat_test',
+    apiVersion: '2026-07',
+    source: 'static_env' as const,
+  };
+
+  await test('maps variants, costs, and every exclusion rule', async () => {
+    const adapter = DemoAdapter.ephemeral();
+    const shop = await adapter.demoShop();
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagProducts: {
+          products: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              gqlProduct(1, [gqlVariant(101)]),
+              // Gift card, subscription at product level, subscription at variant
+              // level, and an archived product: all four must be excluded (R22).
+              gqlProduct(2, [gqlVariant(102)], { isGiftCard: true }),
+              gqlProduct(3, [gqlVariant(103)], { requiresSellingPlan: true }),
+              gqlProduct(4, [gqlVariant(104, { sellingPlanGroupsCount: { count: 2 } })]),
+              gqlProduct(5, [gqlVariant(105)], { status: 'ARCHIVED' }),
+              // No cost recorded in Shopify: must stay unknown, never zero (R3).
+              gqlProduct(6, [gqlVariant(106, { inventoryItem: { id: 'gid://shopify/InventoryItem/106', unitCost: null } })]),
+              // A cost of exactly 0.00 is "never filled in", not a free product.
+              gqlProduct(7, [gqlVariant(107, { inventoryItem: { id: 'gid://shopify/InventoryItem/107', unitCost: { amount: '0.00' } } })]),
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await syncProducts(client, adapter, shop.id, 'USD', { reconcileDeletions: false });
+    assertEqual(result.productsSeen, 7, 'seven products');
+    assertEqual(result.variantsWritten, 7, 'seven variants');
+
+    const stored = await adapter.getProductsByVariantGids(shop.id, [
+      toGid('ProductVariant', 101),
+      toGid('ProductVariant', 106),
+      toGid('ProductVariant', 107),
+    ]);
+    const plain = stored.find((p) => p.variant_gid === toGid('ProductVariant', 101));
+    assertEqual(plain?.price_cents, 3200, 'price parsed to cents');
+    assertEqual(plain?.cogs_cents, 1150, 'unitCost parsed to cents');
+    assertEqual(plain?.cogs_source, 'shopify', 'and attributed to Shopify');
+
+    const noCost = stored.find((p) => p.variant_gid === toGid('ProductVariant', 106));
+    assertEqual(noCost?.cogs_cents, null, 'missing cost stays unknown');
+    assertEqual(noCost?.cogs_source, 'none', 'and the source says so');
+
+    const zeroCost = stored.find((p) => p.variant_gid === toGid('ProductVariant', 107));
+    assertEqual(zeroCost?.cogs_cents, null, 'a 0.00 cost is treated as unknown, not as a 100% margin');
+
+    const repriceable = await adapter.listProducts(shop.id, { only_repriceable: true });
+    const syncedGids = new Set([101, 102, 103, 104, 105, 106, 107].map((id) => toGid('ProductVariant', id)));
+    const syncedRepriceable = repriceable.items.filter((p) => syncedGids.has(p.variant_gid));
+    assertEqual(syncedRepriceable.length, 3, 'only the three eligible variants (101, 106, 107) survive the filters');
+  });
+
+  await test('follows variant pagination rather than truncating at one page', async () => {
+    const adapter = DemoAdapter.ephemeral();
+    const shop = await adapter.demoShop();
+
+    let continuations = 0;
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagProducts: {
+          products: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              gqlProduct(1, [gqlVariant(201)], {
+                variants: {
+                  pageInfo: { hasNextPage: true, endCursor: 'v1' },
+                  nodes: [gqlVariant(201)],
+                },
+              }),
+            ],
+          },
+        },
+        PriceflagProductVariants: () => {
+          continuations += 1;
+          return {
+            product: {
+              variants: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [gqlVariant(202)] },
+            },
+          };
+        },
+      }),
+    });
+
+    const result = await syncProducts(client, adapter, shop.id, 'USD', { reconcileDeletions: false });
+    assertEqual(continuations, 1, 'asked for the next variant page');
+    assertEqual(result.variantsWritten, 2, 'both variants written — silently dropping one would mean a price we could not roll back');
+  });
+
+  section('sync — order history');
+
+  await test('aggregates line items into shop-timezone daily rows', async () => {
+    const adapter = DemoAdapter.ephemeral();
+    const shop = await adapter.demoShop();
+    const variantGid = toGid('ProductVariant', 301);
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagOrders: {
+          orders: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                // 02:00 UTC is still the previous evening in New York. Attributing
+                // this to the UTC day would put it on the wrong day's demand.
+                id: 'gid://shopify/Order/1',
+                createdAt: '2026-07-15T02:00:00Z',
+                test: false,
+                lineItems: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      id: 'li1',
+                      quantity: 2,
+                      variant: { id: variantGid },
+                      originalTotalSet: { shopMoney: { amount: '64.00' } },
+                      discountedTotalSet: { shopMoney: { amount: '58.00' } },
+                    },
+                  ],
+                },
+                refunds: [],
+              },
+              {
+                id: 'gid://shopify/Order/2',
+                createdAt: '2026-07-15T18:00:00Z',
+                test: false,
+                lineItems: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      id: 'li2',
+                      quantity: 1,
+                      variant: { id: variantGid },
+                      originalTotalSet: { shopMoney: { amount: '32.00' } },
+                      discountedTotalSet: { shopMoney: { amount: '32.00' } },
+                    },
+                  ],
+                },
+                refunds: [],
+              },
+              {
+                // Test orders are real rows with real line items. Counting them
+                // would inflate the baseline that guardrails compare against.
+                id: 'gid://shopify/Order/3',
+                createdAt: '2026-07-15T19:00:00Z',
+                test: true,
+                lineItems: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      id: 'li3',
+                      quantity: 99,
+                      variant: { id: variantGid },
+                      originalTotalSet: { shopMoney: { amount: '3168.00' } },
+                      discountedTotalSet: { shopMoney: { amount: '3168.00' } },
+                    },
+                  ],
+                },
+                refunds: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await syncOrderDays(
+      client,
+      adapter,
+      shop.id,
+      'America/New_York',
+      '2026-07-01',
+      '2026-07-31',
+      { listPrices: new Map([[variantGid, 3200]]) },
+    );
+
+    assertEqual(result.ordersProcessed, 2, 'two real orders');
+    assertEqual(result.ordersSkippedTest, 1, 'and the test order was skipped');
+
+    const rows = await adapter.getOrderDays(shop.id, { variant_gids: [variantGid] });
+    assertEqual(rows.length, 2, 'two distinct shop-days');
+
+    const july14 = rows.find((row) => row.day === '2026-07-14');
+    assert(july14 !== undefined, '02:00Z lands on the 14th in New York, not the 15th');
+    assertEqual(july14?.units, 2, 'units');
+    assertEqual(july14?.gross_revenue_cents, 6400, 'gross from originalTotalSet');
+    assertEqual(july14?.discount_cents, 600, 'discount is original minus discounted');
+    assertEqual(july14?.net_revenue_cents, 5800, 'net');
+    assertEqual(july14?.realized_unit_price_cents, 2900, 'realized unit price is net over units');
+    assertEqual(july14?.list_price_cents, 3200, 'list price is the regressor and differs from realized');
+    assertEqual(july14?.on_promo, true, 'a discounted day is flagged so Lane C can control for it');
+
+    const july15 = rows.find((row) => row.day === '2026-07-15');
+    assertEqual(july15?.units, 1, 'the 18:00Z order is the 15th in New York');
+    assertEqual(july15?.orders, 1, 'one distinct order');
+  });
+
+  await test('counts distinct orders, and books refunds on the day they happened', async () => {
+    const adapter = DemoAdapter.ephemeral();
+    const shop = await adapter.demoShop();
+    const variantGid = toGid('ProductVariant', 401);
+
+    const line = (id: string, quantity: number, amount: string): Record<string, unknown> => ({
+      id,
+      quantity,
+      variant: { id: variantGid },
+      originalTotalSet: { shopMoney: { amount } },
+      discountedTotalSet: { shopMoney: { amount } },
+    });
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagOrders: {
+          orders: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: 'gid://shopify/Order/10',
+                createdAt: '2026-07-10T15:00:00Z',
+                test: false,
+                // Two lines of the same variant in one order: two units, ONE order.
+                lineItems: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [line('a', 1, '32.00'), line('b', 1, '32.00')],
+                },
+                refunds: [
+                  {
+                    id: 'r1',
+                    // Refunded three days later — it belongs to the 13th.
+                    createdAt: '2026-07-13T15:00:00Z',
+                    refundLineItems: {
+                      nodes: [
+                        {
+                          quantity: 1,
+                          subtotalSet: { shopMoney: { amount: '32.00' } },
+                          lineItem: { variant: { id: variantGid } },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    await syncOrderDays(client, adapter, shop.id, 'UTC', '2026-07-01', '2026-07-31', {});
+    const rows = await adapter.getOrderDays(shop.id, { variant_gids: [variantGid] });
+
+    const saleDay = rows.find((row) => row.day === '2026-07-10');
+    assertEqual(saleDay?.units, 2, 'two units');
+    assertEqual(saleDay?.orders, 1, 'but one distinct order — orders are not summable across lines');
+
+    const refundDay = rows.find((row) => row.day === '2026-07-13');
+    assert(refundDay !== undefined, 'the refund books on its own day, not the sale day');
+    assertEqual(refundDay?.refund_units, 1, 'refund units');
+    assertEqual(refundDay?.refund_cents, 3200, 'refund cents');
+    assertEqual(refundDay?.net_revenue_cents, -3200, 'a refund-only day is negative revenue, which is the truth');
+  });
+
+  await test('a line item whose variant was deleted is dropped, not misattributed', async () => {
+    const adapter = DemoAdapter.ephemeral();
+    const shop = await adapter.demoShop();
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagOrders: {
+          orders: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: 'gid://shopify/Order/20',
+                createdAt: '2026-07-10T15:00:00Z',
+                test: false,
+                lineItems: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      id: 'orphan',
+                      quantity: 5,
+                      variant: null,
+                      originalTotalSet: { shopMoney: { amount: '160.00' } },
+                      discountedTotalSet: { shopMoney: { amount: '160.00' } },
+                    },
+                  ],
+                },
+                refunds: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await syncOrderDays(client, adapter, shop.id, 'UTC', '2026-07-01', '2026-07-31', {});
+    assertEqual(result.ordersProcessed, 1, 'the order is still counted');
+    assertEqual(result.dayRowsWritten, 0, 'but there is no variant to attribute it to');
+  });
+
+  section('sync — progress contract');
+
+  await test('an empty store still produces a valid, honest progress payload', async () => {
+    // No auto-seed: a seeded store already has a completed sync run, and this
+    // test is about what a brand new connection reports.
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({
+      shop_domain: 'acme-dev.myshopify.com',
+      timezone: 'America/New_York',
+      currency: 'USD',
+      mode: 'real',
+    });
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      fetchImpl: mockAdminApi({
+        PriceflagShop: {
+          shop: {
+            name: 'Acme',
+            myshopifyDomain: 'acme-dev.myshopify.com',
+            ianaTimezone: 'America/New_York',
+            currencyCode: 'USD',
+            contactEmail: 'owner@example.com',
+            plan: { displayName: 'Developer Preview' },
+          },
+        },
+        PriceflagCounts: { productsCount: { count: 0 }, ordersCount: { count: 0, precision: 'EXACT' } },
+        PriceflagProducts: { products: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } },
+        PriceflagOrders: { orders: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } },
+      }),
+    });
+
+    const outcome = await runSync(adapter, shop, { client, historyDays: 180 });
+    assertEqual(outcome.error, null, 'an empty store is not an error');
+
+    const run = await adapter.getLatestSyncRun(shop.id);
+    const progress = syncProgressFromRun(run);
+    assertEqual(progress.stage, 'done', 'the sync completes');
+    assertEqual(progress.catalog.ready, true, 'catalog ready');
+    assertEqual(progress.history.ready, true, 'history ready even when there is none');
+    assert(
+      /no orders/i.test(progress.message),
+      `and the message says so plainly: ${progress.message}`,
+    );
+  });
+
+  await test('a Shopify auth failure becomes a merchant-readable error', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const shop = await adapter.upsertShop({
+      shop_domain: 'acme-dev.myshopify.com',
+      timezone: 'UTC',
+      currency: 'USD',
+      mode: 'real',
+    });
+
+    const client = new AdminGraphqlClient(credentials, {
+      sleepImpl: async () => {},
+      maxRetries: 0,
+      fetchImpl: (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch,
+    });
+
+    const outcome = await runSync(adapter, shop, { client });
+    assertEqual(outcome.error?.code, 'auth_expired', 'classified as an auth problem');
+    assert(
+      /reconnect/i.test(outcome.error?.message ?? ''),
+      `and states the one action that fixes it: ${outcome.error?.message}`,
+    );
+    assertEqual(outcome.error?.retryable, false, 'retrying will not help');
+
+    const progress = syncProgressFromRun(await adapter.getLatestSyncRun(shop.id));
+    assertEqual(progress.stage, 'error', 'progress reports the failure');
   });
 }
 
@@ -2616,6 +3072,7 @@ async function main(): Promise<void> {
 
   await testPrimitives();
   await testShopifyAuth();
+  await testSync();
   await testGoldenData();
   await testContracts();
   await testForecast();

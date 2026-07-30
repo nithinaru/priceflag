@@ -5,9 +5,9 @@ telemetry, the evaluator, deploys.
 
 | | |
 |---|---|
-| **Current sprint** | B2 — static-token auth path landed. **OAuth install flow deferred, not passed** (see below) |
+| **Current sprint** | B3 — sync pipeline runs against the real dev store. **B2's OAuth install flow still deferred** (see below) |
 | **`npm run build`** | green |
-| **`npx tsx scripts/smoke.ts`** | green — **135 passed, 0 skipped** (Supabase suite live against real Postgres) |
+| **`npx tsx scripts/smoke.ts`** | green — **142 passed, 0 skipped** (Supabase suite live against real Postgres) |
 | **`npm audit`** | 0 vulnerabilities |
 | **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
 | **Deployed to Vercel?** | ❌ Not yet — `scripts/vercel-setup.sh` is ready, blocked on `VERCEL_TOKEN` |
@@ -537,6 +537,74 @@ populate while the fitters are being written — all optional, all useful:
 One constraint to know about: `expected_bands` uniqueness includes
 `coalesce(rollout_id, '000…0')`, so raw-SQL upserts need the expression form in
 the `ON CONFLICT` target. The exact statement is in `contracts/db/schema.md`.
+
+## Sprint B3 — sync pipeline (runs against the real store)
+
+`POST /api/sync` and `GET /api/sync/status` are live, and the pipeline has been
+run end to end against `priceflag-test.myshopify.com` with the static token.
+
+**What actually came back, and it matters for the other lanes:**
+
+| | |
+|---|---|
+| Products / variants | 17 products → **26 variants** written |
+| Repriceable | **17** — excluded: 4 gift cards, 3 subscription products, 2 not active |
+| Variants with a cost | **0 of 26** |
+| Orders in the last 180 days | **0** |
+
+Two things are worth stating plainly rather than discovering later:
+
+1. **The dev store has no order history at all** — not "orders without price
+   variation", literally `ordersCount: 0`. So it is not merely that every product
+   will honestly report `assumption` confidence; **baseline demand is zero**, and
+   the forecast card will show a zero-unit baseline with breakeven arithmetic only.
+   That is the designed behaviour of the fallback chain and it is correct, but it
+   means **CP2 cannot be demonstrated on real data until the store has orders**.
+   To fix it, place orders on the dev store (Shopify's admin can create draft
+   orders, or the storefront with a bogus gateway). Until then the demo store
+   remains the only place the fitted path can be exercised.
+2. **No variant has `inventoryItem.unitCost` set**, so all 26 land with
+   `cogs_cents = null` and `cogs_source = 'none'`. Every profit number on the real
+   store will be the honest "profit unknown — add cost" state (R3). **Lane A: this
+   is the state the real store will render for now**, so it is worth making sure
+   that path looks deliberate rather than broken.
+
+**Sync behaviour worth knowing:**
+
+- Re-running is idempotent — verified: 26 variants before, 26 after, no
+  duplicates. Every write is an upsert keyed the way the table is keyed.
+- Days are the shop's calendar days, not UTC. A 02:00Z order books to the previous
+  day for a New York store, and there is a test for exactly that: getting it wrong
+  would feed the wrong day's demand to auto-rollback.
+- **Test orders are excluded.** They are real rows with real line items, and
+  counting them would inflate the baseline that guardrails compare against — a
+  fake sale today makes a real shortfall tomorrow look worse.
+- Refunds book on the day the refund happened, not the day of the sale, which is
+  what makes a daily revenue series match the merchant's own reports.
+- A line item whose variant has been deleted is dropped rather than attributed
+  somewhere convenient.
+- A cost of exactly `0.00` in Shopify is treated as **unknown**, not as a free
+  product — it is almost always "never filled in", and believing it would produce
+  a confident 100%-margin forecast.
+- `list_price_cents` is filled from the current catalog price, because Shopify
+  keeps no price history. This is precisely why `journal_entries` exists: from now
+  on Priceflag records every change itself, so future syncs reconstruct it properly.
+  **Lane C:** on the real store this column is currently constant, which is the
+  mechanical reason a fit is impossible there.
+- The catalog is marked ready before order history starts, so onboarding can say
+  "you can start choosing products now" while history downloads (R24).
+
+Covered by 11 new smoke assertions against a mocked Admin API, so none of this
+needs network or credentials to stay green.
+
+### One bug this shook out
+
+`DemoAdapter.getLatestSyncRun` sorted by `started_at` and returned the first row.
+Two syncs can start in the same millisecond, and a stable sort then returns the
+*older* one — so a freshly-started sync would report the previous run's progress.
+Now ties break on insertion order. Postgres was never affected (microsecond
+timestamps), which is exactly the kind of divergence running the suite against
+both adapters is meant to catch.
 
 ## Contract requests serviced — round 2
 
