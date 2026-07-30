@@ -216,6 +216,7 @@ deferred but designed for. Lane tag in brackets.
 - **R32 (MUST) [B,C]** Staleness rule: if fits/bands are missing or stale the
   system degrades gracefully to transparent bracket math tagged `assumption` —
   it never blocks and never silently serves stale model output as fresh.
+- **R33 (MUST) Application authentication. Every route that reads shop data or can cause a price write must require a verified session (Shopify App Bridge session token via lib/shopify/session.ts), not the statically-configured shop. Deployment Protection is not access control for production: the project's ssoProtection is all_except_custom_domains, so attaching a pilot's custom domain removes it entirely — which is exactly what onboarding a merchant involves. Pilot launch blocker.
 
 ## 7. Success metrics
 
