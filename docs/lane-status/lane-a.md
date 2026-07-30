@@ -25,6 +25,59 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 
 ---
 
+## Sprint A3 — planned (not started)
+
+A3 is "propose flow v2", and Lane B's B1 landed the real `ForecastResult`
+contract mid-session, so A3 is **a migration plus a build**, not just a build.
+Recording the mapping here so it isn't re-derived.
+
+**What A3 delivers:** multi-SKU proposal (% or absolute), the forecast card
+rendering `contracts/forecast_result.schema.json` — `breakeven.sentence` first,
+`fitted` range with the band drawn, `confidence` + `confidence_explanation`,
+`scenarios` as a collapsed "show your work" table, plus `assumptions`, `warnings`
+and the per-`products` breakdown with `compare_at_action` and
+`exclusion_reason` — and the guardrail builder emitting
+`contracts/guardrails.schema.json` with its `sentence` persisted verbatim.
+
+**The migration it requires.** `/propose` and `/products` share product identity,
+so they move together, and `components/mock/engine.ts` shrinks to demo rollouts
+and journal rows on top of Lane B's demo store (A4 and A6 retire those parts).
+
+- `lib/engine/*`, `lib/demo/generator.ts`, `lib/contracts.ts`, `lib/types.ts` and
+  `lib/money.ts` are **pure — no node imports** (checked), so a server component
+  can import them. `lib/adapters/*`, `lib/db/*` and `lib/crypto.ts` are
+  server-only; never import those into a client component.
+- `generateDemoStore()` returns `ProductUpsert[]` / `OrderDayUpsert[]`, but
+  `buildForecast()` wants full `Product[]` / `OrderDay[]` rows. Needs a small
+  Lane A-owned hydrator (`components/demo/store.ts`) filling the row-only fields
+  deterministically — keeps every page statically renderable, which the
+  `DemoAdapter` would not.
+- Field renames, from Lane B's REQ-A-003 reply: **snake_case throughout**;
+  `id` → `variant_gid`; `priceCents` → `price_cents`; `cogsSource` `null` →
+  `cogs_source: 'none'`; `kind` → three booleans, read via
+  `exclusionReasonFor(product)` (the single implementation of R22, shared with
+  the price writer); `units30d` is not on the row — derive from `order_days` or
+  use `ForecastProductLine.baseline_units_per_day`; `stages[].sharePct: 25` →
+  `stages[].fraction: 0.25`; rollout `'live' | 'holding'` → `'running'`, and
+  `'paused_external'` → `'paused'` + `paused_reason`.
+- **Reading verdicts and rollout health are now server-side** in
+  `lib/engine/readings.ts` (`readingVerdict`, `readingSentence`, `rolloutHealth`,
+  `healthSentence`) and back the evaluator, so the UI cannot show a verdict the
+  machine did not act on. Two things A4 must honour: a day is `'below'` only when
+  it falls **outside** the interval (not merely under the point estimate), and
+  `band_floored: true` must render **distinctly** — "there isn't enough data to
+  check" is not "we checked and it's fine".
+- `GET /api/live` (specified in `contracts/api.md`, lands in B4) replaces
+  `getLiveSummary()`; rollback and kill switch return
+  `{ok, affected_skus, message}` and are idempotent. Only `/api/health` exists
+  today — mock against `contracts/api.md`, not against guesses.
+- A4 needs a chart. Lane B removed `recharts` at Lane A's request; hand-rolled
+  inline SVG stays consistent with the zero-dependency stance and avoids a ~100 kB
+  bundle on a page merchants open on phones. Decide at A4, and file a request if
+  a library is wanted after all.
+
+---
+
 ## Sprint A2 — done
 
 ### What landed
