@@ -689,6 +689,104 @@ not because there is work every 15 minutes.
   auto-rollback: the prices are already restored, and throwing would make the
   evaluator look like it failed when it did exactly the right thing.
 
+## Sprint B6 — ML role + demo fits ✅
+
+**`SUPABASE_ML_READONLY_KEY` is a Postgres role, not a dashboard key.** A
+publishable key authenticates PostgREST as `anon`, which RLS gives nothing to; the
+service key is read-write over everything, which is exactly what the ML lane must
+not hold. Lane C connects with psycopg, so a role is both correct and simpler.
+
+Migration `20260730120000_ml_readonly_role.sql`. **Verified against the live
+database rather than asserted** — nine checks:
+
+```
+CAN    read ml_product_days / ml_products / ml_price_history /
+       ml_rollout_windows / elasticity_fits      (5266 rows visible)
+CANNOT read shops.access_token_enc
+CANNOT write to products / order_days / elasticity_fits
+```
+
+The token column is column-revoked deliberately: a read-only role that can read an
+encrypted Shopify token is a read-only role that can exfiltrate a store. The
+password is **not** in the migration (git keeps things forever) — it is set out of
+band and the connection string is in `.env.local`.
+
+**Lane C:** connect with `SUPABASE_ML_READONLY_KEY` as a libpq URL. You get SELECT
+on the four `ml_*` views, their source tables, and your own outputs so a challenger
+can be compared with the incumbent it must beat. You do **not** get write access —
+your request 9 (a write path for fits/bands) is still open; the ingest endpoint is
+the next thing I would add.
+
+### REQ-A-006 — demo mode can now show a fitted range
+
+`scripts/seed-demo-fits.ts` runs **Lane C's real `fit_store`** over the demo
+store's *observable* columns only — units, list price, promo, stockout, exactly
+what a real `order_days` contains — and commits the result as
+`lib/demo/elasticity-fits.json`. `generateDemoStore().truth` is never read by that
+script and the fitter has no access to it, so this is not the ground-truth leak
+CLAUDE.md forbids.
+
+The estimates are honestly wrong, which is the point:
+
+```
+variant …46100000000   fitted -1.54   true -1.80   partial
+variant …46100000046   fitted -1.84   true -1.15   partial
+variant …46100000276   fitted -1.20   true -0.20   assumption
+```
+
+**Lane A:** demo mode now reaches **`partial` with a real fitted range and band** —
+not `fitted`. Lane C's fitter produced no `fitted`-tier estimates on this data (8
+`partial`, 6 `assumption`); that is the honest ceiling for a 14-SKU store with two
+or three price levels, and it is a property of the data, not a bug. Select
+products that have a usable fit and the band renders. A selection that *mixes*
+fitted and unfitted variants correctly falls to `assumption` with no range.
+
+That mixed case exposed a genuine contract violation in B1's forecast: it produced
+`confidence: 'assumption'` together with a **non-null** `fitted` block. The schema
+says `fitted` is null at that tier, and it must be — a drawn range while the tier
+says we cannot predict demand is two contradictory claims on one screen. Fixed.
+
+## Sprint B7 — hardening and production ✅ (partly)
+
+- **`GET /api/journal`** and `?format=csv` (R18). The CSV has no page size — a
+  partial audit trail is worse than none — and escapes formula-leading characters
+  so a spreadsheet is not handed something executable.
+- **`PILOT_RUNBOOK.md`** — fastest-undo first, then triage, then the manual
+  restore-from-journal SQL, then a "things that are working as intended" section
+  so an on-call person does not "fix" the low-volume floor at 2am.
+- **Redeployed**: https://priceflagv1.vercel.app now carries the cron, the
+  journal, the kill switch and the evaluator.
+
+### Verified in production
+
+**`GET /api/sync/status` returns 200 with a valid `sync_progress` payload reading
+real Supabase data** — this is the check I declined to claim last session, and it
+now passes:
+
+```json
+{"contract_version":"1.0.0","stage":"done","message":"Loaded 26 products.",
+ "catalog":{"ready":true,"products_synced":26,"products_total":26},
+ "history":{"ready":false,"days_synced":0,"days_target":180,"orders_processed":0}}
+```
+
+### NOT verified — read before trusting production
+
+1. **Whether Vercel Cron can actually reach `/api/cron/evaluate` past Deployment
+   Protection.** Protection is enabled on the project, and an external request is
+   302'd to SSO. Vercel's own cron invocations are generally exempt, but I could
+   not confirm it from here and **I am not going to assert it**. If cron is being
+   redirected, the evaluator never runs in production and nothing advances or rolls
+   back. Check Vercel → project → Cron Jobs after the first scheduled firing, or
+   force one with `curl -X POST .../api/cron/evaluate -H "Authorization: Bearer $CRON_SECRET"`
+   from a context that can bypass protection.
+2. **Cron secret rejection in production.** The logic is unit-tested, but remotely
+   I cannot tell a 401 from Deployment Protection's 302.
+3. **Webhook delivery**, unchanged from B4 — `APP_URL` is localhost and the
+   deployment is protected, so Shopify cannot reach either.
+4. **The multi-day evaluator progression against a real clock**, unchanged from B5.
+5. **500-SKU sync and 10-concurrent-rollout load** (a B7 acceptance item). The dev
+   store has 26 variants; I have not synthesised a 500-SKU store to test it.
+
 ## Contract requests serviced — round 2
 
 ### Lane C 7 — negative-binomial noise — **done**
