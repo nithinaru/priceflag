@@ -85,13 +85,31 @@ curl -s "$APP_URL/api/journal?rollout_id=<id>" | jq '.items[:5]'
 
 In order of likelihood:
 
-1. **Cron not firing.** Vercel → project → Cron Jobs. On the Hobby plan crons run
-   **once a day** regardless of the schedule expression, so a breach can be up to
-   24 hours late. Force a tick:
+1. **The scheduler is not firing.** The evaluator is driven by **GitHub Actions**,
+   not Vercel Cron — Deployment Protection 302s an unauthenticated request and
+   Vercel Cron does not follow redirects, so it would fail silently. Check
+   GitHub → Actions → `evaluator`.
 
    ```bash
-   curl -X POST "$APP_URL/api/cron/evaluate" -H "Authorization: Bearer $CRON_SECRET" | jq
+   gh run list --workflow=evaluator.yml --repo nithinaru/priceflag --limit 5
+   gh workflow run evaluator.yml --repo nithinaru/priceflag   # force a tick
    ```
+
+   Force one by hand — **both** headers are required. The bypass alone gets a 401,
+   the bearer alone gets a 302:
+
+   ```bash
+   curl -X POST "$APP_URL/api/cron/evaluate" \
+     -H "Authorization: Bearer $CRON_SECRET" \
+     -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" | jq
+   ```
+
+   A missed run is not urgent: every tick catches up any closed day it has not
+   evaluated (up to 14), oldest first.
+
+   **Do not add `crons` back to `vercel.json`.** Besides being swallowed by
+   protection, a Hobby account rejects any expression running more than daily and
+   the whole deploy fails.
 
 2. **A stale lease.** A crashed evaluator holds its lease for up to 5 minutes and
    then it expires on its own. If a rollout looks stuck much longer:
@@ -216,5 +234,5 @@ Worth knowing before "fixing" them:
 | Vercel project | `prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`) |
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
-| Evaluator | `/api/cron/evaluate`, `*/15 * * * *`, `Authorization: Bearer $CRON_SECRET` |
+| Evaluator | `/api/cron/evaluate`, hourly via GitHub Actions `evaluator.yml`; needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass` |
 | ML role | `priceflag_ml_readonly` — SELECT only, cannot read `shops.access_token_enc` |

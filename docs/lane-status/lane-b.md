@@ -689,6 +689,115 @@ not because there is work every 15 minutes.
   auto-rollback: the prices are already restored, and throwing would make the
   evaluator look like it failed when it did exactly the right thing.
 
+## 🔴 LAUNCH BLOCKER — Priceflag has no application authentication
+
+**Anyone who can reach the deployment can write prices to a real Shopify store.**
+
+There is no login, no session, no authorization check on any route. `/api/rollouts`,
+`/api/kill-switch` and the price writer are reachable by any HTTP client that can
+reach the origin. Today the *only* thing preventing that is **Vercel Deployment
+Protection**, which is a platform setting on one hosting account — not a property
+of the product.
+
+Two things make it sharper than it sounds:
+
+- The project's `ssoProtection` is `all_except_custom_domains`. **The moment a real
+  custom domain is attached, it is unprotected**, and a pilot is exactly when a
+  custom domain gets attached.
+- `resolveShopFromRequest` falls back to a `?shop=` query parameter outside
+  production. That is refused in production, but it means the shop is currently
+  identified by an unauthenticated parameter in every other environment.
+
+**This belongs in the PRD as a MUST requirement, not a footnote.** I have not
+edited `PRD.md` — it is not a Lane B owned path — so this needs Nithin to add it.
+Suggested shape:
+
+> **R33 (MUST) [B]** Every route that reads or writes shop data authenticates the
+> request and resolves the shop from a verified credential — embedded App Bridge
+> session token for merchant traffic, `CRON_SECRET` for the evaluator, HMAC for
+> webhooks. No route derives the shop from an unauthenticated parameter. Hosting
+> protection is defence in depth, never the control.
+
+The pieces already exist: `lib/shopify/session.ts` verifies App Bridge session
+tokens (HS256 pinned, `aud`/`iss`/`dest` checked) and is used by
+`resolveShopFromRequest`. What is missing is that **no route requires it** — they
+all fall back to the statically-configured shop. Closing this is roughly one
+sprint: make the fallback opt-in per route, embed the app so App Bridge issues
+tokens, and fail closed.
+
+## Scheduling — GitHub Actions, not Vercel Cron ✅
+
+**Vercel Cron cannot drive this evaluator.** Deployment Protection answers an
+unauthenticated request with a 302, and Vercel Cron does not follow redirects, so
+every scheduled invocation would have been swallowed and **no rollout would ever
+have advanced or rolled back** — silently, with a green-looking deployment.
+
+Protection stays on precisely because of the blocker above. So the schedule moved
+to `.github/workflows/evaluator.yml`, and the cron was removed from `vercel.json`
+so there is exactly one scheduler.
+
+The workflow sends **both** secrets, doing different jobs:
+
+| Secret | Job | Alone it gets |
+|---|---|---|
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | past Deployment Protection | 401 |
+| `CRON_SECRET` | proves to the app this is the evaluator | 302 |
+
+Verified in production against the live deployment, all three cases:
+
+```
+no secrets       -> 302   (protection blocks it — what Vercel Cron would have hit)
+bypass only      -> 401   {"code":"unauthorized","message":"Missing or invalid cron secret."}
+bypass + bearer  -> 200   {"evaluated":0,...,"caught_up":0,"errors":[]}
+```
+
+And a real GitHub Actions run (`workflow_dispatch`, run 30570819766) returned
+HTTP 200, with the invocation confirmed in **Vercel runtime logs**:
+
+```
+18:32:18  POST /api/cron/evaluate  200  [info/serverless]
+```
+
+The 302 attempt does **not** appear in the runtime logs at all — it never reached
+the function. That absence is the evidence that Vercel Cron would have failed
+silently rather than loudly.
+
+**Hourly**, not every 15 minutes: the evaluator judges the last *closed*
+shop-local day, so it must fire within an hour of each store's local midnight for
+any UTC offset — including the `:30` and `:45` zones — rather than at midnight
+itself.
+
+**Catch-up matters more than the frequency.** The evaluator previously only ever
+looked at yesterday, so any day the schedule missed was never judged and a breach
+on that day would never have fired. Guardrails that silently skip a day are worse
+than no guardrails, because the merchant believes they are covered.
+`evaluateRolloutWithCatchUp` walks every closed, unevaluated day oldest-first so
+`breach_streak` accumulates in the right order, stops as soon as the rollout stops
+running, and is capped at 14 days so one invocation cannot grind through months.
+
+Repo secrets `CRON_SECRET` and `VERCEL_AUTOMATION_BYPASS_SECRET` and the variable
+`PRICEFLAG_URL` are set. `.github/workflows/evaluator.yml` is not an `ml-*.yml`
+file, so it does not collide with Lane C's ownership of that directory.
+
+### ⚠️ Correction: my B7 note was wrong
+
+B7 said the redeploy "carries the cron, the journal, the kill switch and the
+evaluator". **It did not.** Hobby accounts reject any cron expression running more
+than once a day, so `*/15 * * * *` in `vercel.json` made **every deploy fail
+outright** from B5 onward. The alias had been pointing at a pre-B5 build the whole
+time, and `/api/journal`, `/api/kill-switch` and `/api/cron/evaluate` were simply
+not deployed.
+
+I verified `/api/sync/status`, which existed in the older build, and **assumed the
+rest of the routes came with it**. That is exactly the kind of claim I have been
+trying not to make. Removing the cron fixed the deploy; all routes are now
+confirmed present individually:
+
+```
+/api/health 200   /api/sync/status 200   /api/journal 200
+/api/kill-switch 405 (GET; POST/DELETE only)   /api/cron/evaluate 401 (needs bearer)
+```
+
 ## Sprint B6 — ML role + demo fits ✅
 
 **`SUPABASE_ML_READONLY_KEY` is a Postgres role, not a dashboard key.** A
