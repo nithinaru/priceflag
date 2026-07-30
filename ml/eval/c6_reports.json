@@ -1,0 +1,9 @@
+{
+  "summary": {
+    "model_version": "rollout-report-1.0",
+    "n_rollouts": 9,
+    "pct_in_range": 0.7777777777777778,
+    "elasticity_after_mae_vs_cohort_truth": 0.8556416764630776,
+    "acceptance_met": true
+  }
+}

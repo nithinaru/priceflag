@@ -416,6 +416,89 @@ def run_c5(
     return {"summary": summary}
 
 
+def _c6_scenario(seed: int, rep: int, price_up_pct: float = 0.10, monitor_days: int = 30, n_treated: int = 8):
+    """A completed golden rollout: +10% price on the treated SKUs, demand
+    responds with each SKU's TRUE elasticity. Returns
+    (plans, pre_history, during_actuals, fits_before, store)."""
+    from .elasticity import fit_store
+    from .golden import GoldenConfig, generate_store, simulate_sku
+    from .reports import VariantPlan
+
+    cfg = GoldenConfig(seed=seed)
+    store = generate_store(cfg)
+    dates = pd.date_range(end=pd.Timestamp(cfg.end_date), periods=cfg.days, freq="D")
+    change_idx = cfg.days - monitor_days
+    treated = list(store.truth["sku"])[::3][:n_treated]
+
+    plans, frames = [], []
+    for i, sku in enumerate(treated):
+        truth = store.skus[sku]
+        old_price = int(truth.price_cents[change_idx - 1])
+        new_price = int(round(old_price * (1 + price_up_pct)))
+        ratio = (new_price / old_price) ** truth.elasticity
+        df = simulate_sku(
+            truth,
+            dates,
+            np.random.default_rng([seed, 6000 + rep, i]),
+            effect_ratio=ratio,
+            effect_start_idx=change_idx,
+        )
+        # During the rollout the shopper pays the NEW price.
+        post = df["date"] >= dates[change_idx]
+        df.loc[post, "price_cents"] = new_price
+        df.loc[post, "revenue_cents"] = (df.loc[post, "units"] * new_price).astype(int)
+        frames.append(df)
+        plans.append(
+            VariantPlan(
+                sku=sku, old_price_cents=old_price, new_price_cents=new_price, cogs_cents=truth.cogs_cents
+            )
+        )
+    panel = pd.concat(frames, ignore_index=True)
+    cut = dates[change_idx]
+    pre, during = panel[panel["date"] < cut], panel[panel["date"] >= cut]
+    fits_before = {f.sku: f for f in fit_store(store.orders, seed=0) if f.sku in treated}
+    return plans, pre, during, fits_before, store
+
+
+def run_c6(seeds: tuple[int, ...] = (7, 11, 42), reps_per_seed: int = 3) -> dict:
+    """C6 report: end-to-end honesty check of the whole pipeline. For golden
+    rollouts whose demand responds with the TRUE elasticities: generate the
+    post-rollout report, validate it against the contract, and measure R30
+    calibration (% of realized outcomes inside the predicted range) plus the
+    updated elasticity's recovery of the cohort truth."""
+    from .reports import MODEL_VERSION as RPT_VERSION
+    from .reports import build_report, calibration_summary
+
+    reports, eps_errors = [], []
+    for seed in seeds:
+        for rep in range(reps_per_seed):
+            plans, pre, during, fits_before, store = _c6_scenario(seed, rep)
+            report = build_report(
+                rollout_id="123e4567-e89b-42d3-a456-426614174000",
+                plans=plans,
+                pre_history=pre,
+                during_actuals=during,
+                fits_before=fits_before,
+                generated_at="2026-07-29T00:00:00Z",
+            )
+            reports.append(report)
+            if report["elasticity_update"]:
+                truth = dict(zip(store.truth["sku"], store.truth["elasticity"]))
+                w = {p.sku: 1.0 for p in plans}
+                cohort_true = float(np.mean([truth[p.sku] for p in plans]))
+                eps_errors.append(abs(report["elasticity_update"]["after"] - cohort_true))
+
+    cal = calibration_summary(reports)
+    summary = {
+        "model_version": RPT_VERSION,
+        "n_rollouts": cal["n_rollouts"],
+        "pct_in_range": cal["pct_in_range"],
+        "elasticity_after_mae_vs_cohort_truth": float(np.mean(eps_errors)) if eps_errors else None,
+        "acceptance_met": cal["pct_in_range"] is not None and cal["pct_in_range"] >= 0.7,
+    }
+    return {"summary": summary}
+
+
 def run_c3(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     """C3 report: CleanLevel baseline challenger vs the bracket band (the
     band the evaluator actually ships) and vs seasonal-naive (the brief's
@@ -488,7 +571,7 @@ def main() -> None:
     import sys
 
     which = sys.argv[1] if len(sys.argv) > 1 else "c1"
-    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4, "c5": run_c5}[which]()
+    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4, "c5": run_c5, "c6": run_c6}[which]()
     print(json.dumps(_json_safe(report), indent=2))
 
 

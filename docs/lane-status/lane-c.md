@@ -1,7 +1,31 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1–C5 complete (2026-07-29). Next: C6 (calibration +
-post-rollout reports).
+**Current:** Sprints C1–C6 complete (2026-07-29). Next: C7 (nightly
+production loop).
+
+## C6 — Post-rollout reports + calibration ✅
+
+`priceflag_ml/reports.py` — `rollout-report-1.0`:
+
+- `build_report()` emits `rollout_report.schema.json`-exact rows (validated
+  in tests): predicted outcome band (proposal-time elasticity scenarios
+  applied to the C5 counterfactual baseline), realized outcome vs the
+  counterfactual (external drift never mis-attributed to the price change),
+  `in_range` (R30 — reported even when unflattering), updated cohort
+  elasticity, plain-language narrative (R25-clean, tested for jargon), and
+  per-variant rows. Money is integer cents throughout; missing COGS gives
+  null profit + revenue-based in_range, said openly in the narrative.
+- Directional claims ("customers were less price-sensitive than assumed")
+  require the update to clear BOTH 0.25 and its own z80 noise — a 30-day
+  window with one ~10% change has se ≈ 1.0, and claiming direction from
+  noise is exactly what R25/R30 forbid.
+- **End-to-end honesty check (9 golden rollouts, +10% price, demand
+  responding with true elasticities): realized outcome landed inside the
+  predicted range 77.8% of the time** (PRD success metric ≥70%) —
+  `eval/c6_reports.json`. `calibration_summary()` provides the R30 dashboard
+  number.
+- **For Lane A:** render `narrative` verbatim; `elasticity_update.direction`
+  drives your headline sentence; `per_variant` feeds the table.
 
 ## C5 — Rollout counterfactual monitor ✅
 

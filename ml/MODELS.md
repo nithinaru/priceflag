@@ -118,6 +118,19 @@ the champion only by beating it here AND on real-data backtests.
   prefer `breach_probability` (already wired on Lane B's side: ≥0.8 fires,
   low probability suppresses a raw crossing).
 
+### rollout-report-1.0 — post-rollout reports + R30 calibration (since C6)
+
+- **What:** realized vs predicted (band replayed from the proposal-time
+  elasticity fit applied to the C5 counterfactual baseline), `in_range`
+  honesty flag, updated cohort elasticity whose *directional claim* must
+  clear both a 0.25 practical gap AND its own z80 noise (se_after ~ 1.0 on a
+  single 30-day window — over-claiming direction on noise is forbidden),
+  plain-language narrative, per-variant rows. Missing COGS -> null profit +
+  revenue-based in_range, stated in the narrative.
+- **Scores (9 golden rollouts, +10% price, true-elasticity demand response):**
+  `pct_in_range` **77.8%** (PRD success metric: >=70%) · schema-validated
+  end-to-end. Snapshot: `eval/c6_reports.json`.
+
 ## Challengers
 
 (none in flight)
