@@ -1,0 +1,169 @@
+# Lane A → contract & platform requests
+
+Append-only. Lane A writes, Lane B lands. Newest at the bottom.
+
+---
+
+## REQ-A-001 — Root project scaffold does not exist yet (BLOCKING for `npm run build`)
+
+**Filed:** Sprint A1
+**Owner:** Lane B (root configs)
+**Status:** open
+
+At Sprint A1 start, `main` contained only `PRD.md`, `BUILD_BRIEF.md`, `README.md`,
+`LICENSE`. There is no `package.json`, no `tsconfig.json`, no Next config, no
+PostCSS config, and no v0 application code (`lib/`, `app/`, `components/`).
+BUILD_BRIEF §4/A1 says "refactor v0's three pages onto the primitives" — there
+were no v0 pages to refactor, so Lane A **authored** the three pages directly on
+the new primitives instead. See `docs/lane-status/lane-a.md`.
+
+Root configs are Lane B-owned, so Lane A cannot create them. Lane A verified
+`npm run build` inside a throwaway harness outside the repo (config below +
+a copy of `app/` and `components/`). **`npm run build` cannot be green on `main`
+until Lane B lands these four files.** Nothing else in Lane A is blocked.
+
+Requested, verbatim (this is the exact config the A1 code was built and
+build-verified against — `create-next-app --ts --tailwind --app` output plus
+Tailwind v4 wiring):
+
+`package.json`
+
+```json
+{
+  "name": "priceflag",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^15.5.22",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}
+```
+
+Those are the exact versions Lane A's A1 build was verified green against
+(`next build`: 6 routes, 13 static pages, no type errors). Any newer 15.x/19.x
+is fine.
+
+`postcss.config.mjs`
+
+```js
+const config = { plugins: { "@tailwindcss/postcss": {} } };
+export default config;
+```
+
+`tsconfig.json` — Lane A's imports depend on the standard `@/*` path alias
+pointing at the repo root (`@/components/ui`, `@/app/...`). Please keep it.
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+```
+
+`next.config.ts`
+
+```ts
+import type { NextConfig } from "next";
+const nextConfig: NextConfig = {};
+export default nextConfig;
+```
+
+Notes that keep this cheap for Lane B:
+
+- **Lane A added zero runtime dependencies and intends to keep it that way.**
+  No `clsx`, no `tailwind-merge`, no `cva`, no `lucide-react`, no chart library,
+  no `next/font` network fetch. Class merging is a 6-line local helper
+  (`components/cn.ts`), icons are inline SVG (`components/ui/icons.tsx`), fonts
+  are a system stack. If Lane A ever needs a dependency it will be requested
+  here first, never added directly.
+- **Tailwind v4 needs no `tailwind.config.js`.** All design tokens live in
+  `app/globals.css` (`@theme inline` + light/dark CSS custom properties), which
+  is Lane A-owned. Please do not add a `tailwind.config.js` — it would split
+  token ownership across lanes.
+- If your scaffold differs (different Next patch, `src/` layout, `@/*` mapped to
+  `./src/*`), land yours and note it in `docs/lane-status/lane-b.md`; Lane A will
+  adapt its imports next sprint rather than fight the scaffold.
+
+## REQ-A-002 — `CLAUDE.md` and `PROMPTS.md` are referenced but absent
+
+**Filed:** Sprint A1
+**Owner:** Nithin / Lane B (root files)
+**Status:** open — informational, not blocking
+
+`README.md` tells agents to read `CLAUDE.md` (ground rules) and `PROMPTS.md`;
+neither is on `main`. Lane A worked from the ground rules restated in
+BUILD_BRIEF §2.7 instead: integer cents, no per-visitor pricing, forecasts show
+confidence honestly, every price write journaled and reversible. All four are
+honored in A1 (money is `Cents` everywhere, formatting is the only place it
+becomes a decimal). Flagging in case `CLAUDE.md` carries rules Lane A has not
+seen.
+
+## REQ-A-003 — Engine surface Lane A is currently mocking
+
+**Filed:** Sprint A1
+**Owner:** Lane B (`lib/**`, `contracts/**`)
+**Status:** open — not blocking, mock is local
+
+Lane A needs data to render, so `components/mock/engine.ts` holds a **local,
+clearly-labelled, delete-on-arrival mock** of the engine surface: types plus
+demo-store fixtures. It is the only file Lane A must delete when `lib/` lands.
+Lane A imports it in exactly one place per page, so the swap is mechanical.
+
+The shapes Lane A guessed at, so Lane B can confirm or correct them (Lane A will
+follow `contracts/` and `lib/types.ts` once they exist — these are guesses, not
+requirements):
+
+| Mock export | What the UI needs from it |
+|---|---|
+| `Cents = number` | Integer cents everywhere; only `components/format.ts` divides by 100. |
+| `Product` | `id`, `title`, `variantTitle?`, `sku`, `priceCents`, `compareAtCents \| null`, `cogsCents \| null`, `cogsSource: "shopify" \| "manual" \| null`, `kind: "standard" \| "subscription" \| "gift_card"`, `units30d`, `inLiveRollout: boolean`. `cogsSource` drives the "where did this cost come from" indicator (R3). `kind` drives the excluded-from-selection badges (R22). |
+| `Rollout` | `id`, `name`, `status: "draft" \| "scheduled" \| "live" \| "holding" \| "paused_external" \| "rolled_back" \| "completed"`, `change: {kind:"percent"\|"absolute", value:number}`, `productIds`, `stages: RolloutStage[]`, `currentStageIndex`, `guardrail`, `startedAt`, `endedAt`. |
+| `RolloutStage` | `sharePct` (25/50/100), `holdDays`, `status: "completed" \| "active" \| "pending" \| "skipped"`, `startedOn`, `completedOn`, `skuCount`. |
+| `Guardrail` | `unitsDropPct: number`, `forDays: number`, `action: "revert_all"`. Rendered as one editable sentence (R10) — please keep it storable as these three fields rather than a free-text string. |
+| `RolloutReading` | `date`, `actualUnits`, `expectedUnits`, `expectedLow`, `expectedHigh`, `verdict: "within" \| "below" \| "above"`, `confidence`. Matches `expected_band.schema.json` as described in BUILD_BRIEF §3 plus a precomputed `verdict` — **if the verdict is computed server-side, please expose it**; Lane A would rather render a decision than make one about whether a rollout is healthy. |
+| `RolloutEvent` | `at`, `kind`, `message` (plain language, merchant-facing), `detail?`. Lane A renders `message` verbatim, so it must be plain language (R25) — no "guardrail threshold breached". |
+| `JournalEntry` | `at`, `productTitle`, `sku`, `fromCents`, `toCents`, `actor: "priceflag" \| "you" \| "external"`, `kind: "rollout" \| "rollback" \| "external" \| "manual"`, `reason`, `rolloutId \| null`. |
+| `ConfidenceTier` | `"fitted" \| "partial" \| "assumption"`. Lane A owns the plain-language sentence for each tier; please also send `explanation` per `forecast_result.schema.json` and Lane A will prefer yours when present. |
+
+Two behavioural requests, both for the "what is live right now and how do I undo
+it" glance test that Lane A is graded on:
+
+1. **A store-wide "what is live right now" read** — one call that answers: is
+   anything live, which rollout, which stage, how many SKUs currently hold a
+   Priceflag price, is it healthy. Lane A's overview page is built around this.
+2. **Rollback and kill switch as callable server actions** returning
+   `{ok, affectedSkus, message}`. A1 wires the confirm dialog and the toast
+   against a mocked no-op; the real ones just need to be awaitable and to report
+   what they touched.

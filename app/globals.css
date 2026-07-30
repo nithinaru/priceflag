@@ -1,0 +1,302 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Priceflag design tokens — Lane A owns this file.
+   Tailwind v4 is CSS-first: there is no tailwind.config.js on purpose, so that
+   token ownership does not straddle two lanes (see contracts/requests-lane-a.md).
+
+   Two layers:
+   1. `--pf-*` raw values below, declared twice (light / dark). These flip.
+   2. `@theme inline` maps them onto Tailwind utility names, so `bg-surface`,
+      `text-ink-muted`, `border-border` resolve through the flipping var.
+
+   Consequence: components never write a `dark:` variant. They use semantic
+   tokens and are correct in both themes by construction. Dark mode follows the
+   OS today; `[data-theme]` on <html> is wired for an explicit toggle in A7.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces, from furthest back to nearest front. */
+  --pf-canvas: #f5f6f8;
+  --pf-surface: #ffffff;
+  --pf-surface-muted: #f1f3f6;
+  --pf-surface-inset: #e9edf2;
+  --pf-overlay: rgb(16 22 32 / 0.44);
+
+  --pf-border: #e2e6ec;
+  --pf-border-strong: #c7ced8;
+
+  /* Text. ink-muted and ink-subtle both clear 4.5:1 on canvas and surface. */
+  --pf-ink: #121821;
+  --pf-ink-muted: #4c5666;
+  --pf-ink-subtle: #66707f;
+  --pf-ink-inverse: #ffffff;
+
+  /* One accent. Used for the single primary action on a screen, and links. */
+  --pf-accent: #2a54cc;
+  --pf-accent-hover: #2246a8;
+  --pf-accent-active: #1c3a8c;
+  --pf-accent-ink: #ffffff;
+  --pf-accent-tint: #ebf0fd;
+  --pf-accent-border: #c2d2f7;
+
+  /* Status. Meaning is fixed across the app:
+     live   = a Priceflag price is on the storefront right now
+     hold   = waiting on purpose (holding a stage, scheduled, paused)
+     breach = below the expected range, or a rollback happened
+     Never use accent to mean "healthy" — green means live, blue means action. */
+  --pf-live: #0d7748;
+  --pf-live-tint: #e3f4eb;
+  --pf-live-border: #b2dfc7;
+
+  --pf-hold: #875600;
+  --pf-hold-tint: #fdf2df;
+  --pf-hold-border: #eed8a4;
+
+  --pf-breach: #bc2e27;
+  --pf-breach-tint: #fdebea;
+  --pf-breach-border: #f2c2bf;
+
+  --pf-neutral-tint: #eef0f4;
+  --pf-neutral-border: #d7dce4;
+
+  --pf-focus: #2a54cc;
+
+  --pf-shadow-sm: 0 1px 2px 0 rgb(16 24 40 / 0.06);
+  --pf-shadow-md: 0 4px 12px -2px rgb(16 24 40 / 0.1), 0 2px 4px -2px rgb(16 24 40 / 0.06);
+  --pf-shadow-lg: 0 24px 48px -12px rgb(16 24 40 / 0.28);
+}
+
+/* Dark, when the OS asks for it and the app has not been pinned to light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --pf-canvas: #0d1117;
+    --pf-surface: #151b24;
+    --pf-surface-muted: #1b222c;
+    --pf-surface-inset: #222b36;
+    --pf-overlay: rgb(3 6 11 / 0.66);
+
+    --pf-border: #28313d;
+    --pf-border-strong: #3a4553;
+
+    --pf-ink: #e9edf3;
+    --pf-ink-muted: #a7b2c0;
+    --pf-ink-subtle: #8b96a5;
+    --pf-ink-inverse: #0d1117;
+
+    --pf-accent: #7fa2ff;
+    --pf-accent-hover: #99b5ff;
+    --pf-accent-active: #b3c7ff;
+    --pf-accent-ink: #0d1117;
+    --pf-accent-tint: #16213a;
+    --pf-accent-border: #2b3f6b;
+
+    --pf-live: #55c98e;
+    --pf-live-tint: #0f2620;
+    --pf-live-border: #1f4a38;
+
+    --pf-hold: #e0b155;
+    --pf-hold-tint: #271f12;
+    --pf-hold-border: #4c3c1c;
+
+    --pf-breach: #f0897f;
+    --pf-breach-tint: #2a1716;
+    --pf-breach-border: #572924;
+
+    --pf-neutral-tint: #1e252f;
+    --pf-neutral-border: #333d4a;
+
+    --pf-focus: #7fa2ff;
+
+    --pf-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --pf-shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+    --pf-shadow-lg: 0 24px 48px -12px rgb(0 0 0 / 0.7);
+  }
+}
+
+/* Explicit override, for the A7 theme toggle. Same values as the block above. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --pf-canvas: #0d1117;
+  --pf-surface: #151b24;
+  --pf-surface-muted: #1b222c;
+  --pf-surface-inset: #222b36;
+  --pf-overlay: rgb(3 6 11 / 0.66);
+
+  --pf-border: #28313d;
+  --pf-border-strong: #3a4553;
+
+  --pf-ink: #e9edf3;
+  --pf-ink-muted: #a7b2c0;
+  --pf-ink-subtle: #8b96a5;
+  --pf-ink-inverse: #0d1117;
+
+  --pf-accent: #7fa2ff;
+  --pf-accent-hover: #99b5ff;
+  --pf-accent-active: #b3c7ff;
+  --pf-accent-ink: #0d1117;
+  --pf-accent-tint: #16213a;
+  --pf-accent-border: #2b3f6b;
+
+  --pf-live: #55c98e;
+  --pf-live-tint: #0f2620;
+  --pf-live-border: #1f4a38;
+
+  --pf-hold: #e0b155;
+  --pf-hold-tint: #271f12;
+  --pf-hold-border: #4c3c1c;
+
+  --pf-breach: #f0897f;
+  --pf-breach-tint: #2a1716;
+  --pf-breach-border: #572924;
+
+  --pf-neutral-tint: #1e252f;
+  --pf-neutral-border: #333d4a;
+
+  --pf-focus: #7fa2ff;
+
+  --pf-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --pf-shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+  --pf-shadow-lg: 0 24px 48px -12px rgb(0 0 0 / 0.7);
+}
+
+@theme inline {
+  /* Type. A dense admin scale: `text-base` is 14px, not 16px, because these
+     screens are tables. `text-md` (16px) exists for form controls on mobile,
+     where anything smaller makes iOS Safari zoom on focus. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-2xs--letter-spacing: 0.04em;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-md: 1rem;
+  --text-md--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.75rem;
+  --text-2xl--line-height: 2.125rem;
+  --text-3xl: 2.125rem;
+  --text-3xl--line-height: 2.5rem;
+
+  /* Spacing base. Every `p-4`, `gap-3` etc. is a multiple of this. */
+  --spacing: 0.25rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.125rem;
+
+  --color-canvas: var(--pf-canvas);
+  --color-surface: var(--pf-surface);
+  --color-surface-muted: var(--pf-surface-muted);
+  --color-surface-inset: var(--pf-surface-inset);
+  --color-overlay: var(--pf-overlay);
+
+  --color-border: var(--pf-border);
+  --color-border-strong: var(--pf-border-strong);
+
+  --color-ink: var(--pf-ink);
+  --color-ink-muted: var(--pf-ink-muted);
+  --color-ink-subtle: var(--pf-ink-subtle);
+  --color-ink-inverse: var(--pf-ink-inverse);
+
+  --color-accent: var(--pf-accent);
+  --color-accent-hover: var(--pf-accent-hover);
+  --color-accent-active: var(--pf-accent-active);
+  --color-accent-ink: var(--pf-accent-ink);
+  --color-accent-tint: var(--pf-accent-tint);
+  --color-accent-border: var(--pf-accent-border);
+
+  --color-live: var(--pf-live);
+  --color-live-tint: var(--pf-live-tint);
+  --color-live-border: var(--pf-live-border);
+
+  --color-hold: var(--pf-hold);
+  --color-hold-tint: var(--pf-hold-tint);
+  --color-hold-border: var(--pf-hold-border);
+
+  --color-breach: var(--pf-breach);
+  --color-breach-tint: var(--pf-breach-tint);
+  --color-breach-border: var(--pf-breach-border);
+
+  --color-neutral-tint: var(--pf-neutral-tint);
+  --color-neutral-border: var(--pf-neutral-border);
+
+  --color-focus: var(--pf-focus);
+
+  --shadow-sm: var(--pf-shadow-sm);
+  --shadow-md: var(--pf-shadow-md);
+  --shadow-lg: var(--pf-shadow-lg);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--pf-canvas);
+    color: var(--pf-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Baseline visible focus for anything that does not opt into a ring of its
+     own. Interactive primitives set `outline-none` and draw their own ring so
+     it can sit outside a rounded corner. */
+  :focus-visible {
+    outline: 2px solid var(--pf-focus);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--pf-accent-tint);
+    color: var(--pf-ink);
+  }
+
+  /* Money and unit counts must not jitter between rows. */
+  th,
+  td {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  /* Scroll containers for wide tables: the page body never scrolls sideways. */
+  .pf-scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
