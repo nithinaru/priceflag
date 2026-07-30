@@ -24,7 +24,10 @@ Owned paths: `app/**` (except `app/api/**`), `components/**`,
 | **A7 — Polish, a11y, responsive** | ✅ done |
 
 **All seven Lane A sprints are complete.** `npm run build` and `npm run typecheck`
-green; ten routes, 21 static pages.
+green; ten routes, 21 static pages. Open with Lane B: REQ-A-005 (two copy fixes
+in strings Lane A renders verbatim) and REQ-A-007 (a cold-load browser check in
+CI). REQ-A-006 is resolved. Remaining manual QA is listed at the end of A7 —
+**screen-reader passthrough is explicitly not claimed.**
 
 ---
 
@@ -134,10 +137,83 @@ re-investigated:
   is 8.05:1. Worth knowing that colour transitions pass through low-contrast
   intermediate states; WCAG does not test mid-transition, so nothing to fix.
 
-Not covered by this audit, and not claimed: screen-reader passthrough on real
-AT, prefers-reduced-motion (the app has one animation, the `pulse` on the live
-badge), and contrast of the hand-authored SVG chart's non-text marks against
-their band fill.
+### `prefers-reduced-motion` (WCAG 2.3.3 / 2.2.2)
+
+The blanket reset already existed; it was not enough on its own. Collapsing an
+animation to `0.01ms` with one iteration parks the element on its **final
+keyframe**, and that is a different outcome per animation — `animate-ping` ends
+at `scale(2); opacity: 0`, leaving a decorative ring invisible but still laid
+out. So the three animations this app actually uses are now switched off by
+name, and the ping layer is removed outright:
+
+| Motion | Under reduced motion | Meaning preserved by |
+|---|---|---|
+| `animate-pulse` (skeletons) | `animation: none`, `opacity: 1` | the block keeps its shape |
+| `animate-ping` (live badge) | `display: none` | the solid dot underneath |
+| `animate-spin` (button) | `animation: none` | the `loadingLabel` text |
+| `transition-*` (everywhere) | `1e-05s` | — |
+| smooth scrolling | `auto` | — |
+
+**Verified with the media feature actually evaluated, not by reading CSS.** The
+browser here reports `prefers-reduced-motion: no-preference`, and the tooling
+cannot emulate `reduce`. So the query was temporarily **inverted** to
+`no-preference` and the app rebuilt, which makes the browser evaluate a real
+media query and apply the block for real. Measured computed styles:
+`ping display: none` with the solid dot still `flex`, `pulse animationName:
+none` at `opacity: 1`, `spin animationName: none`, nav-link and table-row
+`transitionDuration: 1e-05s`, `scrollBehavior: auto`. The inversion was then
+reverted and the app rebuilt. What this does *not* prove is that the browser
+matches the `reduce` keyword itself — that is stock CSS, and the declarations
+inside are what was in doubt.
+
+### WCAG 1.4.11 non-text contrast on the rollout chart
+
+Measured composited, the same way as the token audit — every graphical object
+against what it actually sits on. **Three failures found and fixed:**
+
+| Object | Before | After (light) | After (dark) |
+|---|---|---|---|
+| Band outline vs surface | **1.52** ❌ | 6.48 ✅ | 7.01 ✅ |
+| Dashed "expected" line vs band | **1.39** ❌ | 4.67 ✅ | 5.34 ✅ |
+| Stage-boundary rule vs surface | **1.52** ❌ | 5.32 ✅ | 5.77 ✅ |
+| **Breach marker vs band** | 5.18 ✅ | 5.18 ✅ | 6.54 ✅ |
+| Above-range marker vs band | 4.91 ✅ | 4.91 ✅ | 7.72 ✅ |
+| Within-range marker vs band | 15.63 ✅ | 15.63 ✅ | 13.61 ✅ |
+| Actual line vs band | 15.63 ✅ | 15.63 ✅ | 13.61 ✅ |
+| Floored marker vs surface | 5.32 ✅ | 5.32 ✅ | — |
+
+**The breach marker — the one carrying the safety signal — passed all along**, at
+5.18 light and 6.54 dark. It needed no change.
+
+The fixes were `stroke-accent-border` → `stroke-accent` on the band, and
+`border-strong` → `ink-subtle` on the dashed reference line and the stage rule.
+`border-strong` is a *border* colour and was never going to carry a graphical
+object. The same substitution was applied to the per-row `ExpectedRangeMark` and
+to both legends, so the swatches still match the marks they describe.
+
+One deliberate non-fix: **the band's fill stays at 1.14:1** against the surface.
+1.4.11 is satisfied by the boundary of a graphical object, and a fill dark
+enough to hit 3:1 would make the uncertainty band the loudest thing on a chart
+whose whole job is to keep it recessive. The outline carries the requirement at
+6.48:1. The two gridlines are also left recessive — they are not required to
+understand the chart (the axis labels carry the values), which is the
+"decorative / not required" carve-out in 1.4.11.
+
+### Still requiring manual QA — explicitly not claimed
+
+- **Screen-reader passthrough.** Not tested, not claimed. Every control has an
+  accessible name, every `role="img"` SVG has an `aria-label`, headings are in
+  order, and each chart point is focusable with `readingSentence` as its label —
+  but *"the markup is right"* and *"a merchant using VoiceOver or NVDA can
+  actually operate this"* are different claims, and only a real screen reader
+  and a human can make the second. This sprint spent a session unwinding exactly
+  that kind of false confidence; it is not going to add more.
+- **Zoom to 200% / 400% reflow** (SC 1.4.10) — the layouts are fluid and
+  `maximumScale: 5` is set, but reflow at 400% was not measured.
+- **Windows High Contrast Mode**, which ignores authored colour and would need
+  `forced-colors` handling for the SVG chart in particular.
+- **Real-device touch testing.** Target sizes were measured in a desktop browser
+  at a 390 px viewport, which is not the same as a thumb on a phone.
 
 ---
 

@@ -284,3 +284,70 @@ What would fix it: seed `elasticity_fits` for the demo variants from a real Lane
 C2 run against the golden store, and have the demo adapter serve them like any
 other fit. Then demo mode exercises `fitted` honestly — real model output, from
 the store the demo is about — and CP2 becomes demonstrable without credentials.
+
+---
+
+**Update (A7): REQ-A-006 is resolved.** Lane B's B6 seeded
+`lib/demo/elasticity-fits.json` from a real Lane C run and exposed it via
+`DemoAdapter.getLatestFits`. The remaining half was Lane A's:
+`app/propose/actions.ts` was not asking for fits, so every forecast stayed
+`assumption`. Now wired through `getAdapter().getLatestFits(...)`, and the fitted
+band has been verified rendering from real model output (`partial` tier,
+elasticity −1.82 from `elasticity-poisson-eb-1.0`) rather than by injection.
+
+## REQ-A-007 — A cold-load browser check in CI
+
+**Filed:** Sprint A7
+**Owner:** Lane B (`scripts/**`, `.github/workflows/**`)
+**Status:** open — not blocking, but it would have saved a session
+
+### Why
+
+Sprint A6 shipped with a documented "hydration bug": the journal's filters and
+CSV export appeared dead on a hard load of `/journal`. A7 established that
+**nothing was broken**. The diagnosis came from three measurement mistakes —
+counting `__reactProps$` keys (React 19 attaches them lazily, on first
+interaction), dispatching a synthetic `change` at a controlled `<select>` (React's
+value tracker suppresses it), and clicking a native `<select>` (which opens an OS
+popup automation cannot drive).
+
+A session went into that. What ends it in minutes is a check that does the only
+thing which actually proves hydration: **load each route cold and assert an
+interaction changes the DOM.**
+
+The bug class is real even though this instance was not. A genuinely unhydrated
+page is one bad `"use client"` boundary or one server/client mismatch away, it
+logs no console error, and the page still *looks* right — so nothing in the
+current suite would catch it. `npm run build` passing proves the bundle
+compiled, not that the browser ran it.
+
+### What would settle it
+
+A script (`scripts/smoke-browser.ts`) that, per route: loads it as a **fresh
+top-level navigation** — not a client-side transition, since the bug class only
+shows on cold load — performs one real interaction, and asserts the DOM changed.
+
+One assertion per route is enough. These all pass today, so they double as
+regression baselines:
+
+| Route | Interaction | Assertion |
+|---|---|---|
+| `/journal` | type `belt` into `#journal-search` | rows 23 → 1; `Clear filters` appears |
+| `/products` | type into `#catalog-search` | row count falls |
+| `/products/costs` | type `40.00` into `#cost-0`, press Enter | row shows a profit figure; focus moves to `#cost-1` |
+| `/propose` | change the amount field | the forecast card re-renders |
+| `/rollouts/[id]` | click `Put prices back` | the confirm dialog opens |
+
+Two notes so the check does not repeat the mistakes it exists to catch:
+
+- **Assert on rendered output, never on React internals.** `__reactProps$`, fibre
+  keys and `_reactRoot` are lazily attached or renamed between versions. The only
+  sound signal is "I did something and the DOM changed".
+- **Drive `<select>` through the framework's own event path** (Playwright's
+  `selectOption` does this correctly), not
+  `Object.getOwnPropertyDescriptor(...).set` + `dispatchEvent('change')`.
+
+Lane A cannot add this: `scripts/` and `.github/workflows/` are Lane B's, and it
+needs a browser dependency Lane A is deliberately free of. CI or a manual
+`npm run smoke:browser` before a release is Lane B's call — the value is in it
+existing at all.

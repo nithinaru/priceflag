@@ -297,6 +297,21 @@
   }
 }
 
+/*
+ * Reduced motion.
+ *
+ * The blanket reset is the safety net — it catches anything added later without
+ * anyone remembering this file exists. But collapsing an animation to 0.01ms and
+ * one iteration leaves the element parked on its **final keyframe**, which is a
+ * different bug per animation: `animate-ping` ends at `scale(2); opacity: 0`, so
+ * a decorative ring would sit there invisible but still laid out. So the three
+ * animations this app actually uses are switched off by name as well, and the
+ * ping layer is removed outright rather than left in a scaled, transparent state.
+ *
+ * Nothing here removes meaning. The live badge keeps its solid dot, the skeleton
+ * keeps its shape, and the button spinner is accompanied by `loadingLabel` text —
+ * motion was never the only carrier of any of it.
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -304,6 +319,24 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    animation-delay: 0ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Skeletons: keep the block, drop the shimmer. */
+  .animate-pulse {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  /* The "live right now" badge: the solid dot underneath carries the meaning. */
+  .animate-ping {
+    display: none !important;
+  }
+
+  /* Button spinner: `loadingLabel` says the same thing in words. */
+  .animate-spin {
+    animation: none !important;
   }
 }

@@ -89,7 +89,9 @@ export function OrdersChart({
                 x2={mark.x}
                 y1={8}
                 y2={geometry.y(0)}
-                className="stroke-border-strong"
+                /* A stage boundary is meaningful — it is where more products
+                   joined — so it carries 1.4.11 too, unlike the gridlines. */
+                className="stroke-ink-subtle"
                 strokeWidth={1}
                 strokeDasharray="3 3"
               />
@@ -101,22 +103,30 @@ export function OrdersChart({
 
           <g clipPath={`url(#pf-clip-${clipId})`}>
             {/* The expected range. Drawn first: the actual line reads on top. */}
+            {/* The band's *outline* carries the 3:1 (WCAG 1.4.11) — the fill is
+                1.14:1 against the surface and could never reach it without
+                becoming the loudest thing on the chart, which is exactly what a
+                recessive uncertainty band must not be. An outline at 3:1 with a
+                pale fill is the standard way to satisfy this. */}
             {geometry.bandSegments.map((segment, index) => (
               <path
                 key={index}
                 d={segment}
-                className="fill-accent-tint stroke-accent-border"
+                className="fill-accent-tint stroke-accent"
                 strokeWidth={1}
               />
             ))}
 
             {/* What we expected to land on, inside that range. */}
+            {/* `border-strong` is a *border* colour: 1.39:1 against the band it
+                is drawn on. A reference line is a meaningful graphical object,
+                so it needs an ink. */}
             {geometry.expectedSegments.map((segment, index) => (
               <path
                 key={index}
                 d={segment}
                 fill="none"
-                className="stroke-border-strong"
+                className="stroke-ink-subtle"
                 strokeWidth={1.5}
                 strokeDasharray="4 3"
               />
@@ -219,13 +229,13 @@ export function OrdersChart({
         <ul className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-ink-muted">
           <li className="flex items-center gap-1.5">
             <span
-              className="h-2.5 w-6 rounded-sm border border-accent-border bg-accent-tint"
+              className="h-2.5 w-6 rounded-sm border border-accent bg-accent-tint"
               aria-hidden="true"
             />
             Range we expected
           </li>
           <li className="flex items-center gap-1.5">
-            <span className="h-0 w-6 border-t-2 border-dashed border-border-strong" aria-hidden="true" />
+            <span className="h-0 w-6 border-t-2 border-dashed border-ink-subtle" aria-hidden="true" />
             What we expected
           </li>
           <li className="flex items-center gap-1.5">
