@@ -7,7 +7,9 @@ telemetry, the evaluator, deploys.
 |---|---|
 | **Current sprint** | B3 — sync pipeline runs against the real dev store. **B2's OAuth install flow still deferred** (see below) |
 | **`npm run build`** | green |
-| **`npx tsx scripts/smoke.ts`** | green — **142 passed, 0 skipped** (Supabase suite live against real Postgres) |
+| **`npx tsx scripts/smoke.ts`** | green — **150 passed, 0 skipped** (Supabase suite live against real Postgres) |
+| **`npm run smoke:browser`** | green — 3 routes cold-loaded against production |
+| **CP4** | ✅ passed, 18 hops observed — the full three-lane chain has now run |
 | **`npm audit`** | 0 vulnerabilities |
 | **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
 | **Deployed to Vercel?** | ✅ **https://priceflagv1.vercel.app** — build succeeded, `/api/health` returns `ok: true` |
@@ -689,6 +691,140 @@ not because there is work every 15 minutes.
   auto-rollback: the prices are already restored, and throwing would make the
   evaluator look like it failed when it did exactly the right thing.
 
+## CP4 — the full three-lane chain, executed ✅
+
+`npx tsx scripts/cp4-chain.ts` — **passed, 18 hops observed**. This is the first
+time a real Lane C artifact has travelled the whole way. B5's acceptance ran on
+bracket-math fallback because no band existed.
+
+```
+a. Lane C reads through the READ-ONLY role          219 product-days
+   fit_store + CleanLevelBaseline                   6 fits, 126 band-days
+b. POST /api/ml/ingest (production)
+     bad secret                                     401
+     gate_passed:false                              200 accepted=false rows=0, run RECORDED
+     band violating low<=expected<=high             422
+     valid payload                                  200 fits=6 bands=126
+c. evaluator on a live rollout
+     reading 2026-07-29: source=model  model=baseline-cleanlevel-1.0
+                         expected=12 [6.89, 17.11]  decision=hold
+d. reading persisted, expected_source exposed, merchant event written
+```
+
+### Observed vs inferred
+
+**Observed** (I watched the value change or read it back): the read-only pull, both
+Lane C artifacts, all four ingest responses, the rows readable from the database,
+`expected_source='model'` on the persisted reading, its `model_version`, the
+decision, and the merchant-facing event.
+
+**Inferred, not observed:** that Lane A's rollout page *renders* this particular
+reading. I verified the row and the field the UI reads, and that `/rollouts`
+returns 200 and hydrates — but I did not drive the UI to this specific rollout and
+read the band off the screen. The rollout is also rolled back and cleaned up by
+the end of the script, so it would not be there to look at.
+
+### Two real bugs CP4 found
+
+1. **A malformed band returned HTTP 500, not 422.** JSON Schema cannot express
+   `low <= expected_units <= high` — draft 2020-12 has no cross-field constraint —
+   so an inverted band passed validation and was caught only by the database
+   CHECK, surfacing as a write failure. That interval decides auto-rollback, and an
+   inverted one would make every day look like a breach. Now checked explicitly in
+   `lib/contracts/validate.ts` and refused with a useful message.
+2. **A forecast starts after the history ends.** Obvious in hindsight: bands
+   generated from history through *today* cover tomorrow onward, and the evaluator
+   judges the last *closed* day, so nothing lines up. The nightly must run on
+   history through yesterday. Not a code bug, but it is exactly the mistake a first
+   production run would make, so it is written down here and in the runbook.
+
+## Lane C request 9 — the ML write path ✅
+
+`POST /api/ml/ingest`. The read-only role stays read-only; Lane C's nightly posts
+contract rows to the app, which holds the service role and does the writing. One
+place that authenticates, validates, and can refuse.
+
+Three gates, in order:
+
+| Gate | Failure |
+|---|---|
+| `ML_INGEST_SECRET`, constant-time | `401` |
+| The JSON Schemas + the cross-field band invariant | `422`, run recorded `failed`, **nothing written** |
+| The honesty gate — `gate_passed !== true` (R28) | `200 accepted=false`, run recorded `rejected`, **nothing written** |
+
+Writes are all-or-nothing per request: a half-written band set is worse than none,
+because the evaluator would read the half that landed and believe it complete.
+
+A rejected challenger returns **200, not an error** — the nightly did its job
+correctly by telling us the model lost. Failing the Action there would train
+people to ignore it.
+
+### How Lane C's GitHub Action authenticates
+
+```yaml
+- name: Publish fits and bands
+  env:
+    ML_INGEST_SECRET: ${{ secrets.ML_INGEST_SECRET }}
+    BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+  run: |
+    curl -sS -X POST "https://priceflagv1.vercel.app/api/ml/ingest" \
+      -H "Authorization: Bearer $ML_INGEST_SECRET" \
+      -H "x-vercel-protection-bypass: $BYPASS" \
+      -H 'content-type: application/json' \
+      --data @payload.json
+```
+
+`payload.json` is `{shop_domain, model_run: {kind, model_version, gate_passed,
+incumbent_version, metrics}, fits: [...], bands: [...]}` where `fits` and `bands`
+are exactly what `fits_contract_rows` and `bands_contract_rows` already emit.
+
+**Both secrets are required** — the bypass alone gets a 401, the bearer alone a
+302. `ML_INGEST_SECRET` is in `.env.local` and in Vercel (preview + production);
+**it still needs adding as a GitHub repo secret** for Lane C's workflow, which I
+have not done because `ml-*.yml` is Lane C's path and the secret is theirs to
+wire. `VERCEL_AUTOMATION_BYPASS_SECRET` is already set as a repo secret.
+
+**Timing note for Lane C:** run the nightly on history through *yesterday*, so the
+forecast covers today and the evaluator finds a band for the day it judges.
+
+## Contract requests — REQ-A-005 and REQ-A-007 ✅
+
+**REQ-A-005 — two copy fixes.** Both done, both with a regression test.
+
+- `ruleConditionHolds` no longer puts an ISO date in a merchant-facing sentence.
+  New `formatDayShort` renders `On 25 Jul, …`. The test asserts no `\d{4}-\d{2}-\d{2}`
+  survives in `assessment.reason`.
+- `defaultGuardrails()` now says **"put every price back automatically"**, matching
+  Lane A's builder. `describeRule` was changed to match, so the two can never drift
+  again. The test fails if the word "revert" reappears.
+
+**REQ-A-007 — cold-load browser check.** `scripts/smoke-browser.ts`, run with
+`npm run smoke:browser`. Playwright, headless chromium.
+
+It follows both rules the request asks for: **assert on rendered output, never on
+React internals**, and drive inputs through the framework's own event path
+(`fill`/`selectOption`, never a synthetic `dispatchEvent` at a controlled input).
+Each route is a fresh top-level navigation, because the bug class only shows on
+cold load.
+
+**Run against production, it passes:**
+
+```
+✓ /journal   typing a filter changes the rows    rows 23 -> 1
+✓ /products  typing a search changes the rows    rows 14 -> 1
+✓ /rollouts  the page renders interactive content  15 elements, focus landed on A
+```
+
+`/journal` going 23 → 1 is exactly the number REQ-A-007 predicted — so the A6
+"hydration bug" is now settled by measurement rather than by argument, and there
+is a regression baseline so it cannot come back as a mystery.
+
+Deliberately **not** wired into CI: it needs a deployment to point at, and the
+useful moment is before a release. `npm run smoke:browser` with `PRICEFLAG_URL`
+and `VERCEL_AUTOMATION_BYPASS_SECRET` set. Covers three routes, not the five in the
+request — `/products/costs` and `/propose` need a seeded selection and a product
+with a cost, which the dev store does not currently have.
+
 ## 🔴 LAUNCH BLOCKER — Priceflag has no application authentication
 
 **Anyone who can reach the deployment can write prices to a real Shopify store.**
@@ -877,6 +1013,39 @@ now passes:
  "catalog":{"ready":true,"products_synced":26,"products_total":26},
  "history":{"ready":false,"days_synced":0,"days_target":180,"orders_processed":0}}
 ```
+
+### Production claim sweep (re-run against the CURRENT build)
+
+Everything in this file that asserts something about production was re-verified
+against deployment `dpl_J8dBk36We59M4TohxQBos91TuYcY`, because the pre-B5 alias
+incident means any earlier measurement could have been against a stale build.
+**All 11 hold:**
+
+```
+GET  /api/health                200     GET  /api/journal?format=csv   200
+GET  /api/sync/status           200     GET  /api/kill-switch          405 (POST/DELETE only)
+GET  /api/journal               200     GET  /  and  /rollouts         200
+POST /api/cron/evaluate  no secrets 302 | bypass only 401 | both 200
+POST /api/ml/ingest      bad secret 401
+health: {"ok":true,"mode":"real","adapter":{"kind":"supabase","ok":true,
+         "detail":"supabase reachable, schema present"}}
+```
+
+No claim needed correcting this time. The one that did — the B7 "redeploy carries
+the cron" — is corrected above and was caused by the Hobby cron rejection.
+
+### What the test suites do and do not cover
+
+- **`scripts/smoke.ts` (150 assertions) does NOT cover the GitHub Actions
+  workflow.** That file is shell and YAML; nothing in the TypeScript suite parses,
+  lints or executes it. Its only verification is the live runs recorded above
+  (`workflow_dispatch` run 30570819766 → HTTP 200, confirmed in Vercel runtime
+  logs). A syntax error or a renamed secret in `evaluator.yml` would be caught by
+  the next scheduled run failing, not by `npm run smoke`.
+- `scripts/smoke.ts` also does not cover the browser; `npm run smoke:browser` does,
+  and is not run automatically.
+- `scripts/simulate-rollout.ts` and `scripts/cp4-chain.ts` write to the real dev
+  store and are run by hand.
 
 ### NOT verified — read before trusting production
 

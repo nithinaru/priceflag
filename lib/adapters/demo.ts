@@ -838,6 +838,28 @@ export class DemoAdapter implements StoreAdapter {
     return clone(rows.slice(0, limit));
   }
 
+  async recordModelRun(
+    input: Omit<ModelRun, 'id' | 'started_at' | 'created_at'> & { started_at?: string },
+  ): Promise<ModelRun> {
+    const row: ModelRun = {
+      ...input,
+      id: randomUUID(),
+      started_at: input.started_at ?? nowIso(),
+      created_at: nowIso(),
+    };
+    this.state.modelRuns.push(row);
+    this.save();
+    return clone(row);
+  }
+
+  async updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun> {
+    const row = this.state.modelRuns.find((candidate) => candidate.id === id);
+    if (!row) throw new Error(`unknown model run ${id}`);
+    Object.assign(row, stripUndefined(patch));
+    this.save();
+    return clone(row);
+  }
+
   /** Stands in for Lane C's writes so the fitted path is testable without Python. */
   async upsertFits(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number> {
     for (const fit of fits) {

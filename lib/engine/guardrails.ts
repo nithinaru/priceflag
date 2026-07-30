@@ -20,7 +20,7 @@
 
 import { DEFAULT_MIN_EXPECTED_UNITS } from '../contracts';
 import type { GuardrailRule, Guardrails } from '../contracts';
-import type { DayString } from '../dates';
+import { formatDayShort, type DayString } from '../dates';
 import { formatCents, type Cents } from '../money';
 
 /** Confidence at which a calibrated breach probability fires on its own. */
@@ -121,7 +121,7 @@ export function ruleConditionHolds(
       floored: false,
       known: true,
       reason: holds
-        ? `On ${observation.day}, we were ${(probability * 100).toFixed(0)}% sure the drop was real, not noise.`
+        ? `On ${formatDayShort(observation.day)}, we were ${(probability * 100).toFixed(0)}% sure the drop was real, not noise.`
         : '',
     };
   }
@@ -140,7 +140,7 @@ export function ruleConditionHolds(
       floored: false,
       known: true,
       reason: holds
-        ? `On ${observation.day}, ${reading.format(reading.actual)} came in below your floor of ${reading.format(floorValue)}.`
+        ? `On ${formatDayShort(observation.day)}, ${reading.format(reading.actual)} came in below your floor of ${reading.format(floorValue)}.`
         : '',
     };
   }
@@ -155,7 +155,7 @@ export function ruleConditionHolds(
     floored: false,
     known: true,
     reason: holds
-      ? `On ${observation.day}, ${reading.format(reading.actual)} came in ${shortfallPct.toFixed(0)}% below the ${reading.format(reading.expected)} we expected (your limit is ${thresholdPct.toFixed(0)}%).`
+      ? `On ${formatDayShort(observation.day)}, ${reading.format(reading.actual)} came in ${shortfallPct.toFixed(0)}% below the ${reading.format(reading.expected)} we expected (your limit is ${thresholdPct.toFixed(0)}%).`
       : '',
   };
 }
@@ -258,7 +258,7 @@ export function describeRule(rule: GuardrailRule): string {
   const scope = rule.scope === 'product' ? ' for any single product' : '';
   const days = rule.consecutive_days === 1 ? '' : ` for ${rule.consecutive_days} days in a row`;
   const consequence =
-    rule.action === 'rollback_all' ? 'revert everything automatically' : 'pause the rollout and let you know';
+    rule.action === 'rollback_all' ? 'put every price back automatically' : 'pause the rollout and let you know';
 
   if (rule.comparison === 'below_absolute') {
     return `If ${metric}${scope} fall below ${rule.absolute_floor ?? 0}${days}, ${consequence}.`;

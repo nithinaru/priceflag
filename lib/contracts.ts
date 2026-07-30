@@ -271,7 +271,7 @@ export function defaultGuardrails(): Guardrails {
         action: 'rollback_all',
         min_expected_units: DEFAULT_MIN_EXPECTED_UNITS,
         sentence:
-          'If daily units fall more than 30% below expected for 2 days in a row, revert everything automatically.',
+          'If daily units fall more than 30% below expected for 2 days in a row, put every price back automatically.',
       },
     ],
   };

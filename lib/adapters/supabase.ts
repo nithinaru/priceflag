@@ -567,6 +567,18 @@ export class SupabaseAdapter implements StoreAdapter {
     return unwrap(result, 'listModelRuns').map((row) => mapModelRun(row as Row));
   }
 
+  async recordModelRun(
+    input: Omit<ModelRun, 'id' | 'started_at' | 'created_at'> & { started_at?: string },
+  ): Promise<ModelRun> {
+    const result = await this.db.from('model_runs').insert(input).select('*').single();
+    return mapModelRun(unwrap(result, 'recordModelRun') as Row);
+  }
+
+  async updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun> {
+    const result = await this.db.from('model_runs').update(patch).eq('id', id).select('*').single();
+    return mapModelRun(unwrap(result, `updateModelRun(${id})`) as Row);
+  }
+
   async upsertFits(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number> {
     if (fits.length === 0) return 0;
     const result = await this.db

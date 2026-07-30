@@ -2366,6 +2366,12 @@ async function testGuardrails(): Promise<void> {
 
   const rules = defaultGuardrails();
 
+  await test('the default guardrail sentence avoids jargon (REQ-A-005)', () => {
+    const sentence = defaultGuardrails().rules[0]?.sentence ?? '';
+    assert(sentence.includes('put every price back'), `plain wording: ${sentence}`);
+    assert(!/revert/i.test(sentence), `"revert" is the one word a merchant may not use: ${sentence}`);
+  });
+
   await test('a healthy day is not a breach', () => {
     const assessment = evaluateGuardrails(rules, [observation({ day: '2026-07-28' })]);
     assertEqual(assessment.breach, false, 'no breach');
@@ -2391,6 +2397,12 @@ async function testGuardrails(): Promise<void> {
     assertEqual(assessment.streak, 2, 'streak of two');
     assertEqual(assessment.action, 'rollback_all', 'and it fires');
     assert((assessment.reason ?? '').includes('below'), `reason reads plainly: ${assessment.reason}`);
+    // REQ-A-005: Lane A renders this verbatim, so no ISO dates on screen.
+    assert(
+      !/\d{4}-\d{2}-\d{2}/.test(assessment.reason ?? ''),
+      `no raw ISO date in a merchant-facing sentence: ${assessment.reason}`,
+    );
+    assert((assessment.reason ?? '').includes('Jul'), `reads as a human date: ${assessment.reason}`);
   });
 
   await test('a gap in the data breaks the streak', () => {

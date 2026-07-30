@@ -130,6 +130,21 @@ export function isValidTimeZone(timeZone: string): boolean {
   }
 }
 
+/**
+ * A day as a merchant reads it: `25 Jul`. Never an ISO string.
+ *
+ * Requested by Lane A (REQ-A-005): every date the UI formats itself renders this
+ * way, but sentences generated here are rendered verbatim, so an ISO date reached
+ * the screen through the event log. Formatting at the point of generation keeps
+ * one implementation.
+ */
+export function formatDayShort(day: DayString, locale = 'en-GB'): string {
+  assertDayString(day);
+  return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(
+    new Date(`${day}T12:00:00Z`),
+  );
+}
+
 export function nowIso(now: Date = new Date()): string {
   return now.toISOString();
 }

@@ -142,6 +142,9 @@ export interface StoreAdapter {
     query: { variantGids?: readonly string[]; fromDay: DayString; toDay: DayString; rolloutId?: string | null },
   ): Promise<ExpectedBandRow[]>;
   listModelRuns(shopId: string | null, limit?: number): Promise<ModelRun[]>;
+  /** R31: every model output is traceable to the run that produced it. */
+  recordModelRun(input: Omit<ModelRun, 'id' | 'started_at' | 'created_at'> & { started_at?: string }): Promise<ModelRun>;
+  updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun>;
 
   /** Test/seed only: lets the demo adapter stand in for Lane C's writes. */
   upsertFits?(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number>;
