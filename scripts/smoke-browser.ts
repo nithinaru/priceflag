@@ -140,9 +140,19 @@ async function main(): Promise<void> {
   try {
     browser = await chromium.launch();
     const context = await browser.newContext({
-      // Deployment Protection would otherwise 302 every navigation to SSO.
+      // Two separate doors: Vercel's Deployment Protection would 302 every
+      // navigation to SSO, and the app's own access gate (middleware.ts) would
+      // 401 it. Both need satisfying to reach a page.
       extraHTTPHeaders: BYPASS === '' ? {} : { 'x-vercel-protection-bypass': BYPASS, 'x-vercel-set-bypass-cookie': 'true' },
     });
+
+    const accessSecret = process.env.APP_ACCESS_SECRET ?? '';
+    if (accessSecret !== '') {
+      const { hostname } = new URL(BASE_URL);
+      await context.addCookies([
+        { name: 'pf_access', value: accessSecret, domain: hostname, path: '/', httpOnly: true, secure: BASE_URL.startsWith('https') },
+      ]);
+    }
 
     for (const check of CHECKS) {
       const page = await context.newPage();

@@ -98,7 +98,11 @@ async function post(path: string, body: unknown, secret: string, bypass: string)
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      // The endpoint's own secret goes in Authorization; the app access gate
+      // (middleware.ts) takes its own cookie, since one Authorization header
+      // cannot carry both.
       authorization: `Bearer ${secret}`,
+      cookie: `pf_access=${process.env.APP_ACCESS_SECRET ?? ''}`,
       'x-vercel-protection-bypass': bypass,
       'x-vercel-set-bypass-cookie': 'false',
     },

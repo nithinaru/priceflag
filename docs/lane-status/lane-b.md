@@ -825,7 +825,63 @@ and `VERCEL_AUTOMATION_BYPASS_SECRET` set. Covers three routes, not the five in 
 request — `/products/costs` and `/propose` need a seeded selection and a product
 with a cost, which the dev store does not currently have.
 
-## 🔴 LAUNCH BLOCKER — Priceflag has no application authentication
+## 🟠 Access gate shipped — INTERIM, and not R33
+
+**The hole was live.** `priceflag.vercel.app` — the auto-assigned *production*
+domain — was serving the whole dashboard and every mutating route to anyone who
+typed the URL. Vercel's Standard Protection **exempts the production domain**, and
+protecting all deployments is a paid feature. Confirmed before the fix: an
+unauthenticated `GET /api/journal` returned a real merchant's price history, and
+`POST /api/kill-switch` was reachable.
+
+`middleware.ts` now gates the app on a shared secret (`APP_ACCESS_SECRET`),
+accepted as an HttpOnly cookie, a `?access=…` parameter that mints the cookie and
+then strips itself from the URL, or HTTP Basic. Everything else gets 401.
+
+**Verified on `priceflag.vercel.app` after deploying:**
+
+```
+GATED    /  401     /rollouts 401     /api/journal 401
+         POST /api/kill-switch 401    /api/ml/ingest 401    /api/sync 401
+EXEMPT   /api/health 200
+         POST /api/cron/evaluate   no bearer 401 · with bearer 200
+         POST /api/webhooks/…      401 (its own HMAC, as it should)
+WITH KEY /api/journal via Basic 200   ·   /?access=… 307 + cookie
+```
+
+And the GitHub Actions evaluator still works end to end — run 30572791290,
+HTTP 200. The browser check still passes with the cookie set.
+
+Exactly three exemptions, each because it already authenticates itself and each
+would break if it needed a browser cookie: `/api/cron/evaluate` (CRON_SECRET
+bearer), `/api/webhooks/*` (Shopify HMAC — Shopify cannot send a cookie), and
+`/api/health` (capability booleans, no data). **`/api/ml/ingest` is deliberately
+NOT exempt** despite having its own secret — defence in depth on the path that
+writes the numbers driving auto-rollback.
+
+The gate **fails closed in production** when `APP_ACCESS_SECRET` is unset, and
+open locally. A misconfigured deploy taking the app offline is recoverable; a
+misconfigured deploy quietly serving a price-writing tool to the internet is what
+got us here.
+
+### This is not authentication, and R33 still stands
+
+It is one shared secret. It identifies nobody, scopes nothing to a shop, and
+everyone who has it has all of it. It also cannot be given to a pilot merchant as
+a login. Vercel Authentication could not have solved this either — it requires
+*team membership*, so a merchant could never get in.
+
+**R33 — App Bridge session-token verification — is still required before any
+merchant is onboarded.** `lib/shopify/session.ts` already verifies those tokens:
+HS256 pinned (so `alg: none` cannot pass), `exp`/`nbf` with leeway, `aud` equal to
+our client id, and `iss`/`dest` agreement so a token for one shop cannot claim
+another. `resolveShopFromRequest` already prefers it over `?shop=`. **What is
+missing is that no route requires it** — they all fall back to the statically
+configured shop. Closing R33 is: make that fallback opt-in per route, embed the
+app so App Bridge issues tokens, and fail closed.
+
+<details>
+<summary>Original blocker note (kept for the record)</summary>
 
 **Anyone who can reach the deployment can write prices to a real Shopify store.**
 
@@ -853,6 +909,8 @@ Suggested shape:
 > session token for merchant traffic, `CRON_SECRET` for the evaluator, HMAC for
 > webhooks. No route derives the shop from an unauthenticated parameter. Hosting
 > protection is defence in depth, never the control.
+
+</details>
 
 The pieces already exist: `lib/shopify/session.ts` verifies App Bridge session
 tokens (HS256 pinned, `aud`/`iss`/`dest` checked) and is used by

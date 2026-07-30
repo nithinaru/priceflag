@@ -36,6 +36,21 @@ curl -X DELETE "$APP_URL/api/kill-switch"
 
 ---
 
+## "I get a 401 on every page"
+
+That is the access gate (`middleware.ts`), not a bug. Reach the app once with
+`?access=<APP_ACCESS_SECRET>` and it sets a 30-day HttpOnly cookie. For curl, use
+`-u priceflag:$APP_ACCESS_SECRET`.
+
+It is an **interim** measure: Vercel's Standard Protection exempts the production
+domain, so without it the dashboard and every mutating route are public. It is a
+shared secret, not a login — it cannot be handed to a merchant. Three paths are
+exempt because each authenticates itself: `/api/cron/evaluate`,
+`/api/webhooks/*`, `/api/health`.
+
+If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
+everything returns 401. Set it in Vercel and redeploy.
+
 ## Triage
 
 ```bash
