@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "model_version": "counterfactual-cleanlevel-1.0",
+    "guardrail_drop": 0.2,
+    "n_per_cell": 30,
+    "grid": {
+      "null_1.00": {
+        "n": 30,
+        "cf_flag_rate": 0.0,
+        "cf_within_2_days": 0.0,
+        "cf_median_day": null,
+        "raw_flag_rate": 0.1,
+        "raw_within_2_days": 0.03333333333333333,
+        "raw_median_day": 3.0
+      },
+      "catastrophic_0.50": {
+        "n": 30,
+        "cf_flag_rate": 1.0,
+        "cf_within_2_days": 0.7666666666666667,
+        "cf_median_day": 1.0,
+        "raw_flag_rate": 1.0,
+        "raw_within_2_days": 0.6666666666666666,
+        "raw_median_day": 2.0
+      },
+      "moderate_0.65": {
+        "n": 30,
+        "cf_flag_rate": 0.9666666666666667,
+        "cf_within_2_days": 0.36666666666666664,
+        "cf_median_day": 3.0,
+        "raw_flag_rate": 1.0,
+        "raw_within_2_days": 0.36666666666666664,
+        "raw_median_day": 3.5
+      },
+      "boundary_0.75": {
+        "n": 30,
+        "cf_flag_rate": 0.5,
+        "cf_within_2_days": 0.2,
+        "cf_median_day": 4.0,
+        "raw_flag_rate": 0.8333333333333334,
+        "raw_within_2_days": 0.2,
+        "raw_median_day": 4.0
+      }
+    },
+    "false_positive_rate": 0.0,
+    "incumbent_false_positive_rate": 0.1,
+    "acceptance_met": true,
+    "verdict": "challenger wins"
+  }
+}

@@ -100,9 +100,27 @@ the champion only by beating it here AND on real-data backtests.
 - **Role:** the bar C2's ridge log-log estimator must beat on the identifiable
   slice while degrading honestly to `assumption` elsewhere.
 
+### counterfactual-cleanlevel-1.0 — rollout monitor (champion since C5)
+
+- **What:** per-treated-SKU C3 counterfactual fit on pre-change days only,
+  aggregated to the rollout cohort (means add, variances add); cumulative
+  effect ratio with log-scale delta-method CI; **breach probability**
+  P(true demand ratio < 1 − guardrail | data), fired by the evaluator at
+  ≥ 0.8. Monitoring window capped at 90 days (staler counterfactuals refuse).
+- **Scores (3 seeds × 10 reps per cell, 8-SKU cohort, 20% guardrail):**
+  false positives **0/30** (raw-threshold incumbent: 10%) · catastrophic
+  drop (×0.50): 100% flagged, median **day 1**, 77% within 2 days (raw: 67%)
+  · moderate (×0.65): 97% flagged, median day 3 · boundary (×0.75, barely
+  past the guardrail): 50% flagged, median day 4 — slow flagging near the
+  boundary is correct caution, not a miss. Snapshot:
+  `eval/c5_counterfactual.json`.
+- **R29:** beats raw threshold crossing on the harness → the evaluator may
+  prefer `breach_probability` (already wired on Lane B's side: ≥0.8 fires,
+  low probability suppresses a raw crossing).
+
 ## Challengers
 
-(none in flight — C5 will add the counterfactual monitor)
+(none in flight)
 
 ## Rejected
 

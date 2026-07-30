@@ -1,7 +1,29 @@
 # Lane C status — Machine Learning
 
-**Current:** Sprints C1–C4 complete (2026-07-29). Next: C5 (rollout
-counterfactual monitor).
+**Current:** Sprints C1–C5 complete (2026-07-29). Next: C6 (calibration +
+post-rollout reports).
+
+## C5 — Rollout counterfactual monitor ✅
+
+`priceflag_ml/counterfactual.py` — `counterfactual-cleanlevel-1.0`:
+
+- CausalImpact-style: C3 champion fit per treated SKU on pre-change days
+  only, cohort-aggregated band, cumulative effect ratio with CI, and a
+  **breach probability** P(true drop worse than the guardrail | data) —
+  the number Lane B's evaluator already prefers at ≥ 0.8 (R29).
+- **Acceptance (3 seeds × 10 reps, 8-SKU cohort, 20% guardrail):** false
+  positives 0/30 over 14-day windows (raw-threshold rule: 10%); catastrophic
+  drops (×0.5) flag at median day 1 (77% within 2 days); moderate (×0.65)
+  97% flagged, median day 3; boundary effects (×0.75) get correctly cautious
+  treatment. Beats the raw rule on both FPR and speed →
+  `eval/c5_counterfactual.json` verdict "challenger wins".
+- Emits `expected_band` rows with band_kind=counterfactual + rollout_id +
+  breach_probability (schema-validated). Golden generator now supports
+  known-effect rollout scenarios (`simulate_sku(effect_ratio,
+  effect_start_idx)`).
+- **For Lane B:** cohort-level breach_probability rows are stamped per
+  variant for rollout-scope guardrails; if you want per-variant breach
+  probabilities too, say so in your status file and I'll split them in C6.
 
 ## C4 — Hierarchical elasticity: challenger LOST, C2 stays champion ✅
 

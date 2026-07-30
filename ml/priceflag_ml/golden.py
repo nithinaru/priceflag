@@ -188,11 +188,27 @@ def expected_units(truth: SkuTruth, day_index: np.ndarray, weekday: np.ndarray) 
     return np.where(truth.stockout[day_index], 0.0, np.maximum(mu, 0.0))
 
 
-def simulate_sku(truth: SkuTruth, dates: pd.DatetimeIndex, rng: np.random.Generator) -> pd.DataFrame:
-    """Draw one realized daily series for a SKU (negative-binomial noise)."""
+def simulate_sku(
+    truth: SkuTruth,
+    dates: pd.DatetimeIndex,
+    rng: np.random.Generator,
+    effect_ratio: float = 1.0,
+    effect_start_idx: int | None = None,
+) -> pd.DataFrame:
+    """Draw one realized daily series for a SKU (negative-binomial noise).
+
+    ``effect_ratio`` / ``effect_start_idx`` inject a KNOWN treatment effect
+    for counterfactual-monitor evaluation (C5): from ``effect_start_idx``
+    onward, latent demand is multiplied by ``effect_ratio``. Defaults leave
+    the series untouched (and the RNG draw sequence identical — the golden
+    SHA snapshot is unaffected).
+    """
     day_index = np.arange(len(dates))
     weekday = dates.weekday.to_numpy()
     mu = expected_units(truth, day_index, weekday)
+    if effect_start_idx is not None and effect_ratio != 1.0:
+        mu = mu.copy()
+        mu[effect_start_idx:] *= effect_ratio
     k = truth.dispersion_k
     p = k / (k + np.maximum(mu, 1e-9))
     units = np.where(mu > 0, rng.negative_binomial(k, np.clip(p, 1e-9, 1.0)), 0)

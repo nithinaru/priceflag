@@ -305,6 +305,117 @@ def run_c4(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     return {"summary": summary, "per_seed": per_seed}
 
 
+def _c5_scenario(seed: int, rep: int, effect_ratio: float, monitor_days: int = 14, n_treated: int = 8):
+    """One golden rollout: treated SKUs re-simulated with a KNOWN effect from
+    the change day. Returns (pre_history, during_actuals, treated_skus)."""
+    from .golden import GoldenConfig, generate_store, simulate_sku
+
+    cfg = GoldenConfig(seed=seed)
+    store = generate_store(cfg)
+    dates = pd.date_range(end=pd.Timestamp(cfg.end_date), periods=cfg.days, freq="D")
+    change_idx = cfg.days - monitor_days
+    treated = list(store.truth["sku"])[::3][:n_treated]
+    frames = []
+    for i, sku in enumerate(treated):
+        truth = store.skus[sku]
+        df = simulate_sku(
+            truth,
+            dates,
+            np.random.default_rng([seed, 5000 + rep, i]),
+            effect_ratio=effect_ratio,
+            effect_start_idx=change_idx,
+        )
+        frames.append(df)
+    panel = pd.concat(frames, ignore_index=True)
+    cut = dates[change_idx]
+    return panel[panel["date"] < cut], panel[panel["date"] >= cut], treated
+
+
+def run_c5(
+    seeds: tuple[int, ...] = (7, 11, 42),
+    reps_per_seed: int = 10,
+    guardrail_drop: float = 0.20,
+) -> dict:
+    """C5 report: counterfactual breach probability vs the raw-threshold rule,
+    across an effect-size grid (all vs a 20% guardrail on an 8-SKU cohort):
+
+    - null (ratio 1.0): false-positive rate over a 14-day window
+    - catastrophic (0.50): must flag within 2 days (the brief's bar)
+    - moderate (0.65): must flag reliably, median <= 4 days
+    - boundary (0.75): barely past the guardrail — slow/partial detection is
+      CORRECT behavior here, reported but not gated
+
+    Verdict also requires dominating the raw 2-consecutive-days-below-low
+    incumbent rule (R29: breach probability replaces thresholds only once it
+    beats them on the harness).
+    """
+    from .counterfactual import MODEL_VERSION as CF_VERSION
+    from .counterfactual import CounterfactualMonitor
+
+    def run_one(seed: int, rep: int, ratio: float) -> dict:
+        pre, during, _ = _c5_scenario(seed, rep, ratio)
+        monitor = CounterfactualMonitor(guardrail_drop_pct=guardrail_drop).fit(pre)
+        days = monitor.assess(during)
+        probs = [a.breach_probability for a in days]
+        below_low = [a.actual < a.low for a in days]
+        # counterfactual rule: breach prob >= 0.8 (Lane B's wired threshold)
+        cf_day = next((i + 1 for i, p in enumerate(probs) if p >= 0.8), None)
+        # incumbent raw rule: 2 consecutive cohort days below the band low
+        raw_day = next(
+            (i + 1 for i in range(1, len(below_low)) if below_low[i] and below_low[i - 1]), None
+        )
+        return {"cf_day": cf_day, "raw_day": raw_day}
+
+    def sweep(ratio: float) -> dict:
+        cf_days, raw_days, n = [], [], 0
+        cf_within2 = raw_within2 = cf_hit = raw_hit = 0
+        for seed in seeds:
+            for rep in range(reps_per_seed):
+                r = run_one(seed, rep, ratio)
+                n += 1
+                if r["cf_day"] is not None:
+                    cf_hit += 1
+                    cf_days.append(r["cf_day"])
+                    cf_within2 += r["cf_day"] <= 2
+                if r["raw_day"] is not None:
+                    raw_hit += 1
+                    raw_days.append(r["raw_day"])
+                    raw_within2 += r["raw_day"] <= 2
+        return {
+            "n": n,
+            "cf_flag_rate": cf_hit / n,
+            "cf_within_2_days": cf_within2 / n,
+            "cf_median_day": float(np.median(cf_days)) if cf_days else None,
+            "raw_flag_rate": raw_hit / n,
+            "raw_within_2_days": raw_within2 / n,
+            "raw_median_day": float(np.median(raw_days)) if raw_days else None,
+        }
+
+    grid = {
+        "null_1.00": sweep(1.0),
+        "catastrophic_0.50": sweep(0.50),
+        "moderate_0.65": sweep(0.65),
+        "boundary_0.75": sweep(0.75),
+    }
+    fpr_cf = grid["null_1.00"]["cf_flag_rate"]
+    fpr_raw = grid["null_1.00"]["raw_flag_rate"]
+    cat, mod = grid["catastrophic_0.50"], grid["moderate_0.65"]
+    summary = {
+        "model_version": CF_VERSION,
+        "guardrail_drop": guardrail_drop,
+        "n_per_cell": grid["null_1.00"]["n"],
+        "grid": grid,
+        "false_positive_rate": fpr_cf,
+        "incumbent_false_positive_rate": fpr_raw,
+        "acceptance_met": (
+            fpr_cf <= 0.10 and cat["cf_within_2_days"] >= 0.75 and mod["cf_flag_rate"] >= 0.90 and (mod["cf_median_day"] or 99) <= 4
+        ),
+    }
+    dominates = fpr_cf <= fpr_raw and cat["cf_within_2_days"] >= cat["raw_within_2_days"]
+    summary["verdict"] = "challenger wins" if summary["acceptance_met"] and dominates else "incumbent stays"
+    return {"summary": summary}
+
+
 def run_c3(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     """C3 report: CleanLevel baseline challenger vs the bracket band (the
     band the evaluator actually ships) and vs seasonal-naive (the brief's
@@ -377,7 +488,7 @@ def main() -> None:
     import sys
 
     which = sys.argv[1] if len(sys.argv) > 1 else "c1"
-    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4}[which]()
+    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4, "c5": run_c5}[which]()
     print(json.dumps(_json_safe(report), indent=2))
 
 
