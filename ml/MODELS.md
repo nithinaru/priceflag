@@ -24,7 +24,30 @@ the champion only by beating it here AND on real-data backtests.
   Caught by adversarial review before first commit; residuals now match the
   point rule and a calibration test pins coverage to 80±10pts.
 
-### bracket-v0-standin-0.1 — elasticity (incumbent since C1)
+### elasticity-poisson-eb-1.0 — elasticity (champion since C2)
+
+- **What:** per-SKU Poisson GLM (IRLS; units ~ log link on log relative
+  price + dow dummies + linear trend) fit on **non-promo, non-stockout days
+  only** (promotional price variation is confounded with the promo lift —
+  excluded by construction); moving-block bootstrap SE (block 14) plus a
+  drift allowance (`DRIFT_SE = 0.35`) for slow seasonality a linear trend
+  can't track; empirical-Bayes shrinkage toward a robust portfolio prior
+  (median center; fixed `tau = 0.6` — estimating tau from 10–25 noisy fits
+  proved unstable, see Rejected). SKUs with no permanent price variation
+  honestly degrade to the bracket (`assumption`).
+- **Scores (5 golden seeds, identifiable slice, vs bracket incumbent):**
+  recovery MAE **0.486 vs 0.491** · within ±0.3 **43.9% vs 33.1%** ·
+  80% CI covers true elasticity **86.0%** (bracket has no per-SKU CI) ·
+  per-SKU differentiation (bracket gives every SKU −1.2 forever).
+  Snapshot: `eval/c2_elasticity.json`.
+- **Scope honesty:** the brief's aspiration of ±0.3 recovery for most
+  identifiable SKUs is statistically unreachable on this data: an unbiased
+  single-SKU estimator has sd ≈ 0.8–1.2 given 90–180 days of NB-dispersed
+  daily counts and 1–3 price changes of 5–20% (measured on golden by
+  simulation). The gate therefore compares estimators on within-±0.3 rate,
+  MAE, and CI calibration — the challenger wins all three.
+
+### bracket-v0-standin-0.1 — elasticity (incumbent C1→C2, now the assumption-tier fallback)
 
 - **What:** fixed assumption bracket, point −1.2, range [−2.2, −0.6],
   `confidence: assumption`, ignores the data. Stand-in for v0's transparent
@@ -38,9 +61,31 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Challengers
 
-(none yet — C2/C3 will add them)
+(none in flight — C3/C4 will add them)
 
 ## Rejected
 
-(none yet — rejected challengers get recorded here with their losing scores,
-never deployed)
+All tested during C2 development on golden data; none deployed.
+
+- **log-log ridge, λ=1 on all coefficients** (the brief's literal v1 recipe):
+  penalizing the log-price coefficient attenuates elasticity ~4x (its column
+  variance is tiny — a 10% price change is 0.095 in logs). Identifiable-slice
+  MAE 1.18, within ±0.3 5%.
+- **log-log OLS with promo dummy, unpenalized elasticity:** log(units+1)
+  attenuates low-volume SKUs; promo-window price cuts collinear with the
+  promo dummy → wild fits on promo-only SKUs. MAE 0.69, within ±0.3 26%.
+- **Penalized cubic-spline time control:** flexible enough to absorb the
+  price-step discontinuity, stealing the price signal. Raw SEs up to 10+;
+  MAE 0.67.
+- **Sub-annual sin/cos + trend time control:** nearly collinear with a
+  mid-series price step; same failure as splines. Wild raw fits (−9..+5).
+- **DerSimonian–Laird precision-weighted EB prior:** bootstrap SEs are noisy
+  enough that inverse-variance weighting let deceptively-tight wild fits
+  drag the prior to −1.9 (true portfolio mean −1.4) and collapse tau² to the
+  floor — every SKU shrunk to a wrong center at claimed se 0.05, CI coverage
+  11%. Replaced by median center + fixed tau.
+- **MAD-estimated tau²:** unstable in the other direction (tau 0.3 on one
+  seed, 2.4 on another → shrinkage lottery). Fixed tau = 0.6 instead.
+- **Robust variants (SE floor 0.6 / winsorize at mu±2tau):** indistinguishable
+  from base on 5-seed golden (ΔMAE < 0.005); not adopted beyond a simple
+  clip of raw fits to [−3.5, 0].
