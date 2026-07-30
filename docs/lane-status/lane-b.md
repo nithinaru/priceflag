@@ -11,7 +11,7 @@ telemetry, the evaluator, deploys.
 | **`npm audit`** | 0 vulnerabilities |
 | **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
 | **Deployed to Vercel?** | ✅ **https://priceflagv1.vercel.app** — build succeeded, `/api/health` returns `ok: true` |
-| **Evaluator cron on Vercel** | 🔒 Deliberately absent from `vercel.json` until B5 is verified |
+| **Evaluator cron on Vercel** | ✅ **Now in `vercel.json`** — added only after B5 acceptance passed locally (below) |
 | **Contract requests** | Lane A 1–3 + REQ-A-001/002/003, Lane C 1–9 → [answered below](#contract-requests-serviced) |
 
 ---
@@ -620,6 +620,74 @@ Two syncs can start in the same millisecond, and a stable sort then returns the
 Now ties break on insertion order. Postgres was never affected (microsecond
 timestamps), which is exactly the kind of divergence running the suite against
 both adapters is meant to catch.
+
+## Sprint B5 — the evaluator, verified end to end on the real store ✅
+
+`npx tsx scripts/simulate-rollout.ts` drives the whole loop against
+`priceflag-test.myshopify.com`. **It passed.** Output, both halves:
+
+```
+A. Healthy rollout
+   2026-07-20  stage 0 -> hold      2026-07-25  stage 1 -> advance
+   2026-07-21  stage 0 -> hold      2026-07-26  stage 2 -> hold
+   2026-07-22  stage 0 -> advance   2026-07-28  stage 2 -> hold
+   2026-07-23  stage 1 -> hold      2026-07-29  stage 2 -> complete
+   ✓ completed, reached the final stage, never rolled back, 2 advance emails + completion
+
+B. Starved rollout
+   2026-07-27  units 0 -> hold (breach, streak 1)
+   2026-07-28  units 0 -> rollback (breach, streak 2)
+   ✓ auto-rolled back for guardrail_breach
+   ✓ Shopify shows the original prices again
+   ✓ verifyRollback found no mismatches
+   ✓ the journal records the true before-and-after for every entry
+```
+
+### What is real, and what is not
+
+**Real:** the products, **the price writes** (this genuinely changed prices on the
+dev store and put them back), **the orders** — created via `draftOrderCreate` /
+`draftOrderComplete`, so they are real Shopify orders — every database row, the
+guardrail evaluation, the rollback, and the verification against Shopify.
+
+**Simulated: the passage of time, and only that.** A rollout holds each stage for
+days; waiting was not an option. The evaluator is called with an explicit
+`asOfDay` and a matching `now`, and the pre-rollout baseline is seeded as
+`order_days` rows marked `source: 'seed'`. **The multi-day progression has
+therefore not been observed against a real 24-hour clock** — that is the one thing
+in B5 which remains unproven, and only a multi-day soak can close it.
+
+### Safety: the cron is now in `vercel.json`, and not before
+
+It was deliberately withheld until the above passed. It is `*/15 * * * *` on
+`/api/cron/evaluate`, guarded by `CRON_SECRET` compared in constant time, and it
+accepts Vercel's own cron header. Every tick is leased per rollout and idempotent
+per `(rollout, day)` — the 15-minute cadence exists so a missed tick self-heals,
+not because there is work every 15 minutes.
+
+> **Note for Nithin:** Vercel's Hobby plan runs cron jobs at most once per day
+> regardless of the expression. On Hobby this becomes a daily tick, which still
+> works — the loop is day-based — but a breach would be caught up to 24 hours
+> later instead of within 15 minutes.
+
+### Design points worth knowing
+
+- **Reconcile before deciding.** Every evaluation repairs the current stage before
+  judging it, otherwise we would be measuring a price change that only half
+  happened.
+- **The reading is written before the action.** `rollout_readings` is the
+  idempotency record, so a crash mid-action cannot cause the same day to be
+  evaluated twice.
+- **A stage never advances while the current one is not fully applied** — the
+  `fully_applied` gate from B4, which is what stops a partial failure compounding.
+- **The band comes from Lane C when fresh, and degrades honestly otherwise.** A
+  band older than `MAX_BAND_AGE_DAYS` is marked stale and the bracket fallback is
+  used; it is never served as fresh (R32).
+- **A shop with the kill switch engaged is not evaluated at all.** Nothing should
+  advance while a merchant has pulled the cord.
+- **Emails are best-effort by design.** A failed send must never fail an
+  auto-rollback: the prices are already restored, and throwing would make the
+  evaluator look like it failed when it did exactly the right thing.
 
 ## Contract requests serviced — round 2
 
