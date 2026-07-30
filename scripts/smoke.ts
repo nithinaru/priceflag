@@ -2509,6 +2509,102 @@ async function testAdapters(): Promise<void> {
   }
 
   await runAdapterSuite('SupabaseAdapter', supabase, shopId);
+
+  // These assert database behaviour, not adapter behaviour, so they only mean
+  // anything against real Postgres.
+  section('postgres safety properties');
+
+  const { createClient } = await import('@supabase/supabase-js');
+  const raw = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string, {
+    auth: { persistSession: false },
+  });
+
+  await test('the price journal rejects UPDATE, even from the service role', async () => {
+    const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
+    const row = existing.items[0];
+    assert(row !== undefined, 'there is a journal entry to attempt');
+
+    const { error } = await raw
+      .from('journal_entries')
+      .update({ after_price_cents: 999999 })
+      .eq('id', (row as { id: string }).id);
+
+    assert(error !== null, 'the update must be refused');
+    assert(
+      /append-only/i.test(error?.message ?? ''),
+      `the guard trigger should say why, got: ${error?.message}`,
+    );
+
+    // And the value is genuinely unchanged.
+    const after = await supabase.getLastJournaledPrice(shopId, (row as { variant_gid: string }).variant_gid);
+    assert(after?.after_price_cents !== 999999, 'nothing was written');
+  });
+
+  await test('the price journal rejects DELETE without an explicit purge', async () => {
+    const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
+    const row = existing.items[0] as { id: string };
+
+    const { error } = await raw.from('journal_entries').delete().eq('id', row.id);
+    assert(error !== null, 'the delete must be refused');
+    assert(/append-only/i.test(error?.message ?? ''), `and say why, got: ${error?.message}`);
+
+    const still = await supabase.listJournalEntries(shopId, { limit: 1 });
+    assert(still.total > 0, 'the trail survives');
+  });
+
+  await test('the evaluator lease is enforced by Postgres, not just in process', async () => {
+    // withRolloutLock already exercised pf_acquire_rollout_lock in the suite
+    // above; this checks the RPC's contract directly, including that a second
+    // holder is refused and that releasing with the wrong token does nothing.
+    const rollouts = await supabase.listRollouts(shopId);
+    const rollout = rollouts[0];
+    assert(rollout !== undefined, 'there is a rollout to lock');
+
+    const tokenA = '11111111-1111-4111-8111-111111111111';
+    const tokenB = '22222222-2222-4222-8222-222222222222';
+
+    const first = await raw.rpc('pf_acquire_rollout_lock', {
+      p_rollout_id: (rollout as { id: string }).id,
+      p_token: tokenA,
+      p_ttl_seconds: 60,
+    });
+    assertEqual(first.data, true, 'first holder acquires');
+
+    const second = await raw.rpc('pf_acquire_rollout_lock', {
+      p_rollout_id: (rollout as { id: string }).id,
+      p_token: tokenB,
+      p_ttl_seconds: 60,
+    });
+    assertEqual(second.data, false, 'a second evaluator is refused while the lease is held');
+
+    const wrongRelease = await raw.rpc('pf_release_rollout_lock', {
+      p_rollout_id: (rollout as { id: string }).id,
+      p_token: tokenB,
+    });
+    assertEqual(wrongRelease.data, false, 'a stale holder cannot release someone else lease');
+
+    const release = await raw.rpc('pf_release_rollout_lock', {
+      p_rollout_id: (rollout as { id: string }).id,
+      p_token: tokenA,
+    });
+    assertEqual(release.data, true, 'the real holder releases');
+  });
+
+  await test("Lane C's ml_* views are readable and shaped as promised", async () => {
+    for (const view of ['ml_product_days', 'ml_products', 'ml_price_history', 'ml_rollout_windows']) {
+      const { error } = await raw.from(view).select('*').limit(1);
+      assertEqual(error, null, `${view} should be selectable: ${error?.message ?? ''}`);
+    }
+
+    const { data } = await raw
+      .from('ml_product_days')
+      .select('shop_domain,variant_gid,day,dow,units,list_price_cents,on_promo,had_stockout,excluded_from_pricing')
+      .limit(1);
+    const row = (data ?? [])[0] as Record<string, unknown> | undefined;
+    assert(row !== undefined, 'ml_product_days has rows after seeding');
+    assert(typeof row?.dow === 'number' && row.dow >= 1 && row.dow <= 7, 'dow is an ISO weekday');
+    assert(row?.list_price_cents !== null, 'the elasticity regressor is populated');
+  });
 }
 
 // ---------------------------------------------------------------------------

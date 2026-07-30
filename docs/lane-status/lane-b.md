@@ -7,9 +7,9 @@ telemetry, the evaluator, deploys.
 |---|---|
 | **Current sprint** | B2 — static-token auth path landed. **OAuth install flow deferred, not passed** (see below) |
 | **`npm run build`** | green |
-| **`npx tsx scripts/smoke.ts`** | green — 121 passed, 1 skipped (Supabase suite: schema not applied yet) |
+| **`npx tsx scripts/smoke.ts`** | green — **135 passed, 0 skipped** (Supabase suite live against real Postgres) |
 | **`npm audit`** | 0 vulnerabilities |
-| **Migrations applied?** | ❌ **No.** Still never run against Postgres — blocked on a credential |
+| **Migrations applied?** | ✅ **Yes** — all 8, clean on the first attempt. **CP1 is closed** |
 | **Deployed to Vercel?** | ❌ Not yet — `scripts/vercel-setup.sh` is ready, blocked on `VERCEL_TOKEN` |
 | **Evaluator cron on Vercel** | 🔒 Deliberately absent from `vercel.json` until B5 is verified |
 | **Contract requests** | Lane A 1–3 + REQ-A-001/002/003, Lane C 1–9 → [answered below](#contract-requests-serviced) |
@@ -280,31 +280,49 @@ encrypted. It reads from env per request, so it needs no `ENCRYPTION_KEY` and
 cannot go stale. `ensureStaticShop()` creates the `shops` row that every other
 table's foreign key needs, since there is no install to create it.
 
-## Migrations still not applied — and why
+## Migrations are applied — CP1 closed
 
-`supabase db push` has **not** run. The SQL remains reviewed but unproven, exactly
-as at the end of B1.
+`supabase db push --db-url "$SUPABASE_DB_URL"` applied all eight migrations, and
+**every one succeeded on the first attempt** — no SQL debugging was needed. The
+schema now exists on `vnyqevrdvfjsfhdnbfsz`.
 
-What I tried:
+- **The direct connection on port 5432 worked** (`db.<ref>.supabase.co:5432`). No
+  IPv6 fallback to the session pooler was needed from this machine.
+- `--db-url` bypasses `supabase login` and `supabase link` entirely, so this runs
+  headlessly. No project is linked and no GitHub auto-deploy integration is
+  enabled, as instructed.
+- `npm run seed:demo` then loaded the demo store: 14 variants, 2520 `order_days`
+  rows, 10 journal entries.
 
-- **Supabase CLI** — needs `supabase login`, which is an interactive browser flow,
-  or `SUPABASE_ACCESS_TOKEN`. Neither is available in a headless session.
-- **The Supabase MCP connection** — authenticated, but to a *different* account: it
-  lists only `AMA-supabase` (org `vercel_icfg_…`), not `vnyqevrdvfjsfhdnbfsz`. It
-  cannot reach the Priceflag project.
-- **The `sb_secret_…` key** — works, but API keys authenticate PostgREST, not
-  Postgres, and PostgREST cannot execute DDL.
+The smoke suite now runs **135 assertions with nothing skipped**, including the
+whole adapter suite twice — once against `DemoAdapter`, once against real Postgres.
 
-What I did confirm: **the modern `sb_secret_…` key authenticates correctly** with
-`@supabase/supabase-js` 2.111.0. A query returns `PGRST205` (table not found)
-rather than an auth error, and nothing in `lib/` parses the key or assumes JWT
-shape. That concern is closed.
+### What real Postgres proved that the demo adapter could not
 
-Also hardened as a result: `SupabaseAdapter.ping()` used a `head` request, which
-does **not** consult the schema cache and so reported healthy against a database
-with no tables — then failed on the first real query. It now does a real `select`
-and reports the missing schema specifically. The smoke suite degrades to a labelled
-skip instead of crashing, so Lanes A and C can run it with no database access.
+Four properties are claims about the *database*, and until now they were only
+claims. They are now tested on every run when Supabase is configured:
+
+- **The price journal genuinely rejects `UPDATE`** — even from the service role,
+  with the guard trigger's own "append-only" message, and the value is verified
+  unchanged afterwards. This is the recovery path for a botched rollout, so a
+  merely-conventional append-only rule would not have been enough.
+- **It rejects `DELETE`** outside an explicit `set local priceflag.purge = 'on'`.
+- **The evaluator lease is enforced by Postgres.** `pf_acquire_rollout_lock`
+  refuses a second holder while a lease is live, and `pf_release_rollout_lock`
+  refuses to release on the wrong token — so a stale evaluator cannot unlock the
+  one that took over from it.
+- **Lane C's four `ml_*` views are selectable and correctly shaped**, with `dow` a
+  real ISO weekday and `list_price_cents` populated.
+
+Two things fixed along the way:
+
+- The modern **`sb_secret_…` key works** with `@supabase/supabase-js` 2.111.0.
+  Nothing in `lib/` parses the key or assumes JWT shape. Concern closed.
+- `SupabaseAdapter.ping()` used a `head` request, which does **not** consult the
+  schema cache and so reported healthy against a database with no tables, then
+  failed on the first real query. It now does a real `select` and names a missing
+  schema specifically. The smoke suite degrades to a labelled skip rather than
+  crashing, so Lanes A and C can still run it with no database access.
 
 ## Vercel — ready but not deployed
 
