@@ -45,6 +45,7 @@ Cross-cutting rules:
 | GET | `/api/auth` | Start Shopify OAuth (redirects) | B2 |
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
 | POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
+| GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | B4 |
 | GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | B2 |
 | PATCH | `/api/shop` | Update notification addresses / engage the kill switch | B5 |
 | POST | `/api/sync` | Start (or resume) a sync | B3 |
@@ -83,6 +84,45 @@ Cross-cutting rules:
 ```
 
 Booleans only — never the values. 503 when the active adapter is unreachable.
+
+### `GET /api/live` — B4
+
+One call that answers the glance test: is anything live, which rollout, which
+stage, how many SKUs currently hold a Priceflag price, and is it healthy (R16).
+Requested by Lane A as REQ-A-003.
+
+```json
+{
+  "anything_live": true,
+  "kill_switch_engaged": false,
+  "skus_holding_priceflag_price": 21,
+  "rollouts": [
+    {
+      "id": "…",
+      "name": "Spring margin repair",
+      "status": "running",
+      "stage_index": 1,
+      "stage_count": 3,
+      "fraction_live": 0.5,
+      "variants_live": 21,
+      "variants_total": 42,
+      "health": "healthy",
+      "health_sentence": "Orders are inside the range we expected.",
+      "next_decision_day": "2026-07-31",
+      "can": { "rollback": true, "cancel": false, "resume": false }
+    }
+  ],
+  "paused_for_external_change": [],
+  "products_missing_cost": 3
+}
+```
+
+`health` is one of `healthy | watching | breaching | too_early | not_live`, and
+`health_sentence` is the merchant-facing wording — render it verbatim (R25).
+`watching` is a real state: a rollout with one bad day has not tripped anything,
+but calling it "healthy" would be a half-truth. Both come from
+`lib/engine/readings.ts`, which is also what the evaluator uses, so the UI and the
+machine can never disagree about whether a rollout is healthy.
 
 ### `POST /api/forecast` — B3
 
@@ -126,13 +166,24 @@ right now, and how do I undo it?" at a glance (R16).
   "readings": [ { "day": "2026-07-28", "actual_units": 12, "expected_units": 13.4,
                   "expected_low": 8.1, "expected_high": 18.9, "expected_source": "model",
                   "band_stale": false, "band_floored": false, "breach": false,
-                  "breach_streak": 0, "decision": "hold" } ],
+                  "breach_streak": 0, "decision": "hold",
+                  "verdict": "within",
+                  "sentence": "12 units sold against 13.4 expected — inside the range we expected." } ],
   "events": [ { "type": "stage_advanced", "message": "…", "at": "…" } ],
+  "health": "healthy",
+  "health_sentence": "Orders are inside the range we expected.",
   "can": { "rollback": true, "cancel": false, "resume": false }
 }
 ```
 
 `readings[]` is the actual-vs-expected chart series *and* its uncertainty band.
+
+`verdict` (`within` | `below` | `above`) is computed server-side, as Lane A asked
+in REQ-A-003. A day is `below` only when it falls outside the interval, not merely
+beneath the point estimate — half of all healthy days sit beneath the point
+estimate. The same function backs the evaluator, so the UI cannot show a verdict
+the machine did not act on.
+
 `can` exists so the UI does not have to re-derive the state machine.
 
 ### `POST /api/rollouts/[id]/rollback` — B4
@@ -142,9 +193,22 @@ rollout applied a price to, from the baselines captured at creation, and journal
 each write. Idempotent: calling it twice restores once.
 
 ```json
-{ "rollout": { "status": "rolled_back", "ended_reason": "manual_rollback" },
-  "restored": 21, "skipped_noop": 0, "failed": 0 }
+{
+  "ok": true,
+  "affected_skus": 21,
+  "message": "Restored the original price on 21 products. Nothing from this rollout is live any more.",
+  "rollout": { "status": "rolled_back", "ended_reason": "manual_rollback" },
+  "restored": 21,
+  "skipped_noop": 0,
+  "failed": 0
+}
 ```
+
+`ok` / `affected_skus` / `message` are the shape Lane A asked for in REQ-A-003, so
+the confirm dialog and toast can be wired against it directly. `POST /api/kill-switch`
+returns the same three fields. On a partial failure `ok` is `false`, `failed` is
+non-zero, and `message` names what still needs attention — every attempt is
+journalled either way, so `/api/journal` is always the authority on what moved.
 
 ### `POST /api/cron/evaluate` — B5
 

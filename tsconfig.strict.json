@@ -1,0 +1,20 @@
+{
+  // Lane B's own paths, checked harder than the shared build checks them.
+  //
+  // `noUncheckedIndexedAccess` turns `array[i]` into `T | undefined`, which is
+  // what it actually is. That matters most in exactly the code below: an
+  // off-by-one in the evaluator's stage array or a missing row in a price-write
+  // batch should be a compile error, not a runtime `undefined` that becomes a
+  // wrong price. It is not imposed on `components/**` or `app/**` pages, because
+  // the shared `next build` has to stay green for all three lanes.
+  //
+  // Run via `npm run typecheck` (which runs the shared config too).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["lib/**/*.ts", "scripts/**/*.ts", "app/api/**/*.ts"],
+  "exclude": ["node_modules", "ml", ".next"]
+}

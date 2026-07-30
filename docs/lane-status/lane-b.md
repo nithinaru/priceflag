@@ -6,8 +6,10 @@ telemetry, the evaluator, deploys.
 | | |
 |---|---|
 | **Current sprint** | B1 complete → starting B2 (Shopify OAuth + install) |
-| **`npm run build`** | green |
-| **`npx tsx scripts/smoke.ts`** | green — 89 passed, 1 skipped (Supabase suite, no project yet) |
+| **`npm run build`** | green — with Lane A's A1 pages and Lane C's ml/ on `main` (13 static pages) |
+| **`npx tsx scripts/smoke.ts`** | green — 96 passed, 1 skipped (Supabase suite, no project yet) |
+| **`npm audit`** | 0 vulnerabilities |
+| **Contract requests** | REQ-A-001/002/003 and Lane C's 1–4 all answered → [below](#contract-requests-serviced) |
 | **Blocked on** | Shopify custom-app credentials + a Supabase project (see [What I need](#what-i-need-from-nithin)) |
 
 ---
@@ -188,6 +190,198 @@ completed one.
 
 ---
 
+## Contract requests serviced
+
+All eight open requests from `contracts/requests-lane-a.md` and
+`contracts/requests-lane-c.md`, answered. Those files belong to Lanes A and C, so
+I have not edited them — this section is the reply.
+
+### REQ-A-001 — root scaffold — **landed**, with three deliberate differences
+
+Landed `package.json`, `tsconfig.json`, `next.config.ts`, `postcss.config.mjs`,
+plus `.gitignore`, `.env.example`, `vercel.json`. Your `@/*` → repo-root alias is
+kept, there is no `src/` layout, and there is **no `tailwind.config.js`** — token
+ownership stays entirely in your `app/globals.css`. Versions match what you
+build-verified against (Next 15.5.22, React 19.2.8, TypeScript 5.9.3, Tailwind
+4.3.3), pinned exactly, with `package-lock.json` committed.
+
+Three differences, all of them relevant to you:
+
+1. **I initially added `clsx`, `tailwind-merge`, `lucide-react` and `recharts`
+   before reading your request. They are removed.** Your zero-runtime-dependency
+   stance is better than my guess, and `components/cn.ts` plus inline SVG icons
+   are the right call. Runtime deps are now `next`, `react`, `react-dom`,
+   `@supabase/supabase-js` — the last is server-only. When A4 needs a chart,
+   file a request and I will land it; if you would rather hand-roll the SVG, that
+   also avoids a 100 kB dependency on a page merchants open on phones.
+2. **No `"lint": "next lint"` script.** `next lint` is deprecated in 15 and gone
+   in 16, so it would be a script that breaks on the next major. If you want
+   linting, ask for a flat-config ESLint setup and I will land it properly.
+3. **`noUncheckedIndexedAccess` is not in the shared `tsconfig.json`.** I had it
+   on, and it broke your `components/mock/engine.ts:1122` — `main` went red on
+   my flag, not your logic. Yours is not my file to edit, so the flag came out of
+   the shared config and Lane B keeps the guarantee for its own paths via
+   `tsconfig.strict.json`. `npm run typecheck` runs both passes;
+   `npm run build` uses the shared one, so it stays green for you. If you ever
+   want it on for `components/**`, the fix at that line is
+   `const latest = readings.at(-1) ?? null`.
+
+Also: `npm audit` was reporting 3 high-severity advisories from Next's own
+transitive `sharp` (libvips CVEs) and `postcss`. npm's suggested fix downgrades
+Next to 9.3.3. Instead `package.json` now has `overrides` pinning
+`sharp ^0.35.3` and `postcss ^8.5.25` — the patched lines, same APIs. `npm audit`
+is clean and the build is unaffected. Worth knowing if you see the overrides
+block and wonder why.
+
+### REQ-A-002 — `CLAUDE.md` / `PROMPTS.md` — **not mine to create, escalating**
+
+Both of you flagged this. Neither file is in any lane's owned paths — the
+BUILD_BRIEF lists my root configs explicitly as `package.json`, `vercel.json`,
+`.env.example` — so creating them would be me writing ground rules for all three
+lanes, which is not my call. **Nithin: these are yours.** The four rules restated
+in BUILD_BRIEF §2.7 are the ones I built against, and they match what you
+inferred, so I do not think anything has been missed.
+
+### REQ-A-003 — engine surface — **landed; here is the mapping**
+
+`lib/` and `contracts/` now exist, so `components/mock/engine.ts` can be deleted
+when you are ready. Your guesses were close. Real names, since almost all of the
+differences are naming rather than shape:
+
+| Your mock | Real | Note |
+|---|---|---|
+| `Cents = number` | `Cents` in `lib/money.ts` | Exactly as you had it. `formatCents`/`formatPct` are there if you want them |
+| `Product.id` | `Product.variant_gid` | Everything is keyed by full Shopify variant gid, not an opaque id |
+| `priceCents`, `cogsCents` | `price_cents`, `cogs_cents` | **snake_case throughout** — the contracts are JSON-first and the DB columns match, so camelCase would need a translation layer that could disagree with itself |
+| `cogsSource: … \| null` | `cogs_source: 'shopify' \| 'manual' \| 'none'` | `'none'` rather than `null`, and a DB CHECK guarantees `cogs_cents IS NULL` ⇔ `'none'` |
+| `kind: 'standard' \| 'subscription' \| 'gift_card'` | `is_gift_card`, `requires_selling_plan`, `has_selling_plan` booleans | Shopify exposes three independent flags; collapsing them would lose the reason. **Use `exclusionReasonFor(product)` from `lib/types.ts`** — it returns `'gift_card' \| 'subscription' \| 'not_active' \| 'zero_price' \| null` and is the single implementation of R22, shared with the price writer |
+| `units30d` | not on the product row | Derive from `order_days`, or use `ForecastProductLine.baseline_units_per_day`. `listProducts({sort:'units_desc'})` sorts for you |
+| `inLiveRollout` | `GET /api/live` | See below |
+| `Rollout.status` `'live' \| 'holding'` | `'running'` covers both; `'paused'` + `paused_reason` covers your `'paused_external'` | Your `'holding'` is a *stage* property, not a rollout one — the stage's remaining hold days come from `decideNext`. Full set: `draft \| scheduled \| running \| paused \| completed \| rolled_back \| cancelled` |
+| `RolloutStage.sharePct` | `stages[].fraction` (0.25, not 25) | Fractions, per the contract's percent convention. `hold_days` matches |
+| `Guardrail {unitsDropPct, forDays, action}` | `guardrails.schema.json` | **Kept as structured fields, exactly as you asked** — `threshold_pct`, `consecutive_days`, `action`, plus `metric`, `scope`, `min_expected_units`, and a `sentence` string. The sentence is stored **verbatim as the merchant read it** and is never regenerated, so your builder's wording is the record of what they agreed to |
+| `RolloutReading.verdict` | **added — you were right** | See below |
+| `RolloutEvent.message` | `rollout_events.message` | Plain language, written to be rendered verbatim. Types are an enum on the row |
+| `JournalEntry.actor` `'you'` | `actor: 'priceflag' \| 'merchant' \| 'shopify_admin' \| 'system'` | `shopify_admin` is specifically "changed outside Priceflag, we only observed it" |
+| `ConfidenceTier` | same three values | `confidence_explanation` ships with every forecast. Prefer mine when present, as you offered — it is written per-case (thin history vs no price variation vs stale model are different sentences) |
+
+Your two behavioural requests, both granted:
+
+1. **Store-wide "what is live right now"** → `GET /api/live`, specified in
+   `contracts/api.md`. Returns `anything_live`, `skus_holding_priceflag_price`,
+   per-rollout stage/fraction/`variants_live`, `kill_switch_engaged`,
+   `paused_for_external_change`, `products_missing_cost`, and per rollout a
+   `health` (`healthy | watching | breaching | too_early | not_live`) with a
+   `health_sentence` to render verbatim. Lands in B4.
+2. **Rollback and kill switch return `{ok, affected_skus, message}`** — added to
+   both response shapes in `contracts/api.md`, so your confirm dialog and toast
+   can be wired now. Both are idempotent: calling twice restores once.
+
+**On the verdict — you were right and it is now server-side.** `lib/engine/readings.ts`
+exports `readingVerdict`, `readingSentence`, `rolloutHealth`, `healthSentence`, and
+the same functions back the evaluator, so the UI cannot show a verdict the machine
+did not act on. Two things worth knowing:
+
+- A day is `'below'` only when it falls **outside the interval**, not merely
+  beneath the point estimate. Half of all healthy days sit beneath the point
+  estimate; treating those as "below" would make a perfectly healthy rollout look
+  alarming.
+- `band_floored: true` means volume was too low for the day to mean anything, and
+  `readingSentence` says so instead of claiming "within expected". Please render
+  that state distinctly — it is the difference between "we checked and it's fine"
+  and "there isn't enough data to check".
+
+I also added `watching` between healthy and breaching, because a rollout with one
+bad day has not tripped anything, but calling it "healthy" is a half-truth the
+merchant would be annoyed to discover later.
+
+### Lane C — 1. v0 source — **it never existed; here is what replaces it**
+
+Nothing to point you at: `main` had no `lib/` at all, so B1 wrote the engine from
+scratch. Two corrections that matter for your harness, because your stand-in
+constants assume something the real incumbent does not do:
+
+- **The golden generator is `lib/demo/generator.ts`.** It returns a `truth[]`
+  array: `{variant_gid, title, true_elasticity, price_levels, expected_confidence}`.
+  Deliberately includes products with **one price level only**, where no honest
+  fit is possible and `assumption` is the correct answer; a zero-COGS product; a
+  0.6 units/day product; weekly seasonality (Thu–Sat peak); a ~17%/180d trend;
+  store-wide promo days at ~7% with a 15% discount and a 1.55× lift; and
+  multi-day stockouts. Poisson noise, not negative binomial — if you think NB is
+  the better generator, say so and I will change it, since you own the eval
+  harness and this is your fixture.
+- **`lib/engine/forecast.ts` does *not* assume an elasticity.** Your
+  `baselines.py` stand-ins (point −1.2, range [−2.2, −0.6]) do not correspond to
+  anything in the real bracket math, so please drop them rather than reconcile
+  them. The bracket path has **no elasticity at all**: it computes exact breakeven
+  margin arithmetic (`margin_before / margin_after − 1`) and a scenario grid at
+  unit changes `[0, ∓5, ∓10, ∓20, ∓30]` plus the breakeven point, in the direction
+  demand would move. When there is no usable fit, `fitted` is `null` and
+  `confidence` is `assumption` — the honest incumbent for *elasticity* is "no
+  estimate", so **C2's bar is beating `assumption` coverage, not beating −1.2**.
+  For *bands*, the incumbent is `lib/engine/bands.ts`: a day-of-week-adjusted
+  trailing 28-day mean with an overdispersed-Poisson 80% interval
+  (`sd = sqrt(max(sample_var, mean))`), low edge floored to 0 below 3 expected
+  units. That is the thing C3 must beat, and it is worth porting into your harness
+  as a scorable baseline.
+
+### Lane C — 2. `order_days` columns — **landed, all three requests granted**
+
+`contracts/db/schema.md` is the full reference. Against your assumptions:
+
+| You assumed | Actual | Note |
+|---|---|---|
+| `sku` | `variant_gid` | Full Shopify variant gid. `sku` exists on `products` but is merchant-editable and not unique — do not key on it |
+| `date` | `day` | **Calendar date in the shop's timezone**, not UTC |
+| `revenue_cents` | `net_revenue_cents` | Also `gross_revenue_cents`, `discount_cents`, `refund_units`, `refund_cents` |
+| `price_cents` | **`list_price_cents`** ← use this | Granted, and there are two: `list_price_cents` is the price on the product page that day, reconstructed from the journal. `realized_unit_price_cents` is `net/units` and moves with discounts. **Regress on `list_price_cents`** and use `on_promo` as the control — regressing on the realized price would absorb the promo effect into the price coefficient and bias elasticity toward zero |
+| `promo` | `on_promo` | Granted. Store-wide promo days, so it is a real control rather than something you infer |
+| `stockout` | `had_stockout` | Granted. Inventory-derived, so you do not need the heuristic or the confidence penalty |
+
+Read through the views, not the tables — they are the stable surface and they
+absorb column moves: **`ml_product_days`** (adds a precomputed `dow` matching
+Postgres `isodow`, joins COGS and `excluded_from_pricing`), `ml_products`,
+`ml_price_history` (every applied price change with `day` in shop time — this is
+how `list_price_cents` is reconstructed), `ml_rollout_windows` (treatment periods
++ affected variants, for C5). `npm run seed:demo` populates a real Supabase
+project from the golden generator and prints the truth table.
+
+### Lane C — 3. read-only credentials — **`.env.example` ready, role lands in B6**
+
+`SUPABASE_ML_READONLY_KEY` is already in `.env.example`. The role and its SELECT
+policies land in B6 as planned. Note the current posture: **RLS is on for every
+table with no policies**, so the read-only role will see zero rows until B6 grants
+it explicitly — if you point `ml/data.py` at a real project before then, use the
+service role key locally and expect that to change.
+
+### Lane C — 4. output tables — **landed, and here is the extra I want**
+
+All three exist with your BUILD_BRIEF §3 fields. Since you asked what else to
+populate while the fitters are being written — all optional, all useful:
+
+- **`elasticity_fits`**: `confidence_explanation` (one plain-language line; the UI
+  renders yours in preference to mine, so this is your voice reaching the
+  merchant), `shrinkage_weight` (0 = all portfolio prior, 1 = all own data — the
+  forecast reports `source: 'portfolio_prior'` when it is below 0.5, which is a
+  claim I would rather take from you than infer), `prior_elasticity`, `method`,
+  `r2`, `window_start`/`window_end`.
+- **`expected_bands`**: `is_floored` (was the low edge widened by your low-volume
+  floor rather than coming from residual quantiles? the evaluator records it and
+  the UI states it), `interval_nominal` (default 0.80 — set it explicitly if you
+  ever ship a different width), `band_kind` (`baseline` now; `counterfactual` for
+  C5, which requires `rollout_id` and is CHECK-enforced), and **`breach_probability`**
+  — when present, the evaluator prefers it over raw threshold crossing (R29), so
+  this field is how C5 actually replaces thresholds. It is already implemented and
+  tested on my side: ≥0.8 fires, and a low probability *suppresses* a raw
+  threshold crossing.
+- **`model_runs`**: `gate_passed`, `incumbent_version`, `metrics` jsonb, and
+  `status = 'rejected'` for a challenger that lost. R28 wants failed challengers
+  recorded rather than discarded, so please write the losing runs too.
+
+One constraint to know about: `expected_bands` uniqueness includes
+`coalesce(rollout_id, '000…0')`, so raw-SQL upserts need the expression form in
+the `ON CONFLICT` target. The exact statement is in `contracts/db/schema.md`.
+
 ## What I need from Nithin
 
 Two things, both free tier. Until they exist, Lane B keeps building against the
@@ -268,4 +462,5 @@ Resend (`RESEND_API_KEY`) is not needed until B5.
 
 | Date | Sprint | What landed |
 |---|---|---|
-| 2026-07-29 | B1 | Contracts (8 schemas + api.md + db/schema.md), 8 migrations, the v0 engine in `lib/`, `StoreAdapter` with Demo + Supabase implementations, demo/golden-data generator, `scripts/smoke.ts` (89 assertions), `scripts/seed-demo.ts`, `GET /api/health`, root configs |
+| 2026-07-29 | B1 | Contracts (8 schemas + api.md + db/schema.md), 8 migrations, the v0 engine in `lib/`, `StoreAdapter` with Demo + Supabase implementations, demo/golden-data generator, `scripts/smoke.ts`, `scripts/seed-demo.ts`, `GET /api/health`, root configs |
+| 2026-07-29 | B1 | Serviced REQ-A-001/002/003 and Lane C 1–4: removed the four runtime deps Lane A did not want, moved `noUncheckedIndexedAccess` out of the shared tsconfig into `tsconfig.strict.json` (it was breaking Lane A's file), added `lib/engine/readings.ts` with server-side reading verdicts and rollout health, specified `GET /api/live`, added `{ok, affected_skus, message}` to rollback and kill-switch responses, `overrides` for the `sharp`/`postcss` advisories. Smoke 89 → 96 |

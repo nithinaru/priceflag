@@ -59,6 +59,7 @@ import {
   rolloutIdempotencyKey,
   toJournalContract,
 } from '../lib/engine/journal';
+import { healthSentence, readingSentence, readingVerdict, rolloutHealth, sumReadings } from '../lib/engine/readings';
 import {
   assignCohorts,
   canTransition,
@@ -1438,6 +1439,91 @@ async function testBands(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// readings -> verdicts (REQ-A-003: the UI renders a decision, never makes one)
+// ---------------------------------------------------------------------------
+
+async function testReadings(): Promise<void> {
+  section('reading verdicts');
+
+  await test('a day is only "below" when it leaves the honest interval', () => {
+    // Beneath the point estimate but inside the band: half of all healthy days
+    // look like this, and calling them "below" would cry wolf.
+    assertEqual(readingVerdict(9, 8, 18), 'within', 'inside the band');
+    assertEqual(readingVerdict(7, 8, 18), 'below', 'under the low edge');
+    assertEqual(readingVerdict(19, 8, 18), 'above', 'over the high edge');
+    assertEqual(readingVerdict(8, 8, 18), 'within', 'exactly on the edge is not a breach');
+  });
+
+  const reading = {
+    day: TODAY,
+    actual_units: 12,
+    expected_units: 13.4,
+    expected_low: 8,
+    expected_high: 18,
+    band_floored: false,
+    band_stale: false,
+    breach: false,
+    breach_streak: 0,
+  };
+
+  await test('the sentence states both numbers in plain language', () => {
+    const sentence = readingSentence(reading);
+    assert(sentence.includes('12 units'), `actual: ${sentence}`);
+    assert(sentence.includes('inside the range'), `verdict: ${sentence}`);
+    assert(!/band|interval|guardrail threshold/i.test(sentence), `no jargon (R25): ${sentence}`);
+  });
+
+  await test('a floored band refuses to claim anything either way', () => {
+    const sentence = readingSentence({ ...reading, band_floored: true });
+    assert(sentence.includes('too few orders'), `says why it cannot judge: ${sentence}`);
+    assert(!sentence.includes('inside the range'), 'and does not overclaim');
+  });
+
+  await test('a stale band says so rather than hiding it (R32)', () => {
+    assert(readingSentence({ ...reading, band_stale: true }).includes('out of date'), 'staleness is visible');
+  });
+
+  await test('rollout health has a "watching" state between healthy and breaching', () => {
+    assertEqual(rolloutHealth('running', [reading]), 'healthy', 'inside the range');
+    assertEqual(rolloutHealth('running', [{ ...reading, breach: true, breach_streak: 1 }]), 'watching', 'one bad day');
+    assertEqual(
+      rolloutHealth('running', [{ ...reading, breach: true, breach_streak: 2 }]),
+      'breaching',
+      'two bad days',
+    );
+    assertEqual(rolloutHealth('running', []), 'too_early', 'no readings yet');
+    assertEqual(rolloutHealth('running', [{ ...reading, band_floored: true }]), 'too_early', 'too quiet to judge');
+    assertEqual(rolloutHealth('draft', [reading]), 'not_live', 'nothing live');
+    assertEqual(rolloutHealth('running', [{ ...reading, actual_units: 4 }]), 'watching', 'below the band but not tripped');
+  });
+
+  await test('health sentences never blame the merchant or use jargon', () => {
+    for (const health of ['healthy', 'watching', 'breaching', 'too_early', 'not_live'] as const) {
+      const sentence = healthSentence(health, 'hold', 2);
+      assert(sentence.length > 20, `${health} has a real sentence`);
+      assert(!/elasticity|confidence interval|guardrail threshold/i.test(sentence), `${health} avoids jargon`);
+    }
+  });
+
+  await test('unknown profit does not sum to zero', () => {
+    const known = sumReadings([
+      { actual_units: 10, actual_revenue_cents: 32000, actual_profit_cents: 20500 },
+      { actual_units: 8, actual_revenue_cents: 25600, actual_profit_cents: 16400 },
+    ]);
+    assertEqual(known.units, 18, 'units add');
+    assertEqual(known.revenue_cents, 57600, 'revenue adds');
+    assertEqual(known.profit_cents, 36900, 'profit adds');
+
+    const partial = sumReadings([
+      { actual_units: 10, actual_revenue_cents: 32000, actual_profit_cents: 20500 },
+      { actual_units: 8, actual_revenue_cents: 25600, actual_profit_cents: null },
+    ]);
+    assertEqual(partial.revenue_cents, 57600, 'revenue is still exact');
+    assertEqual(partial.profit_cents, null, 'but the total profit is unknown, not partial');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // journal
 // ---------------------------------------------------------------------------
 
@@ -1942,6 +2028,7 @@ async function main(): Promise<void> {
   await testGuardrails();
   await testRollout();
   await testBands();
+  await testReadings();
   await testJournal();
   await testAdapters();
 
