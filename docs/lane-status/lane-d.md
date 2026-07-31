@@ -20,7 +20,7 @@ Run on 2026-07-30 from a clean worktree (`npm install` from `package-lock.json`,
 | `npm run build` | **exit 0**, 20 routes, middleware 34.8 kB | — |
 | `npx tsx scripts/smoke.ts` | **150 passed, 0 failed** | 11.3 s |
 | `cd ml && uv run pytest -q` | **106 passed** | 38.7 s |
-| `npx tsx tests/integration/run.ts` (Lane D) | **43 passed, 4 failed** | ~60 s |
+| `npx tsx tests/integration/run.ts` (Lane D) | **52 passed, 9 failed** | ~90 s |
 
 The build lanes' own gates are genuinely green. Finding #1 is *not* "the
 environment is red" — it is that green gates were measuring a narrower surface
@@ -56,8 +56,22 @@ npx tsx tests/integration/run.ts --demo   # DemoAdapter only, no network
 | 3 | No write outside the selection (R22) | **HOLDS.** Proven against the write log, not the plan: bystander variants present in the store but absent from the rollout are never written, across stage advance, rollback and kill switch. Gift cards, subscription products and non-`ACTIVE` products are excluded at *write* time and recorded with a reason. |
 | 4 | No per-visitor pricing | **HOLDS BY CONSTRUCTION.** The pricing surface (`lib/engine`, `lib/pricing`, `lib/evaluator`, `lib/adapters`, `money.ts`, `types.ts`, `contracts.ts`) contains no identifier for visitor, session, cookie, user-agent, IP or traffic split. `assignCohorts` takes `(rolloutId, variantGids, stages)` — no request, no user, no clock — and is stable across calls and input order. |
 | 5 | Idempotency | **HOLDS.** Re-applying a stage writes nothing and journals nothing extra; a rollback repeated three times collapses to one row per variant; the crash window (Shopify applied it, the database never heard) converges on the next reconcile without double-writing. |
-| 6 | Concurrency | **MOSTLY HOLDS.** Two evaluators racing on one rollout: exactly one runs, the other reports `locked` — on both adapters. Rollback-during-advance and kill-switch-during-write both converge to baseline. **One failure: [D-01](../QA_REPORT.md) — chained rollouts.** |
-| 7 | Append-only journal | **MOSTLY HOLDS.** `UPDATE`, `DELETE` and `ON CONFLICT DO UPDATE` are all rejected by the database, not by convention. **One hole: [D-03](../QA_REPORT.md) — `TRUNCATE`.** |
+| 6 | Concurrency | **MOSTLY HOLDS.** Two evaluators racing on one rollout: exactly one runs, the other reports `locked` — on both adapters. Rollback-during-advance and kill-switch-during-write both converge to baseline. **One failure: [D-04](../QA_REPORT.md#d-04) — chained rollouts unwind to the wrong price.** |
+| 7 | Append-only journal | **MOSTLY HOLDS.** `UPDATE`, `DELETE` and `ON CONFLICT DO UPDATE` are all rejected by the database, not by convention. **One hole: [D-19](../QA_REPORT.md#d-19) — `TRUNCATE`.** |
+
+## Beyond the invariants
+
+The invariants held; the layer above them did not. Six further suites were added
+once it was clear the arithmetic was sound and the *semantics* were where the
+risk lived:
+
+| Suite | What it found |
+|---|---|
+| `false-rollback.test.ts` | The headline. A Monte Carlo over the real band + guardrail code: the shipped default auto-rolls back **40% of healthy 1-SKU rollouts** and **68.5% of price rises whose demand effect was forecast exactly right** ([D-01](../QA_REPORT.md#d-01), [D-02](../QA_REPORT.md#d-02)), and the band goes blind on rollout day 28 ([D-03](../QA_REPORT.md#d-03)). |
+| `rollback-honesty.test.ts` | A rollback skips variants Shopify repriced but never acknowledged, and `verifyRollback` shares the bug so it reports 0 mismatches ([D-05](../QA_REPORT.md#d-05)). |
+| `zero-price.test.ts` | A `-100%` change writes **$0.00** to the storefront; nothing floors a target price above zero ([D-06](../QA_REPORT.md#d-06)). |
+| `guardrails.test.ts` | Pins the meaning of every merchant-settable guardrail input. Found that one units-derived breach probability fires **every** rule regardless of metric ([D-12](../QA_REPORT.md#d-12)). |
+| `concurrency.test.ts` (R4 section) | An admin price edit after a variant goes live is silently overwritten by the next reconcile, on both adapters ([D-10](../QA_REPORT.md#d-10)). |
 
 Failing tests are left failing on purpose. A test that fails because the product
 is wrong is a finding, not a test to adjust.
@@ -72,7 +86,7 @@ The brief's own starting assumptions did not survive checking:
   in the report.
 - **"The evaluator cron is genuinely absent — it must be."** It is not absent.
   `.github/workflows/evaluator.yml` is on `main`, scheduled hourly, and its runs
-  reach production and return HTTP 200. See [D-02](../QA_REPORT.md).
+  reach production and return HTTP 200. See [D-18](../QA_REPORT.md#d-18).
 - **PRD requirements run R1–R33**, not R1–R32. R33 (application authentication)
   was added later and is the PRD's own declared pilot launch blocker.
 
@@ -88,5 +102,7 @@ to that shop; verified 0 active rollouts remain across all shops.
 ## Status
 
 - Phase 1 (sacred invariants) — **complete**, suite committed.
-- Phase 2 (adversarial passes) — complete; findings in `docs/QA_REPORT.md`.
-- Phase 3 (fixes) — only after the report is pushed, P0/P1 `DEFECT`s only.
+- Phase 2 (adversarial passes) — complete; 26 findings in `docs/QA_REPORT.md`
+  (9 P0, 9 P1, 5 P2, 3 P3).
+- Phase 3 (fixes) — not started. Requests to the owning lanes are in
+  `contracts/requests-lane-d.md`.

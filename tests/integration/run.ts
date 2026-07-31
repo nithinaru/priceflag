@@ -20,6 +20,9 @@ import { assertEqual, makeShop, section, skip, summary, test } from './_harness'
 import { runInvariantSuite, runPureInvariants } from './invariants.test';
 import { runConcurrencySuite, runExternalChangeSuite, runJournalImmutabilitySuite } from './concurrency.test';
 import { runGuardrailSuite } from './guardrails.test';
+import { runZeroPriceSuite } from './zero-price.test';
+import { runFalseRollbackSuite } from './false-rollback.test';
+import { runRollbackHonestySuite } from './rollback-honesty.test';
 
 const demoOnly = process.argv.includes('--demo');
 
@@ -29,6 +32,7 @@ async function main(): Promise<void> {
   // --- adapter-independent -------------------------------------------------
   await runPureInvariants();
   await runGuardrailSuite();
+  await runFalseRollbackSuite();
 
   // --- DemoAdapter ---------------------------------------------------------
   const demo = new DemoAdapter({ persist: false, autoSeed: false });
@@ -41,6 +45,8 @@ async function main(): Promise<void> {
   await runInvariantSuite(demo, demoShop, 'DemoAdapter');
   await runConcurrencySuite(demo, demoShop, 'DemoAdapter');
   await runExternalChangeSuite(demo, demoShop, 'DemoAdapter');
+  await runZeroPriceSuite(demo, demoShop, 'DemoAdapter');
+  await runRollbackHonestySuite(demo, demoShop, 'DemoAdapter');
 
   // --- SupabaseAdapter -----------------------------------------------------
   if (demoOnly) {
@@ -88,7 +94,14 @@ async function main(): Promise<void> {
   }
 
   // --- real Postgres safety properties ------------------------------------
-  if (!demoOnly) await runJournalImmutabilitySuite();
+  if (!demoOnly) {
+    try {
+      await runJournalImmutabilitySuite();
+    } catch (cause) {
+      section('7. append-only journal (real Postgres)');
+      skip('journal immutability', `direct Postgres unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
 
   void makeShop;
   process.exit(summary());
