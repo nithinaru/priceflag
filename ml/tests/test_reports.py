@@ -109,3 +109,103 @@ def test_r30_gate_reduced(monkeypatch):
     s = report["summary"]
     assert s["n_rollouts"] == 2
     assert s["pct_in_range"] is not None and 0.0 <= s["pct_in_range"] <= 1.0
+
+
+# --- C11 / D-17: recovering a plan from the price journal --------------------
+
+
+def _history(rows):
+    import pandas as pd
+
+    return pd.DataFrame(rows)
+
+
+def _entry(gid, applied_at, before, after, source="rollout", rollout_id="r1"):
+    import pandas as pd
+
+    return {"variant_gid": gid, "applied_at": pd.Timestamp(applied_at, tz="UTC"),
+            "before_price_cents": before, "after_price_cents": after,
+            "source": source, "rollout_id": rollout_id}
+
+
+def test_plan_spans_first_before_to_last_after():
+    """A staged rollout writes the same variant several times. The plan is the
+    pre-rollout price to the final price — the first `before` is the captured
+    baseline, the same value the rollback path treats as source of truth."""
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([
+        _entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1100),
+        _entry("gid://shopify/ProductVariant/1", "2026-07-05", 1100, 1200),
+    ])
+    plans = plans_from_price_history(history, "r1")
+    assert len(plans) == 1
+    assert plans[0].old_price_cents == 1000 and plans[0].new_price_cents == 1200
+
+
+def test_rollback_entries_are_excluded():
+    """Folding the restore in makes new_price == old_price and reports a
+    completed rollout as having changed nothing."""
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([
+        _entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1200),
+        _entry("gid://shopify/ProductVariant/1", "2026-07-09", 1200, 1000, source="rollback"),
+    ])
+    plans = plans_from_price_history(history, "r1")
+    assert len(plans) == 1 and plans[0].new_price_cents == 1200
+
+
+def test_other_rollouts_and_external_edits_do_not_leak_in():
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([
+        _entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1200),
+        _entry("gid://shopify/ProductVariant/2", "2026-07-02", 5000, 5500, rollout_id="r2"),
+    ])
+    plans = plans_from_price_history(history, "r1")
+    assert [p.sku for p in plans] == ["gid://shopify/ProductVariant/1"]
+
+
+def test_no_op_and_unusable_prices_are_skipped():
+    """A zero would reach the (new/old)**elasticity ratio arithmetic."""
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([
+        _entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1000),  # no-op
+        _entry("gid://shopify/ProductVariant/2", "2026-07-01", 0, 1200),     # unusable
+        _entry("gid://shopify/ProductVariant/3", "2026-07-01", 1000, 1200),  # real
+    ])
+    plans = plans_from_price_history(history, "r1")
+    assert [p.sku for p in plans] == ["gid://shopify/ProductVariant/3"]
+
+
+def test_missing_cogs_stays_none_rather_than_zero():
+    """None means 'merchant never gave us cost' and suppresses profit fields.
+    Zero would mean 100% margin and fabricate a profit number (R3)."""
+    import pandas as pd
+
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([_entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1200)])
+    products = pd.DataFrame([{"variant_gid": "gid://shopify/ProductVariant/1", "cogs_cents": None}])
+    assert plans_from_price_history(history, "r1", products)[0].cogs_cents is None
+    assert plans_from_price_history(history, "r1")[0].cogs_cents is None
+
+
+def test_cogs_is_picked_up_when_present():
+    import pandas as pd
+
+    from priceflag_ml.reports import plans_from_price_history
+
+    history = _history([_entry("gid://shopify/ProductVariant/1", "2026-07-01", 1000, 1200)])
+    products = pd.DataFrame([{"variant_gid": "gid://shopify/ProductVariant/1", "cogs_cents": 400}])
+    assert plans_from_price_history(history, "r1", products)[0].cogs_cents == 400
+
+
+def test_empty_history_is_empty_plan_not_an_error():
+    import pandas as pd
+
+    from priceflag_ml.reports import plans_from_price_history
+
+    assert plans_from_price_history(pd.DataFrame(), "r1") == []

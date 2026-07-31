@@ -282,3 +282,69 @@ def calibration_summary(reports: list[dict]) -> dict:
         "n_rollouts": n,
         "pct_in_range": float(np.mean([r["in_range"] for r in reports])),
     }
+
+
+def plans_from_price_history(
+    history: pd.DataFrame,
+    rollout_id: str,
+    products: pd.DataFrame | None = None,
+) -> list[VariantPlan]:
+    """Recover a completed rollout's plan from the price journal (D-17).
+
+    The journal is the record of what was actually *written to the storefront*,
+    so a report built from it describes the prices shoppers really saw — not
+    the prices a proposal intended, which can differ if a stage was interrupted
+    or a variant was excluded at write time (R22). Every price write is
+    journaled (R14), which is what makes that substitution safe.
+
+    Per variant: `old_price_cents` is the `before_price_cents` of its earliest
+    entry in this rollout, `new_price_cents` the `after_price_cents` of its
+    latest. The earliest "before" is the pre-rollout price by construction —
+    the same value the rollback path treats as the single source of truth.
+
+    Restores are excluded. A `source='rollback'` entry is the *undoing* of the
+    change; folding it in would make new_price equal old_price and report a
+    completed rollout as having changed nothing. A rollout that was rolled back
+    needs a different report, and this function is not it.
+
+    `products` supplies `cogs_cents`; without it (or where COGS is null) the
+    plan carries None and `build_report` states units and revenue but not
+    profit, rather than inventing a margin (R3).
+    """
+    if len(history) == 0:
+        return []
+
+    rows = history[history["rollout_id"] == rollout_id]
+    if "source" in rows.columns:
+        rows = rows[rows["source"] != "rollback"]
+    if len(rows) == 0:
+        return []
+
+    cogs: dict[str, int | None] = {}
+    if products is not None and len(products) > 0 and "cogs_cents" in products.columns:
+        for rec in products.itertuples():
+            value = getattr(rec, "cogs_cents", None)
+            cogs[str(rec.variant_gid)] = None if value is None or pd.isna(value) else int(value)
+
+    plans: list[VariantPlan] = []
+    for gid, group in rows.sort_values("applied_at").groupby("variant_gid", sort=True):
+        old = group["before_price_cents"].iloc[0]
+        new = group["after_price_cents"].iloc[-1]
+        if pd.isna(old) or pd.isna(new):
+            continue
+        old, new = int(old), int(new)
+        if old <= 0 or new <= 0 or old == new:
+            # A no-op or an unusable price is not a plan. Skipped rather than
+            # reported, so a zero never reaches the ratio arithmetic.
+            continue
+        plans.append(
+            VariantPlan(sku=str(gid), old_price_cents=old, new_price_cents=new, cogs_cents=cogs.get(str(gid)))
+        )
+    return plans
+
+
+def reports_contract_rows(reports: list[dict]) -> list[dict]:
+    """Reports as they go over the wire. `build_report` already emits
+    `rollout_report.schema.json` shape; this is the seam where a transport
+    concern (ordering, stability) lives instead of leaking into the model."""
+    return sorted(reports, key=lambda r: (r.get("rollout_id", ""), r.get("generated_at", "")))

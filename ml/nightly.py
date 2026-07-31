@@ -153,6 +153,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict) -> bool
     generated_at = _utc_now_iso()
     all_fits: list[dict] = []
     all_bands: list[dict] = []
+    all_reports: list[dict] = []
     ok = True
 
     for shop_domain in shops:
@@ -184,31 +185,103 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict) -> bool
         all_bands.extend(band_rows)
         print(f"  {shop_domain}: {len(fit_rows)} fit(s), {len(band_rows)} band row(s) over {window_start}..{window_end}")
 
-        if client is None:
-            continue
-
         # One request per kind: the endpoint records one model_run per request,
         # and mixing an elasticity fit set with a band set into a single run
         # would make the registry unable to say which surface was deployed.
-        for kind, version, incumbent, fit_payload, band_payload in (
-            ("elasticity", elasticity.MODEL_VERSION, "bracket-elasticity", fit_rows, []),
-            ("baseline", forecaster.MODEL_VERSION, "bracket-band", [], band_rows),
-        ):
-            if not fit_payload and not band_payload and gates_ok:
-                continue
-            result = client.post_run(
-                shop_domain=shop_domain, kind=kind, model_version=version,
-                gate_passed=gates_ok, incumbent_version=incumbent,
-                metrics=gate_metrics.get(version, {}), fits=fit_payload, bands=band_payload,
-                notes=f"nightly refit over {window_start}..{window_end}",
-            )
-            print(f"    -> {kind}: {result.describe()}")
-            if result.is_error:
-                ok = False
+        if client is not None:
+            for kind, version, incumbent, fit_payload, band_payload in (
+                ("elasticity", elasticity.MODEL_VERSION, "bracket-elasticity", fit_rows, []),
+                ("baseline", forecaster.MODEL_VERSION, "bracket-band", [], band_rows),
+            ):
+                if not fit_payload and not band_payload and gates_ok:
+                    continue
+                result = client.post_run(
+                    shop_domain=shop_domain, kind=kind, model_version=version,
+                    gate_passed=gates_ok, incumbent_version=incumbent,
+                    metrics=gate_metrics.get(version, {}), fits=fit_payload, bands=band_payload,
+                    notes=f"nightly refit over {window_start}..{window_end}",
+                )
+                print(f"    -> {kind}: {result.describe()}")
+                if result.is_error:
+                    ok = False
+
+        ok &= _reports_for_shop(src, client, shop_domain, orders, fits, generated_at, gates_ok, all_reports)
 
     (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
     (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
+    (out_dir / "rollout_reports.json").write_text(json.dumps(all_reports, indent=2, default=str))
+    if all_reports:
+        from priceflag_ml.reports import calibration_summary  # noqa: PLC0415
+
+        summary = calibration_summary(all_reports)
+        (out_dir / "calibration_summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        print(f"calibration (R30): {summary['n_rollouts']} rollout(s), pct_in_range={summary['pct_in_range']}")
     return ok
+
+
+def _reports_for_shop(src, client, shop_domain, orders, fits, generated_at, gates_ok, sink) -> bool:
+    """Post-rollout reports for this shop's completed rollouts (D-17, R20/R30).
+
+    The plan is recovered from the price journal rather than from the proposal:
+    the journal records what was actually written to the storefront, so the
+    report describes the prices shoppers really saw even if a stage was
+    interrupted or a variant excluded at write time.
+
+    A rollout is reported once per nightly run; the endpoint upserts, so a
+    re-run refreshes rather than duplicates. Anything unreportable — no
+    journal entries, no history either side of the window — is skipped with a
+    reason rather than reported thinly.
+    """
+    from priceflag_ml import reports as reports_mod  # noqa: PLC0415
+
+    windows = src.rollout_windows(shop_domain, status="completed")
+    if len(windows) == 0:
+        return True
+
+    history = src.price_history(shop_domain)
+    products = src.products(shop_domain)
+    fits_by_sku = {f.sku: f for f in fits}
+    built: list[dict] = []
+
+    for window in windows.itertuples():
+        rollout_id = str(window.rollout_id)
+        plans = reports_mod.plans_from_price_history(history, rollout_id, products)
+        if not plans:
+            print(f"    (no report for rollout {rollout_id}: no applied price changes journaled)")
+            continue
+        start, end = window.start_day, window.end_day
+        pre = orders[orders["date"] < start]
+        during = orders[(orders["date"] >= start) & (orders["date"] <= end)]
+        try:
+            report = reports_mod.build_report(
+                rollout_id=rollout_id,
+                plans=plans,
+                pre_history=pre,
+                during_actuals=during,
+                fits_before={p.sku: fits_by_sku.get(p.sku) for p in plans},
+                generated_at=generated_at,
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(f"    (no report for rollout {rollout_id}: {exc})")
+            continue
+        built.append(report)
+
+    if not built:
+        return True
+
+    rows = reports_mod.reports_contract_rows(built)
+    sink.extend(rows)
+    print(f"  {shop_domain}: {len(rows)} rollout report(s)")
+    if client is None:
+        return True
+
+    result = client.post_run(
+        shop_domain=shop_domain, kind="report", model_version=reports_mod.MODEL_VERSION,
+        gate_passed=gates_ok, incumbent_version=None, metrics={}, reports=rows,
+        notes="post-rollout reports for completed rollouts",
+    )
+    print(f"    -> report: {result.describe()}")
+    return not result.is_error
 
 
 def _forecast_one(forecaster, history):

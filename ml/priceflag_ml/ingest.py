@@ -100,14 +100,23 @@ class IngestResult:
     rows_written: int = 0
     message: str | None = None
     problems: list[dict] = field(default_factory=list)
+    #: Set when rows were sent that the endpoint did not account for. Never
+    #: silently tolerated — see `post_run`.
+    dropped: str | None = None
 
     @property
     def is_error(self) -> bool:
         """True only for outcomes the nightly should go red on. A recorded
         rejection (gate_not_passed) is the system working."""
-        return self.status_code >= 400 or self.reason == "contract_validation_failed"
+        return (
+            self.status_code >= 400
+            or self.reason == "contract_validation_failed"
+            or self.dropped is not None
+        )
 
     def describe(self) -> str:
+        if self.dropped is not None:
+            return f"NOT stored: {self.dropped}"
         if self.accepted:
             return f"accepted: {self.rows_written} rows (model_run {self.model_run_id})"
         if self.reason == "gate_not_passed":
@@ -185,6 +194,7 @@ class IngestClient:
         incumbent_version: str | None = None,
         fits: list[dict] | None = None,
         bands: list[dict] | None = None,
+        reports: list[dict] | None = None,
         notes: str | None = None,
         sha: str | None = None,
     ) -> IngestResult:
@@ -193,14 +203,15 @@ class IngestClient:
 
         fits = list(fits or [])
         bands = list(bands or [])
+        reports = list(reports or [])
         if not gate_passed:
             # The endpoint would discard these anyway. Dropping them here makes
             # the intent explicit and keeps a losing run's payload small.
-            fits, bands = [], []
+            fits, bands, reports = [], [], []
 
         assert_bands_cannot_double_count(bands)
 
-        total = len(fits) + len(bands)
+        total = len(fits) + len(bands) + len(reports)
         if total > MAX_ROWS_PER_REQUEST:
             raise ValueError(
                 f"{total} rows exceeds MAX_ROWS_PER_REQUEST={MAX_ROWS_PER_REQUEST}. "
@@ -221,6 +232,7 @@ class IngestClient:
             },
             "fits": fits,
             "bands": bands,
+            "reports": reports,
         }
 
         response = self._get_client().post(
@@ -241,7 +253,7 @@ class IngestClient:
             # The endpoint's failure shape: {error: {code, message, ...}}.
             message = error.get("message") or message
 
-        return IngestResult(
+        result = IngestResult(
             accepted=bool(body.get("accepted", False)),
             status_code=response.status_code,
             reason=body.get("reason") or (error.get("code") if isinstance(error, dict) else None),
@@ -250,3 +262,19 @@ class IngestClient:
             message=message,
             problems=list(body.get("problems") or []),
         )
+
+        # D-17. `POST /api/ml/ingest` currently reads only `fits` and `bands`;
+        # `reports` is extra JSON, and extra JSON is *ignored*, not rejected.
+        # So a report payload would come back 200 accepted with the rows
+        # quietly gone — the worst failure shape there is, because R30 (the
+        # PRD's declared moat) would read as shipped while `rollout_reports`
+        # stayed empty. An accepted response that does not account for what was
+        # sent is treated as a failure until the endpoint says `reports_written`.
+        if result.accepted and reports and body.get("reports_written") is None:
+            result.dropped = (
+                f"sent {len(reports)} report(s), and the endpoint's response does not "
+                "account for them (no `reports_written`). POST /api/ml/ingest stores "
+                "only fits and bands — see contracts/requests-lane-c.md item 13. The "
+                "reports are in the run artifacts; nothing was written."
+            )
+        return result

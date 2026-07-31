@@ -158,3 +158,40 @@ meanwhile (nothing here blocks C1–C3).
     `band_kind`s in one request. So the nightly cannot be what fires it. That
     is containment, not a fix — a rollover between two model versions still
     leaves two rows in the table, and only the evaluator can resolve that.
+
+## 2026-07-30 (Sprint C11)
+
+13. **`POST /api/ml/ingest` needs to accept `reports` (D-17).** `rollout_reports`
+    exists, is granted to the ML role, and holds 0 rows. `reports.py` has
+    computed `rollout_report.schema.json`-exact rows since C6 with no transport
+    into the database — R30 is the PRD's declared moat and it is measured on
+    nothing real.
+
+    Lane C's whole half is now built and tested: the nightly reads
+    `ml_rollout_windows` for completed rollouts, recovers each plan from
+    `ml_price_history`, builds the report, and posts it with
+    `kind: 'report'` and a `reports: [...]` array. All that is missing is the
+    endpoint reading that key.
+
+    Ask: accept `reports`, validate against `rollout_report.schema.json`
+    exactly as `fits`/`bands` are validated, upsert into `rollout_reports`
+    keyed on `rollout_id`, and — importantly — **return `reports_written` in
+    the response**.
+
+    That last field is not cosmetic. Extra JSON keys are currently *ignored*,
+    not rejected, so a report payload comes back `200 accepted` with the rows
+    silently gone: R30 would read as shipped while the table stayed empty.
+    Lane C therefore treats an accepted response that does not report
+    `reports_written` as a failure and turns the nightly red rather than
+    trusting it. Until the field exists, reports are emitted to run artifacts
+    (`out/rollout_reports.json`, `out/calibration_summary.json`) and the
+    report leg of the nightly is red by design.
+
+14. **`calibration_summary` has nowhere to live either.** `reports.py`
+    computes the R30 dashboard number (% of completed rollouts whose realized
+    outcome landed inside the predicted range) across a shop's reports. There
+    is no table for it. Two options, your call: a `calibration_summaries`
+    table, or Lane A derives it by aggregating `rollout_reports.in_range` at
+    render time. The second is less machinery and I would take it — but then
+    nothing needs to be added for it, and that is worth saying out loud rather
+    than leaving the number homeless.

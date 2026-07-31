@@ -96,15 +96,33 @@ def test_recorded_loser_stays_recorded():
 class _FakeSource:
     """Stands in for SupabaseSource: golden data served as if it were a shop."""
 
-    def __init__(self, shops, orders_by_shop):
+    def __init__(self, shops, orders_by_shop, windows=None, history=None, products=None):
+        import pandas as pd
+
         self._shops = shops
         self._orders = orders_by_shop
+        self._windows = pd.DataFrame() if windows is None else windows
+        self._history = pd.DataFrame() if history is None else history
+        self._products = pd.DataFrame() if products is None else products
 
     def list_shops(self):
         return list(self._shops)
 
     def order_days(self, shop_domain):
         return self._orders[shop_domain]
+
+    def rollout_windows(self, shop_domain, status=None):
+        import pandas as pd
+
+        if len(self._windows) == 0 or status is None:
+            return self._windows
+        return pd.DataFrame(self._windows[self._windows["status"] == status])
+
+    def price_history(self, shop_domain, rollout_id=None):
+        return self._history
+
+    def products(self, shop_domain):
+        return self._products
 
 
 class _FakeIngest:
@@ -239,3 +257,102 @@ def test_bands_carry_the_full_horizon_and_are_ordered(monkeypatch, tmp_path):
     for row in bands:
         assert row["low"] <= row["expected_units"] <= row["high"]
         assert row["band_kind"] == "baseline"
+
+
+# --- C11 / D-17: the report leg --------------------------------------------
+
+
+def _completed_rollout(orders, rollout_id="8f2b1c66-1f7e-4a4e-9c1f-2b3d4e5f6a7b"):
+    """A completed rollout over the last 10 days of `orders`, with the journal
+    entries that recorded its price writes."""
+    import pandas as pd
+
+    skus = sorted(orders["sku"].unique())[:2]
+    end = orders["date"].max()
+    start = end - pd.Timedelta(days=9)
+    windows = pd.DataFrame([{
+        "shop_domain": "s1.myshopify.com", "rollout_id": rollout_id, "status": "completed",
+        "start_day": start, "end_day": end, "variant_gids": list(skus),
+    }])
+    history = pd.DataFrame([
+        {"variant_gid": sku, "applied_at": pd.Timestamp(start, tz="UTC"),
+         "before_price_cents": 2000, "after_price_cents": 2200,
+         "source": "rollout", "rollout_id": rollout_id}
+        for sku in skus
+    ])
+    products = pd.DataFrame([{"variant_gid": sku, "cogs_cents": 800} for sku in skus])
+    return windows, history, products
+
+
+def test_reports_are_built_and_posted_for_completed_rollouts(monkeypatch, tmp_path):
+    shop = "s1.myshopify.com"
+    orders = _golden_shop(shop)
+    windows, history, products = _completed_rollout(orders)
+    source = _FakeSource([shop], {shop: orders}, windows, history, products)
+    ingest = _FakeIngest()
+    _wire(monkeypatch, tmp_path, source, ingest)
+
+    nightly.refit_real_stores(tmp_path, gates_ok=True, gate_metrics={})
+    assert "report" in [c["kind"] for c in ingest.calls]
+    report_call = next(c for c in ingest.calls if c["kind"] == "report")
+    assert len(report_call["reports"]) == 1
+    written = json.loads((tmp_path / "rollout_reports.json").read_text())
+    assert len(written) == 1
+    # R30: the honesty metric is computed and kept, flattering or not.
+    summary = json.loads((tmp_path / "calibration_summary.json").read_text())
+    assert summary["n_rollouts"] == 1 and summary["pct_in_range"] in (0.0, 1.0)
+
+
+def test_reports_reach_artifacts_even_with_no_endpoint_configured(monkeypatch, tmp_path):
+    """Artifact-only mode must still produce the reports — otherwise the one
+    output D-17 says is missing would be missing for a different reason."""
+    shop = "s1.myshopify.com"
+    orders = _golden_shop(shop)
+    windows, history, products = _completed_rollout(orders)
+    source = _FakeSource([shop], {shop: orders}, windows, history, products)
+    _wire(monkeypatch, tmp_path, source, None)
+
+    assert nightly.refit_real_stores(tmp_path, gates_ok=True, gate_metrics={}) is True
+    assert len(json.loads((tmp_path / "rollout_reports.json").read_text())) == 1
+
+
+def test_an_endpoint_that_drops_reports_turns_the_nightly_red(monkeypatch, tmp_path):
+    """D-17's failure shape: 200 accepted, rows silently gone, R30 reading as
+    shipped while rollout_reports stays empty."""
+    from priceflag_ml.ingest import IngestResult
+
+    shop = "s1.myshopify.com"
+    orders = _golden_shop(shop)
+    windows, history, products = _completed_rollout(orders)
+    source = _FakeSource([shop], {shop: orders}, windows, history, products)
+    dropped = IngestResult(accepted=True, status_code=200, rows_written=0,
+                           dropped="sent 1 report(s), no `reports_written`")
+    ingest = _FakeIngest(result=dropped)
+    _wire(monkeypatch, tmp_path, source, ingest)
+
+    assert nightly.refit_real_stores(tmp_path, gates_ok=True, gate_metrics={}) is False
+
+
+def test_a_rollout_with_no_journal_entries_is_skipped_not_reported_thinly(monkeypatch, tmp_path):
+    import pandas as pd
+
+    shop = "s1.myshopify.com"
+    orders = _golden_shop(shop)
+    windows, _, products = _completed_rollout(orders)
+    source = _FakeSource([shop], {shop: orders}, windows, pd.DataFrame(), products)
+    ingest = _FakeIngest()
+    _wire(monkeypatch, tmp_path, source, ingest)
+
+    assert nightly.refit_real_stores(tmp_path, gates_ok=True, gate_metrics={}) is True
+    assert "report" not in [c["kind"] for c in ingest.calls]
+    assert json.loads((tmp_path / "rollout_reports.json").read_text()) == []
+
+
+def test_no_completed_rollouts_means_no_report_run(monkeypatch, tmp_path):
+    shop = "s1.myshopify.com"
+    source = _FakeSource([shop], {shop: _golden_shop(shop)})
+    ingest = _FakeIngest()
+    _wire(monkeypatch, tmp_path, source, ingest)
+
+    nightly.refit_real_stores(tmp_path, gates_ok=True, gate_metrics={})
+    assert "report" not in [c["kind"] for c in ingest.calls]

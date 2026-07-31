@@ -4,6 +4,43 @@
 Lane D's `docs/QA_REPORT.md` and Lane B's shipped `/api/ml/ingest` opened a
 second round — C8 landed, C9–C11 in flight.
 
+## C11 — D-17: the report loop, built up to the one seam I don't own ✅ (2026-07-30)
+
+`rollout_reports` holds 0 rows. `reports.py` has emitted schema-exact rows
+since C6 with no transport into the database, so R30 — the PRD's declared moat
+— has been measured on nothing real.
+
+Lane C's half is now complete end to end:
+
+- **Read** — `SupabaseSource.rollout_windows()` (completed rollouts from
+  `ml_rollout_windows`), `price_history()` (`ml_price_history`), `products()`
+  (for COGS). All three views were already granted to the ML role by B6.
+- **Recover the plan from the journal, not the proposal** —
+  `plans_from_price_history()` takes each variant's earliest `before_price` and
+  latest `after_price` in the rollout. The journal records what was actually
+  *written to the storefront*, so the report describes the prices shoppers
+  really saw even if a stage was interrupted or a variant excluded at write
+  time (R22). Rollback entries are excluded: folding the restore in would make
+  new_price equal old_price and report a completed rollout as having changed
+  nothing. Missing COGS stays `None`, not 0 — 0 would mean 100% margin and
+  fabricate a profit number (R3).
+- **Build and post** — the nightly builds a report per completed rollout,
+  writes `out/rollout_reports.json` and `out/calibration_summary.json`, and
+  posts with `kind: 'report'` and a `reports: [...]` array.
+
+**The seam I don't own, and why the nightly is red about it.**
+`POST /api/ml/ingest` reads only `fits` and `bands`. Extra JSON keys are
+*ignored*, not rejected — so a report payload comes back `200 accepted` with
+the rows silently gone. That is the worst available failure shape: R30 would
+read as shipped while the table stayed empty, which is exactly the state
+Lane D found. So `IngestClient` treats an accepted response that does not
+account for what was sent as a failure: if `reports_written` is absent from the
+response, the result is an error and the nightly goes red. Requested as item 13
+(with item 14 on where `calibration_summary` should live). When Lane B adds the
+field, nothing on my side changes — there is a test asserting exactly that.
+
+152 tests green; no snapshot drift.
+
 ## C10 — Lane C's half of D-12 and D-16 ✅ (2026-07-30)
 
 Both findings are Lane B fixes at the point of use, but both have a producer

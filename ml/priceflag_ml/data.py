@@ -156,6 +156,76 @@ class SupabaseSource:
             offset += _PAGE_SIZE
         return domains
 
+    def _paged(self, view: str, params: dict) -> list[dict]:
+        """Every row of a view, paged. PostgREST caps a response at its
+        max-rows setting; a single GET silently truncates."""
+        client = self._get_client()
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            resp = client.get(
+                f"{self._base}/{view}",
+                params={**params, "limit": str(_PAGE_SIZE), "offset": str(offset)},
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            rows.extend(batch)
+            if len(batch) < _PAGE_SIZE:
+                return rows
+            offset += _PAGE_SIZE
+
+    def rollout_windows(self, shop_domain: str, status: str | None = None) -> pd.DataFrame:
+        """Started rollouts with their shop-time day windows (C6/D-17).
+
+        `status='completed'` is what the post-rollout report loop wants: a
+        rollout that ran to the end. A rolled-back one still has a window and a
+        story, but its "realized outcome" is the outcome of a change that was
+        undone partway, which is a different report — Lane C does not currently
+        write one.
+        """
+        params = {"shop_domain": f"eq.{shop_domain}", "select": "*", "order": "started_at"}
+        if status is not None:
+            params["status"] = f"eq.{status}"
+        rows = self._paged("ml_rollout_windows", params)
+        if not rows:
+            return pd.DataFrame(
+                columns=["shop_domain", "rollout_id", "status", "start_day", "end_day", "variant_gids"]
+            )
+        df = pd.DataFrame(rows)
+        for col in ("start_day", "end_day"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col])
+        return df
+
+    def price_history(self, shop_domain: str, rollout_id: str | None = None) -> pd.DataFrame:
+        """Applied price changes from the journal (`ml_price_history`).
+
+        This is how a completed rollout's *plan* is recovered: the journal is
+        the record of what was actually written, so a report built from it
+        describes the prices the storefront really carried, not the prices a
+        proposal intended. Every price write is journaled (R14), which is what
+        makes that equivalence safe to rely on.
+        """
+        params = {"shop_domain": f"eq.{shop_domain}", "select": "*", "order": "variant_gid,applied_at"}
+        if rollout_id is not None:
+            params["rollout_id"] = f"eq.{rollout_id}"
+        rows = self._paged("ml_price_history", params)
+        if not rows:
+            return pd.DataFrame(
+                columns=["variant_gid", "applied_at", "before_price_cents", "after_price_cents",
+                         "source", "rollout_id", "stage_index"]
+            )
+        df = pd.DataFrame(rows)
+        df["applied_at"] = pd.to_datetime(df["applied_at"], format="mixed", utc=True)
+        return df
+
+    def products(self, shop_domain: str) -> pd.DataFrame:
+        """Current catalog (`ml_products`) — needed for `cogs_cents`, without
+        which a report can state units but not profit."""
+        rows = self._paged("ml_products", {"shop_domain": f"eq.{shop_domain}", "select": "*", "order": "variant_gid"})
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["variant_gid", "cogs_cents", "price_cents"])
+
     def order_days(self, shop_domain: str) -> pd.DataFrame:
         client = self._get_client()
         pages: list[pd.DataFrame] = []

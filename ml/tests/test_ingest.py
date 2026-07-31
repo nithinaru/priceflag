@@ -231,3 +231,63 @@ def test_the_duplicate_guard_runs_before_the_size_check():
                         model_version="x", gate_passed=True,
                         bands=[_band("2026-07-30")] * 3)
     assert seen == []
+
+
+# --- C11 / D-17: reports must not be accepted-and-dropped -------------------
+
+
+def _report(rollout_id="8f2b1c66-1f7e-4a4e-9c1f-2b3d4e5f6a7b"):
+    return {"rollout_id": rollout_id, "in_range": True, "generated_at": "2026-07-30T00:00:00Z"}
+
+
+def test_reports_silently_ignored_by_the_endpoint_is_a_failure():
+    """The endpoint reads only `fits` and `bands`; extra JSON is ignored, not
+    rejected. So a report payload comes back 200-accepted with the rows quietly
+    gone — R30 would read as shipped while rollout_reports stayed empty. An
+    accepted response that does not account for what was sent is a failure."""
+    client, seen = _client(
+        lambda _r: httpx.Response(200, json={"accepted": True, "model_run_id": "run_5",
+                                             "rows_written": 0, "fits_written": 0, "bands_written": 0})
+    )
+    result = client.post_run(shop_domain="s1.myshopify.com", kind="report",
+                             model_version="rollout-report-1.0", gate_passed=True,
+                             reports=[_report()])
+    assert seen, "the payload is still sent — the endpoint is what has to change"
+    assert result.is_error
+    assert result.dropped is not None and "reports_written" in result.dropped
+    assert "NOT stored" in result.describe()
+
+
+def test_reports_accounted_for_are_not_a_failure():
+    """When Lane B adds `reports_written`, this passes with no further change."""
+    client, _ = _client(
+        lambda _r: httpx.Response(200, json={"accepted": True, "model_run_id": "run_6",
+                                             "rows_written": 1, "reports_written": 1})
+    )
+    result = client.post_run(shop_domain="s1.myshopify.com", kind="report",
+                             model_version="rollout-report-1.0", gate_passed=True,
+                             reports=[_report()])
+    assert result.accepted and not result.is_error and result.dropped is None
+
+
+def test_reports_are_in_the_payload():
+    client, seen = _client(
+        lambda _r: httpx.Response(200, json={"accepted": True, "rows_written": 1, "reports_written": 1})
+    )
+    client.post_run(shop_domain="s1.myshopify.com", kind="report",
+                    model_version="rollout-report-1.0", gate_passed=True, reports=[_report()])
+    import json as _json
+    assert len(_json.loads(seen[0].content)["reports"]) == 1
+
+
+def test_a_losing_run_sends_no_reports_either():
+    client, seen = _client(
+        lambda _r: httpx.Response(200, json={"accepted": False, "reason": "gate_not_passed"})
+    )
+    result = client.post_run(shop_domain="s1.myshopify.com", kind="report",
+                             model_version="rollout-report-1.0", gate_passed=False,
+                             reports=[_report()])
+    import json as _json
+    assert _json.loads(seen[0].content)["reports"] == []
+    # And with nothing sent, there is nothing to be dropped.
+    assert result.dropped is None and not result.is_error
