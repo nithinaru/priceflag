@@ -117,6 +117,15 @@ the champion only by beating it here AND on real-data backtests.
 - **R29:** beats raw threshold crossing on the harness → the evaluator may
   prefer `breach_probability` (already wired on Lane B's side: ≥0.8 fires,
   low probability suppresses a raw crossing).
+- **Metric scope (C10, D-12):** this model measures **units**. `assess()` sums
+  units and the threshold it tests is a drop in units — a revenue monitor
+  would be a different model, not a relabelling, and would need its own R28
+  gate. Because `expected_band.breach_probability` carries no statement of
+  which quantity it is about, `contract_rows()` emits **null** unless every
+  guardrail on the rollout watches units. The evaluator then falls back to raw
+  threshold crossing: noisier on small stores, which is what this model exists
+  to fix, but about the right quantity. `breach_metric` is requested
+  (requests-lane-c item 11) and the suppression drops out when it lands.
 
 ### rollout-report-1.0 — post-rollout reports + R30 calibration (since C6)
 
@@ -130,6 +139,15 @@ the champion only by beating it here AND on real-data backtests.
 - **Scores (9 golden rollouts, +10% price, true-elasticity demand response):**
   `pct_in_range` **77.8%** (PRD success metric: >=70%) · schema-validated
   end-to-end. Snapshot: `eval/c6_reports.json`.
+- **Where the input comes from (C11):** on real stores the plan is recovered
+  from the price journal (`ml_price_history`), not from the proposal — the
+  journal records what was actually written to the storefront, so the report
+  describes the prices shoppers really saw even when a stage was interrupted
+  or a variant excluded at write time. Rollback entries are excluded; a
+  rolled-back rollout needs a different report and this model is not it.
+- **Not yet stored.** `POST /api/ml/ingest` does not read `reports`, so these
+  rows reach run artifacts only and the report leg of the nightly is red by
+  design (D-17, requests-lane-c item 13).
 
 ## Challengers
 
