@@ -49,7 +49,21 @@ def _approx_equal(a, b, tol=1e-9) -> bool:
     return a == b
 
 
+def _incumbent_bands_stay_calibrated(inc: dict) -> bool:
+    """The C1 bar's own safety property (R29). Every challenger is measured
+    against these two incumbents, so if THEIR bands drift out of calibration
+    the whole comparison is being made against a moved goalpost — and the
+    fallback band (`BracketBand` is Lane B's shipped `lib/engine/bands.ts`) is
+    what auto-rollback actually uses when no model band exists."""
+    return all(
+        0.70 <= inc[k]["pooled_coverage_80"] <= 0.90
+        for k in ("seasonal_naive_backtest", "bracket_band_backtest")
+    )
+
+
+# (name, snapshot file, runner, gate, key selected from both current + snapshot)
 CHECKS = [
+    ("incumbents-c1", "c1_incumbents.json", harness.run_c1, _incumbent_bands_stay_calibrated, "incumbents"),
     ("elasticity-poisson-eb-1.0", "c2_elasticity.json", harness.run_c2, lambda s: s["verdict"] == "challenger wins"),
     ("baseline-cleanlevel-1.0", "c3_baseline.json", harness.run_c3, lambda s: s["verdict"] == "challenger wins"),
     ("counterfactual-cleanlevel-1.0", "c5_counterfactual.json", harness.run_c5, lambda s: s["verdict"] == "challenger wins"),
@@ -62,9 +76,11 @@ def run_gates(checks=None) -> tuple[list[dict], bool]:
     """Every champion re-validated + drift-checked against its committed
     snapshot. Returns (model_run_rows, all_ok)."""
     rows, all_ok = [], True
-    for name, snapshot_file, fn, passes in checks if checks is not None else CHECKS:
-        current = fn()["summary"]
-        snapshot = json.loads((HERE / "eval" / snapshot_file).read_text())["summary"]
+    for check in checks if checks is not None else CHECKS:
+        name, snapshot_file, fn, passes = check[:4]
+        key = check[4] if len(check) > 4 else "summary"
+        current = fn()[key]
+        snapshot = json.loads((HERE / "eval" / snapshot_file).read_text())[key]
         gate_ok = bool(passes(current))
         drift_ok = _approx_equal(current, snapshot)
         ok = gate_ok and drift_ok

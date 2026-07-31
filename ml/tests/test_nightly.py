@@ -54,6 +54,31 @@ def test_silent_drift_is_detected_even_when_gate_passes():
     assert rows[0]["status"] == "failed"
 
 
+def test_c1_incumbent_bar_is_drift_checked():
+    """The C1 incumbents ARE the R28 bar. If they drift, every challenger
+    verdict was measured against a moved goalpost — so the nightly checks the
+    bar itself, not only the challengers."""
+    assert any(c[1] == "c1_incumbents.json" for c in nightly.CHECKS)
+    snap = json.loads((pathlib.Path(nightly.HERE) / "eval" / "c1_incumbents.json").read_text())["incumbents"]
+    check = ("incumbents-c1", "c1_incumbents.json", lambda: {"incumbents": snap},
+             nightly._incumbent_bands_stay_calibrated, "incumbents")
+    rows, ok = nightly.run_gates([check])
+    assert ok and rows[0]["gate_passed"] and rows[0]["drift_free"]
+
+
+def test_decalibrated_incumbent_band_fails_the_gate():
+    """R29: an incumbent whose 80% band covers 97% of days is not a bar, it is
+    a rubber stamp — auto-rollback would never fire behind it."""
+    snap = json.loads((pathlib.Path(nightly.HERE) / "eval" / "c1_incumbents.json").read_text())["incumbents"]
+    bad = json.loads(json.dumps(snap))
+    bad["bracket_band_backtest"]["pooled_coverage_80"] = 0.97
+    check = ("incumbents-c1", "c1_incumbents.json", lambda: {"incumbents": bad},
+             nightly._incumbent_bands_stay_calibrated, "incumbents")
+    rows, ok = nightly.run_gates([check])
+    assert not ok
+    assert not rows[0]["gate_passed"] and not rows[0]["drift_free"]
+
+
 def test_recorded_loser_stays_recorded():
     """The C4 challenger must keep LOSING (verdict 'incumbent stays') — if it
     silently started winning, that's also a drift alarm, handled by the same

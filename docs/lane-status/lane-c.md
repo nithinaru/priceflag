@@ -1,7 +1,33 @@
 # Lane C status — Machine Learning
 
-**Current:** ALL SPRINTS C1–C7 COMPLETE (2026-07-29). Lane C is
-feature-complete pending Lane B's B6 credentials for the real-data legs.
+**Current:** C1–C7 complete (2026-07-29). Post-QA work in progress (2026-07-30):
+Lane D's `docs/QA_REPORT.md` and Lane B's shipped `/api/ml/ingest` opened a
+second round — C8 landed, C9–C11 in flight.
+
+## C8 — The recorded incumbent scores are still valid ✅ (2026-07-30)
+
+QA_REPORT §9 lists "whether Lane C's recorded incumbent scores are still
+valid" as untested, on the theory that the negative-binomial change moved the
+golden series under a fixed seed. **Answer: they are valid — zero drift.**
+
+`uv run python nightly.py` re-derives every verdict from scratch and compares
+it to the committed snapshot; all six checks report `drift=none`, including
+the C1 incumbent numbers themselves. The NB change that worried Lane D was in
+Lane B's `lib/demo/generator.ts`; Lane C's golden universe
+(`priceflag_ml/golden.py`) has drawn NB noise since C1 and is SHA256-pinned in
+`tests/test_golden.py`, so a fixed seed still produces byte-identical data.
+
+What was genuinely missing, and now is not: **the bar itself was never
+drift-checked.** The nightly re-validated C2/C3/C4/C5/C6 against
+`eval/*.json`, but `eval/c1_incumbents.json` — the seasonal-naive and
+`BracketBand` scores that *define* R28's "beat the incumbent" — was checked by
+nothing after C1. A silent change to the incumbents would have moved the
+goalpost under every challenger verdict without failing a single gate.
+`incumbents-c1` is now the first entry in `nightly.CHECKS`, with its own
+safety gate: both incumbents' pooled 80% coverage must stay in [0.70, 0.90]
+(R29). `BracketBand` is Lane B's shipped `lib/engine/bands.ts` — when no model
+band exists, it is what auto-rollback actually fires on, so its calibration is
+a production safety property, not a scoring detail.
 
 ## C7 — Nightly production loop ✅
 
