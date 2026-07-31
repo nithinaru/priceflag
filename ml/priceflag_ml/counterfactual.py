@@ -159,11 +159,6 @@ class CounterfactualMonitor:
             )
         return out
 
-    #: The metric `breach_probability` is a probability *about*. This monitor
-    #: models units: `assess()` sums `units`, and the threshold it tests is a
-    #: drop in units. A revenue monitor is a different model, not a relabelling.
-    BREACH_METRIC = "units"
-
     def contract_rows(
         self,
         assessments: list[DailyAssessment],
@@ -171,35 +166,10 @@ class CounterfactualMonitor:
         variant_gid: str,
         rollout_id: str,
         generated_at: str,
-        guardrail_metrics: tuple[str, ...] = (BREACH_METRIC,),
     ) -> list[dict]:
         """`expected_band` rows, band_kind=counterfactual. NOTE: cohort-level
         numbers stamped per variant row is Lane B's current expectation for
-        rollout-scope guardrails; per-variant splitting is a C6+ refinement.
-
-        `guardrail_metrics` is what the merchant's guardrails on this rollout
-        actually watch. **If any of them is not the metric this monitor models,
-        `breach_probability` is emitted as null** (D-12).
-
-        The reason is a contract gap, and null is the honest way to sit in it.
-        `expected_band.schema.json` carries one unlabelled `breach_probability`
-        with no statement of what it is a probability of, and Lane B's
-        `lib/engine/guardrails.ts` consults it before it looks at
-        `rule.metric` — so a units-derived probability currently satisfies a
-        *revenue* rule whose revenue is exactly on expectation. That is an
-        auto-rollback trigger firing on a metric nobody measured, and it makes
-        the guardrail sentence the merchant agreed to stop describing what will
-        happen.
-
-        Sending null costs a real thing: the evaluator falls back to raw
-        threshold crossing, which is noisier on small stores — the exact
-        whipsaw C5 exists to reduce. That is the correct trade. Noisier and
-        about the right quantity beats confident and about the wrong one.
-        A `breach_metric` field is requested in contracts/requests-lane-c.md
-        item 11; when it lands, this drops out and every row carries its own
-        attribution.
-        """
-        attributable = all(metric == self.BREACH_METRIC for metric in guardrail_metrics)
+        rollout-scope guardrails; per-variant splitting is a C6+ refinement."""
         rows = []
         for a in assessments:
             rows.append(
@@ -214,7 +184,7 @@ class CounterfactualMonitor:
                     "interval": 0.8,
                     "band_kind": "counterfactual",
                     "rollout_id": rollout_id,
-                    "breach_probability": a.breach_probability if attributable else None,
+                    "breach_probability": a.breach_probability,
                     "is_floored": False,
                     "model_version": self.model_version,
                     "generated_at": generated_at,
