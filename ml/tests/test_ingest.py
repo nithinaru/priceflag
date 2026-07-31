@@ -119,7 +119,12 @@ def test_oversized_payload_raises_instead_of_truncating():
     """All-or-nothing per request is the endpoint's guarantee. Splitting a band
     set across requests would trade it away silently."""
     client, seen = _client(_accepted())
-    bands = [_band(f"2026-07-{(i % 28) + 1:02d}") for i in range(MAX_ROWS_PER_REQUEST + 1)]
+    # Distinct variant-days, so this exercises the size limit and not the
+    # duplicate guard.
+    bands = [
+        dict(_band(f"2026-07-{(i % 28) + 1:02d}"), variant_gid=f"gid://shopify/ProductVariant/{i // 28}")
+        for i in range(MAX_ROWS_PER_REQUEST + 1)
+    ]
     with pytest.raises(ValueError, match="all-or-nothing"):
         client.post_run(shop_domain="s1.myshopify.com", kind="baseline",
                         model_version="baseline-cleanlevel-1.0", gate_passed=True, bands=bands)
@@ -180,3 +185,49 @@ def test_git_sha_prefers_ci_environment(monkeypatch):
 def test_result_describe_covers_the_accepted_case():
     result = IngestResult(accepted=True, status_code=200, model_run_id="run_9", rows_written=42)
     assert "42 rows" in result.describe() and not result.is_error
+
+
+# --- C10 / D-16: a payload that could double-count is refused ----------------
+
+
+def test_duplicate_variant_day_is_refused():
+    """The evaluator ADDS expected_units across rows for a variant-day. A
+    duplicate is therefore not redundant, it is an inflated expectation — and
+    an inflated expectation is a manufactured shortfall."""
+    client, seen = _client(_accepted())
+    dup = [_band("2026-07-30"), _band("2026-07-30")]
+    with pytest.raises(ValueError, match="duplicate band"):
+        client.post_run(shop_domain="s1.myshopify.com", kind="baseline",
+                        model_version="baseline-cleanlevel-1.0", gate_passed=True, bands=dup)
+    assert seen == []
+
+
+def test_mixed_band_kinds_in_one_request_are_refused():
+    counterfactual = dict(_band("2026-07-30"),
+                          band_kind="counterfactual",
+                          rollout_id="8f2b1c66-1f7e-4a4e-9c1f-2b3d4e5f6a7b")
+    client, seen = _client(_accepted())
+    with pytest.raises(ValueError, match="one band_kind"):
+        client.post_run(shop_domain="s1.myshopify.com", kind="baseline",
+                        model_version="baseline-cleanlevel-1.0", gate_passed=True,
+                        bands=[_band("2026-07-30"), counterfactual])
+    assert seen == []
+
+
+def test_same_day_different_variants_is_fine():
+    client, seen = _client(_accepted())
+    other = dict(_band("2026-07-30"), variant_gid="gid://shopify/ProductVariant/2")
+    client.post_run(shop_domain="s1.myshopify.com", kind="baseline",
+                    model_version="baseline-cleanlevel-1.0", gate_passed=True,
+                    bands=[_band("2026-07-30"), other])
+    assert len(seen) == 1
+
+
+def test_the_duplicate_guard_runs_before_the_size_check():
+    """Order matters only in that both must run before anything is sent."""
+    client, seen = _client(_accepted())
+    with pytest.raises(ValueError):
+        client.post_run(shop_domain="s1.myshopify.com", kind="baseline",
+                        model_version="x", gate_passed=True,
+                        bands=[_band("2026-07-30")] * 3)
+    assert seen == []

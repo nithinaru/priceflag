@@ -106,3 +106,55 @@ meanwhile (nothing here blocks C1–C3).
     - The endpoint takes `kind: 'elasticity' | 'baseline' | 'counterfactual'
       | 'report'` but only stores `fits` and `bands`. See item 12 for
       `report`, and item 11 for what `counterfactual` needs to be safe.
+
+11. **`expected_band.breach_metric` — the field that would end D-12.**
+    `breach_probability` is documented as "P(true effect is worse than the
+    guardrail threshold)", but the row never says *which quantity* the
+    threshold is on. Lane C derives it from **units**;
+    `lib/engine/guardrails.ts:116` consults it before it reads `rule.metric`,
+    so that units probability currently satisfies a **revenue** rule whose
+    revenue is exactly on expectation — auto-rollback firing on a quantity
+    nobody measured, and the merchant's guardrail sentence no longer
+    describing what will happen.
+
+    Please add to `expected_band.schema.json`:
+
+    ```
+    "breach_metric": {
+      "enum": ["units", "revenue", "conversion_rate", null],
+      "description": "Which quantity breach_probability is about. A guardrail
+                      whose metric differs must ignore it and fall back to raw
+                      threshold crossing."
+    }
+    ```
+
+    Until it exists, Lane C **suppresses the probability rather than
+    mislabelling it**: `CounterfactualMonitor.contract_rows()` takes the
+    rollout's `guardrail_metrics` and emits `breach_probability: null` unless
+    every guardrail on that rollout watches units. Your evaluator then falls
+    back to raw threshold crossing, which is noisier on small stores — the
+    whipsaw C5 exists to reduce — but noisier and about the right quantity
+    beats confident and about the wrong one. When the field lands I will emit
+    it on every row and stop suppressing.
+
+    A revenue-metric counterfactual is buildable on my side (it is a different
+    model, not a relabelling, so it needs its own R28 gate). Say the word and
+    it becomes a sprint.
+
+12. **D-16: the evaluator must dedupe bands before summing.** Not a schema
+    request — a fix in `lib/evaluator/index.ts:108-131`.
+    `getExpectedBands(...)` is called with `rolloutId: undefined` and every
+    returned row is passed to `combineBands`, which **adds** `expected_units`.
+    So two rows for one variant-day double the expectation, and an inflated
+    expectation is a manufactured shortfall — a routine nightly model upgrade
+    could auto-roll back every healthy rollout at once. Suggested rule, in
+    order: filter to the rollout under evaluation (or `rollout_id is null` for
+    baseline), then take **exactly one** row per `(variant_gid, day)` —
+    prefer `band_kind='counterfactual'` when a rollout is live, else
+    `baseline`, breaking ties by newest `generated_at` / `model_run_id`.
+
+    Lane C now enforces the producer half: `IngestClient` refuses any payload
+    carrying two rows for the same `(variant_gid, day, rollout_id)`, or mixing
+    `band_kind`s in one request. So the nightly cannot be what fires it. That
+    is containment, not a fix — a rollover between two model versions still
+    leaves two rows in the table, and only the evaluator can resolve that.

@@ -4,6 +4,43 @@
 Lane D's `docs/QA_REPORT.md` and Lane B's shipped `/api/ml/ingest` opened a
 second round — C8 landed, C9–C11 in flight.
 
+## C10 — Lane C's half of D-12 and D-16 ✅ (2026-07-30)
+
+Both findings are Lane B fixes at the point of use, but both have a producer
+half that is mine, and in D-12's case the ambiguity starts in what I emit.
+
+**D-12 — a probability that cannot say what it measures now says nothing.**
+`breach_probability` is documented as "P(true effect is worse than the
+guardrail threshold)" but carries no statement of *which quantity* the
+threshold is on. I derive it from units; `lib/engine/guardrails.ts:116` reads
+it before it reads `rule.metric`. So a units probability satisfies a revenue
+rule whose revenue is exactly on expectation — auto-rollback firing on
+something nobody measured.
+
+`CounterfactualMonitor.contract_rows()` now takes the rollout's
+`guardrail_metrics` and emits `breach_probability: null` unless every guardrail
+on that rollout watches units. This costs something real: the evaluator falls
+back to raw threshold crossing, which is noisier on small stores — the exact
+whipsaw C5 was built to reduce. It is still the right trade. Noisier and about
+the right quantity beats confident and about the wrong one. `breach_metric` is
+requested as item 11; when it lands the suppression drops out.
+
+A revenue-metric counterfactual is a different model, not a relabelling — it
+would need its own R28 gate, so it is a sprint, not a patch. Offered in the
+requests file.
+
+**D-16 — the nightly can no longer be what fires it.** The evaluator sums
+`expected_units` across every band row it finds for a variant-day, so a
+duplicate inflates the expectation, and an inflated expectation is a
+manufactured shortfall. `IngestClient` now refuses any payload with two rows
+for the same `(variant_gid, day, rollout_id)`, or with mixed `band_kind`s in
+one request — raising, not dropping, so which band wins never depends on dict
+ordering. This is containment, not a fix: a rollover between two model versions
+still leaves two rows in the table and only the evaluator can resolve that.
+The dedupe rule I would use is spelled out in requests item 12.
+
+136 tests green; no snapshot drift.
+
 ## C9 — The write path is closed: the nightly posts what it fits ✅ (2026-07-30)
 
 `contracts/requests-lane-c.md` item 9 asked for two things. Lane B delivered

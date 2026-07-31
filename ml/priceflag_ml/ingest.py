@@ -43,6 +43,51 @@ MAX_ROWS_PER_REQUEST = 20_000
 VALID_KINDS = ("elasticity", "baseline", "counterfactual", "report")
 
 
+def assert_bands_cannot_double_count(bands: list[dict]) -> None:
+    """Refuse a band payload that could inflate an expectation (D-16).
+
+    Lane B's evaluator fetches every band row for a variant-day and passes all
+    of them to `combineBands`, which **adds** `expected_units`. Nothing
+    deduplicates. So two rows for the same variant-day — two model versions
+    mid-rollover, or a baseline and a counterfactual — double the expectation,
+    and an inflated expectation is a manufactured shortfall: a routine nightly
+    upgrade could auto-roll back every healthy rollout at once.
+
+    The dedupe belongs in the evaluator and is requested (item 11). This guard
+    is the half Lane C owns: the producer that would fire it. Two rules:
+
+    - **One row per (variant_gid, day) per request.** A second row for the same
+      variant-day is never a refinement; it is a duplicate.
+    - **One `band_kind` per request.** Mixing a baseline set with a
+      counterfactual set is precisely the shape that sums to double, and it
+      also makes the request's `model_runs` row unable to say what deployed.
+
+    Raises ValueError rather than dropping rows — silently keeping "the first
+    one" would make which band won depend on dict ordering.
+    """
+    if not bands:
+        return
+
+    kinds = {band.get("band_kind") for band in bands}
+    if len(kinds) > 1:
+        raise ValueError(
+            f"one request must carry one band_kind, got {sorted(str(k) for k in kinds)}. "
+            "The evaluator sums every band it finds for a variant-day, so a mixed "
+            "payload double-counts the expectation (D-16)."
+        )
+
+    seen: set[tuple] = set()
+    for band in bands:
+        key = (band.get("variant_gid"), band.get("day"), band.get("rollout_id"))
+        if key in seen:
+            raise ValueError(
+                f"duplicate band for variant={key[0]} day={key[1]} rollout={key[2]}. "
+                "The evaluator adds expected_units across rows, so a duplicate "
+                "inflates the expectation and manufactures a shortfall (D-16)."
+            )
+        seen.add(key)
+
+
 @dataclass
 class IngestResult:
     """What the endpoint said. ``accepted`` false is not necessarily an error:
@@ -152,6 +197,8 @@ class IngestClient:
             # The endpoint would discard these anyway. Dropping them here makes
             # the intent explicit and keeps a losing run's payload small.
             fits, bands = [], []
+
+        assert_bands_cannot_double_count(bands)
 
         total = len(fits) + len(bands)
         if total > MAX_ROWS_PER_REQUEST:
