@@ -37,7 +37,7 @@
 import type { StoreAdapter } from '../adapters/types';
 import { nowIso } from '../dates';
 import type { Cents } from '../money';
-import { formatCents } from '../money';
+import { MIN_PRICE_CENTS, formatCents } from '../money';
 import type { JournalEntryCreate, Rollout, RolloutVariant, Shop } from '../types';
 import { buildJournalEntry, rollbackIdempotencyKey, rolloutIdempotencyKey } from '../engine/journal';
 import { assertWritable } from '../shopify/credentials';
@@ -129,6 +129,21 @@ export async function applyStage(
       result.failures.push({
         variant_gid: variant.variant_gid,
         message: 'This product variant no longer exists in Shopify, so its price could not be changed.',
+      });
+      continue;
+    }
+
+    if (variant.target_price_cents < MIN_PRICE_CENTS) {
+      // D-06, defence in depth. `computeTargetPrice` refuses this at planning
+      // time, but a rollout planned before that check existed is still in the
+      // database, and the writer is the last thing between a stored plan and a
+      // real storefront. Refusing here fails the stage rather than the product.
+      result.failed += 1;
+      result.failures.push({
+        variant_gid: variant.variant_gid,
+        message:
+          `This rollout would set the price to ${formatCents(variant.target_price_cents)}, and Priceflag will ` +
+          `not put a price below ${formatCents(MIN_PRICE_CENTS)} on your store. The price was left unchanged.`,
       });
       continue;
     }

@@ -23,7 +23,17 @@ import type {
 } from '../contracts';
 import { CONTRACT_VERSION } from '../contracts';
 import { addDays, diffDays, nowIso, today, type DayString } from '../dates';
-import { applyAbsolute, applyPercent, applyRounding, formatPct, roundCents, type Cents, type Rounding } from '../money';
+import {
+  MIN_PRICE_CENTS,
+  applyAbsolute,
+  applyPercent,
+  applyRounding,
+  formatCents,
+  formatPct,
+  roundCents,
+  type Cents,
+  type Rounding,
+} from '../money';
 import type { ElasticityFitRow, OrderDay, Product } from '../types';
 import { exclusionReasonFor } from '../types';
 
@@ -111,14 +121,36 @@ export function computeTargetPrice(currentPriceCents: Cents, change: PriceChange
       throw new ForecastError('invalid_change', 'a percent change needs a finite `percent`');
     }
     if (change.percent === 0) throw new ForecastError('invalid_change', 'a 0% change is not a change');
-    return applyRounding(applyPercent(currentPriceCents, change.percent), rounding);
+    return assertAbovePriceFloor(
+      applyRounding(applyPercent(currentPriceCents, change.percent), rounding),
+      currentPriceCents,
+    );
   }
 
   if (change.absolute_cents === undefined || !Number.isInteger(change.absolute_cents)) {
     throw new ForecastError('invalid_change', 'an absolute change needs an integer `absolute_cents`');
   }
   if (change.absolute_cents === 0) throw new ForecastError('invalid_change', 'a 0 cent change is not a change');
-  return applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding);
+  return assertAbovePriceFloor(
+    applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding),
+    currentPriceCents,
+  );
+}
+
+/**
+ * D-06. The money layer clamps at zero, which stops a *negative* price but
+ * happily produces a free one. This is where "free" is refused, in merchant
+ * language, before a plan exists — the writer refuses it again independently.
+ */
+function assertAbovePriceFloor(targetPriceCents: Cents, currentPriceCents: Cents): Cents {
+  if (targetPriceCents < MIN_PRICE_CENTS) {
+    throw new ForecastError(
+      'invalid_change',
+      `that change would set the price to ${formatCents(targetPriceCents)} — a price has to be at least ` +
+        `${formatCents(MIN_PRICE_CENTS)}. The current price is ${formatCents(currentPriceCents)}.`,
+    );
+  }
+  return targetPriceCents;
 }
 
 // ---------------------------------------------------------------------------
