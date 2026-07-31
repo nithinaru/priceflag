@@ -15,18 +15,6 @@ export type Rounding = 'none' | 'end_99' | 'end_95' | 'end_00';
 
 export const ROUNDING_MODES: readonly Rounding[] = ['none', 'end_99', 'end_95', 'end_00'];
 
-/**
- * The lowest price Priceflag will ever put on a storefront (D-06).
- *
- * `applyPercent` and `applyAbsolute` clamp at zero so the arithmetic can never
- * produce a negative price, but a clamp is not a decision: a merchant who types
- * -100, or an absolute cut larger than the price, would otherwise have the
- * catalogue given away for free — staged politely across three cohorts, with a
- * confident forecast card in front of it. Free is a thing a merchant may want;
- * it is not a thing they should get from a typo in a percentage field.
- */
-export const MIN_PRICE_CENTS: Cents = 1;
-
 export function isCents(value: unknown): value is Cents {
   return typeof value === 'number' && Number.isSafeInteger(value);
 }
