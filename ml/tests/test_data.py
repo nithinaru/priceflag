@@ -125,3 +125,28 @@ def test_supabase_order_days_empty_result(monkeypatch):
     out = src.order_days("nope")
     assert out.empty
     assert list(out.columns) == CANONICAL_COLUMNS
+
+
+def test_list_shops_dedupes_and_pages(monkeypatch):
+    """The nightly's enumeration half of request 9. `ml_products` is
+    variant-grained, so every shop appears once per variant — the caller needs
+    each shop once, and must not stop at the first page."""
+    monkeypatch.setattr(data, "_PAGE_SIZE", 2)
+    rows = [
+        {"shop_domain": "a.myshopify.com"},
+        {"shop_domain": "a.myshopify.com"},
+        {"shop_domain": "a.myshopify.com"},
+        {"shop_domain": "b.myshopify.com"},
+        {"shop_domain": "b.myshopify.com"},
+    ]
+    src, seen = _mock_source(rows, page_size=2)
+    assert src.list_shops() == ["a.myshopify.com", "b.myshopify.com"]
+    assert [p["offset"] for p in seen] == ["0", "2", "4"]
+
+
+def test_list_shops_empty_when_rls_hides_everything(monkeypatch):
+    """A role with no visible rows must return no shops, not raise — that is
+    the state before B6's SELECT policies exist."""
+    monkeypatch.setattr(data, "_PAGE_SIZE", 100)
+    src, _ = _mock_source([], page_size=100)
+    assert src.list_shops() == []

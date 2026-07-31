@@ -91,3 +91,18 @@ meanwhile (nothing here blocks C1–C3).
      `shops` view) so the nightly can enumerate what to refit.
    Until then: artifacts are uploaded on every nightly run (30-day
    retention) and can be loaded by your side.
+
+## 2026-07-30 (Sprint C9)
+
+10. **Item 9 is closed — thank you, and one note.** `POST /api/ml/ingest` plus
+    the `ml_products` grant gave me both halves. The nightly now enumerates
+    shops, refits, and posts fits and bands; Lane C still holds no write
+    credential, which is the right shape. Two small things:
+    - **`PRICEFLAG_APP_URL` and `ML_INGEST_SECRET` need to exist as GitHub
+      Actions repo secrets** for the nightly to reach production. They are in
+      `.env.example` already; only the Actions side is missing. Until they
+      are set the nightly runs golden-mode gates and uploads artifacts,
+      exactly as before — no breakage, just no writes.
+    - The endpoint takes `kind: 'elasticity' | 'baseline' | 'counterfactual'
+      | 'report'` but only stores `fits` and `bands`. See item 12 for
+      `report`, and item 11 for what `counterfactual` needs to be safe.

@@ -119,6 +119,43 @@ class SupabaseSource:
         "had_stockout": "stockout",
     }
 
+    def list_shops(self) -> list[str]:
+        """Every shop domain the ML role can see, via `ml_products`.
+
+        The nightly needs to know *what to refit* without being told; this is
+        the enumeration half of contracts/requests-lane-c.md item 9, served by
+        Lane B's B6 grant (`grant select on public.ml_products`). A shop with a
+        synced catalog but no orders still appears here — the refit then finds
+        no history and honestly produces nothing, which is the right outcome
+        and a different failure than not knowing the shop exists.
+        """
+        client = self._get_client()
+        domains: list[str] = []
+        seen: set[str] = set()
+        offset = 0
+        while True:
+            resp = client.get(
+                f"{self._base}/ml_products",
+                params={
+                    "select": "shop_domain",
+                    "order": "shop_domain",
+                    "limit": str(_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            for row in batch:
+                domain = row.get("shop_domain")
+                if domain and domain not in seen:
+                    seen.add(domain)
+                    domains.append(domain)
+            if len(batch) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+        return domains
+
     def order_days(self, shop_domain: str) -> pd.DataFrame:
         client = self._get_client()
         pages: list[pd.DataFrame] = []

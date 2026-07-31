@@ -14,13 +14,16 @@ Behavior by environment:
   changes silently altered model behavior). Exit code 1 on any failure: a
   red nightly is the alarm, not a log line.
 
-- **With `SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`** (once Lane B's B6
-  lands): additionally pull every shop's `ml_product_days`, refit the
-  champions on real data, and emit contract rows to `out/` as JSON artifacts
-  (`elasticity_fits.json`, `expected_bands.json`, `model_runs.json`).
-  Writing them INTO the tables needs a write-scoped key from Lane B
-  (requested in contracts/requests-lane-c.md); until then the GitHub Action
-  uploads the artifacts and Lane B can load them.
+- **With `SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`** (Lane B's B6): pull
+  every readable shop's `ml_product_days`, refit the champions on real data,
+  and emit contract rows to `out/` as JSON artifacts.
+
+- **Additionally with `PRICEFLAG_APP_URL` + `ML_INGEST_SECRET`** (C9): post
+  those rows to Lane B's `POST /api/ml/ingest`, which holds the service role
+  and does the writing. Lane C's own database role stays read-only. The
+  golden-harness verdict is what the post carries as `gate_passed`, so a red
+  harness records the run and stores nothing — a failing nightly cannot
+  deploy a model.
 
 The model_runs rows record gate results for CHALLENGERS TOO — R28 wants
 failed challengers recorded, not discarded (status='rejected').
@@ -37,6 +40,19 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from priceflag_ml import harness  # noqa: E402
+
+
+# How far ahead the nightly writes baseline bands. The evaluator judges
+# yesterday, so it only ever needs one; two weeks means a nightly that fails
+# to run does not immediately leave the evaluator band-less (it falls back to
+# Lane B's bracket math, which is safe but blunter).
+BAND_HORIZON_DAYS = 14
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _approx_equal(a, b, tol=1e-9) -> bool:
@@ -104,20 +120,109 @@ def run_gates(checks=None) -> tuple[list[dict], bool]:
     return rows, all_ok
 
 
-def refit_real_stores(out_dir: Path) -> None:
-    """Real-data leg — runs only when read credentials exist (B6)."""
+def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict) -> bool:
+    """Real-data leg — runs only when read credentials exist (B6).
+
+    Refits every readable shop, writes the contract rows to `out/` as
+    artifacts, and — when `ML_INGEST_SECRET` + `PRICEFLAG_APP_URL` are also
+    configured — posts them to Lane B's `POST /api/ml/ingest`, which holds the
+    service role and does the actual writing. Lane C never holds a write
+    credential.
+
+    `gates_ok` carries the golden-harness verdict into `model_run.gate_passed`.
+    That coupling is the point of the sprint: the models being posted are the
+    ones that just re-proved themselves against the incumbent on golden data
+    this run. If any gate failed, every run is posted with `gate_passed=False`
+    — recorded in the registry, rows discarded (R28). A red nightly must not be
+    able to deploy anything.
+
+    Returns True if nothing went wrong that should turn the nightly red. A shop
+    that yields no rows is not a failure; a shop whose post was refused is.
+    """
+    from priceflag_ml import elasticity, forecaster  # noqa: PLC0415
     from priceflag_ml.data import SupabaseSource  # noqa: PLC0415
+    from priceflag_ml.ingest import IngestClient  # noqa: PLC0415
 
     src = SupabaseSource.from_env()
-    print("real-data refit: credentials found, but shop enumeration needs Lane B's")
-    print("shops listing surface — recorded in contracts/requests-lane-c.md; skipping.")
-    # Wire per-shop refit + gate here when ml_products/shops enumeration is
-    # readable by the ML role (B6). The single-shop path is:
-    #   orders = src.order_days(shop_domain)
-    #   fits   = elasticity.fit_store(orders)  -> fits_contract_rows(...)
-    #   bands  = forecaster.CleanLevelBaseline per SKU -> bands_contract_rows(...)
-    # gated by run_c2/run_c3 style comparisons before anything is emitted.
-    _ = src, out_dir
+    client = IngestClient.from_env_or_none()
+    if client is None:
+        print("real-data refit: no ML_INGEST_SECRET/PRICEFLAG_APP_URL — artifacts only, nothing posted.")
+
+    shops = src.list_shops()
+    print(f"real-data refit: {len(shops)} shop(s) readable.")
+    generated_at = _utc_now_iso()
+    all_fits: list[dict] = []
+    all_bands: list[dict] = []
+    ok = True
+
+    for shop_domain in shops:
+        orders = src.order_days(shop_domain)
+        if orders.empty:
+            print(f"  {shop_domain}: no order history readable — nothing to fit (not a failure).")
+            continue
+
+        fits = elasticity.fit_store(orders)
+        window_start = str(orders["date"].min().date())
+        window_end = str(orders["date"].max().date())
+        fit_rows = elasticity.fits_contract_rows(
+            fits, shop_domain=shop_domain, fitted_at=generated_at,
+            window_start=window_start, window_end=window_end,
+        )
+
+        band_rows: list[dict] = []
+        for sku, history in orders.groupby("sku", sort=True):
+            forecast = _forecast_one(forecaster, history)
+            if forecast is None:
+                continue
+            band_rows.extend(
+                forecaster.bands_contract_rows(
+                    forecast, shop_domain=shop_domain, variant_gid=str(sku), generated_at=generated_at
+                )
+            )
+
+        all_fits.extend(fit_rows)
+        all_bands.extend(band_rows)
+        print(f"  {shop_domain}: {len(fit_rows)} fit(s), {len(band_rows)} band row(s) over {window_start}..{window_end}")
+
+        if client is None:
+            continue
+
+        # One request per kind: the endpoint records one model_run per request,
+        # and mixing an elasticity fit set with a band set into a single run
+        # would make the registry unable to say which surface was deployed.
+        for kind, version, incumbent, fit_payload, band_payload in (
+            ("elasticity", elasticity.MODEL_VERSION, "bracket-elasticity", fit_rows, []),
+            ("baseline", forecaster.MODEL_VERSION, "bracket-band", [], band_rows),
+        ):
+            if not fit_payload and not band_payload and gates_ok:
+                continue
+            result = client.post_run(
+                shop_domain=shop_domain, kind=kind, model_version=version,
+                gate_passed=gates_ok, incumbent_version=incumbent,
+                metrics=gate_metrics.get(version, {}), fits=fit_payload, bands=band_payload,
+                notes=f"nightly refit over {window_start}..{window_end}",
+            )
+            print(f"    -> {kind}: {result.describe()}")
+            if result.is_error:
+                ok = False
+
+    (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
+    (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
+    return ok
+
+
+def _forecast_one(forecaster, history):
+    """One SKU's baseline bands, or None when its history cannot support them.
+
+    A SKU that cannot be forecast honestly produces no band, and the evaluator
+    falls back to Lane B's bracket band for it. That is the designed fallback —
+    far better than emitting a wide band that looks like a measurement."""
+    try:
+        model = forecaster.CleanLevelBaseline().fit(history.sort_values("date"))
+        return model.forecast(BAND_HORIZON_DAYS)
+    except (ValueError, IndexError, KeyError) as exc:
+        print(f"    (no band for {history['sku'].iloc[0]}: {exc})")
+        return None
 
 
 def main() -> int:
@@ -126,9 +231,11 @@ def main() -> int:
     rows, ok = run_gates()
     (out_dir / "model_runs.json").write_text(json.dumps(rows, indent=2, default=str))
     if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ML_READONLY_KEY"):
-        refit_real_stores(out_dir)
+        metrics = {row["model_version"]: row["metrics"] for row in rows}
+        # `ok` is passed as gate_passed: a red golden harness cannot deploy.
+        ok &= refit_real_stores(out_dir, gates_ok=ok, gate_metrics=metrics)
     else:
-        print("no Supabase credentials: golden-mode gates only (expected until B6).")
+        print("no Supabase credentials: golden-mode gates only.")
     print(f"nightly {'GREEN' if ok else 'RED'}; model_runs -> {out_dir / 'model_runs.json'}")
     return 0 if ok else 1
 

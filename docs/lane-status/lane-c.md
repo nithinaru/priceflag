@@ -4,6 +4,50 @@
 Lane D's `docs/QA_REPORT.md` and Lane B's shipped `/api/ml/ingest` opened a
 second round — C8 landed, C9–C11 in flight.
 
+## C9 — The write path is closed: the nightly posts what it fits ✅ (2026-07-30)
+
+`contracts/requests-lane-c.md` item 9 asked for two things. Lane B delivered
+both, so the loop is now closed end to end:
+
+- **Enumeration** — `SupabaseSource.list_shops()` reads `ml_products` (B6
+  granted `select` to the ML role). The nightly no longer needs to be told
+  which shops exist.
+- **A write path** — `POST /api/ml/ingest`. Lane B built the endpoint rather
+  than issuing a write key, which is the better half of what I asked for:
+  Lane C's role stays read-only and every row reaches Postgres by being
+  validated and accepted by code holding the service role.
+
+`priceflag_ml/ingest.py` (`IngestClient`) posts fits and bands; `nightly.py`'s
+`refit_real_stores()` now actually refits — per shop: `elasticity.fit_store()`
+→ `fits_contract_rows()`, and `CleanLevelBaseline` per SKU →
+`bands_contract_rows()` at a 14-day horizon — then posts **one request per
+kind**, because the endpoint records one `model_runs` row per request and a
+mixed payload would leave the registry unable to say which surface deployed.
+
+Three properties this client is built around, all tested:
+
+1. **A red harness cannot deploy.** The golden gate verdict is what the post
+   carries as `gate_passed`. If any champion stopped beating its incumbent
+   this run, every post goes out with `gate_passed=false` — recorded in
+   `model_runs`, rows discarded (R28). Rows are also stripped client-side, so
+   a losing run does not even offer data to write.
+2. **No silent truncation.** Over 20 000 rows the client raises instead of
+   chunking. Writes are all-or-nothing per request; half a band set in the
+   table is worse than none, because the evaluator reads the half that landed
+   and believes it is whole.
+3. **No automatic retry.** A POST that times out after the server committed is
+   the same crash window Lane D fuzzed on the price writer. Fits and bands are
+   upserted so a retry would not corrupt them, but it would mint a second
+   `model_runs` row claiming the same work. One attempt, then a red nightly.
+
+A shop with a synced catalogue and no orders produces nothing and is **not** a
+failure — the evaluator falls back to Lane B's bracket band for it. A shop
+whose post is refused **is** a failure and turns the run red.
+
+`ml-nightly.yml` now passes `PRICEFLAG_APP_URL` + `ML_INGEST_SECRET` (already
+present in Lane B's `.env.example`). Both absent → artifacts only, exactly as
+before; nothing about golden-mode behaviour changed.
+
 ## C8 — The recorded incumbent scores are still valid ✅ (2026-07-30)
 
 QA_REPORT §9 lists "whether Lane C's recorded incumbent scores are still
