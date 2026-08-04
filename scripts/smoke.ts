@@ -3723,6 +3723,27 @@ async function testAdapters(): Promise<void> {
       }
     });
 
+    await test('the server role can operate the app but cannot rewrite the journal', async () => {
+      const { rows } = await postgres.query<{
+        shops_readable: boolean;
+        journal_insertable: boolean;
+        journal_updatable: boolean;
+        journal_deletable: boolean;
+      }>(
+        `select
+           has_table_privilege('service_role', 'public.shops', 'SELECT') as shops_readable,
+           has_table_privilege('service_role', 'public.journal_entries', 'INSERT') as journal_insertable,
+           has_table_privilege('service_role', 'public.journal_entries', 'UPDATE') as journal_updatable,
+           has_table_privilege('service_role', 'public.journal_entries', 'DELETE') as journal_deletable`,
+      );
+      const permission = rows[0];
+      if (permission === undefined) throw new Error('Postgres did not return the service-role privileges');
+      assert(permission.shops_readable, 'service_role cannot read the shop it authenticated');
+      assert(permission.journal_insertable, 'service_role cannot append to the price journal');
+      assert(!permission.journal_updatable, 'service_role can rewrite price-journal history');
+      assert(!permission.journal_deletable, 'service_role can delete price-journal history outside compliance purge');
+    });
+
     await test('the ML reader cannot select the encrypted Shopify token', async () => {
       const { rows } = await postgres.query<{
         token_readable: boolean;
