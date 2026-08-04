@@ -6,6 +6,7 @@ import { Modal } from "@/components/ui/modal";
 import { useToast } from "@/components/ui/toast";
 import { IconUndo } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
+import { authenticatedFetch } from "@/components/lib/shopify-fetch";
 
 /**
  * The undo. It is on every screen where a change is live, because the merchant
@@ -140,7 +141,7 @@ async function rollback(
   }
 
   try {
-    const response = await fetch(`/api/rollouts/${rolloutId}/rollback`, {
+    const response = await authenticatedFetch(`/api/rollouts/${rolloutId}/rollback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: "Put back from the rollout page" }),

@@ -9,10 +9,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getMode } from '@/lib/config';
+import { getMode, isProductionRuntime } from '@/lib/config';
 import { CONTRACT_VERSION, DEFAULT_HISTORY_DAYS } from '@/lib/contracts';
 import { staticShopDomain } from '@/lib/shopify/credentials';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
+import { resolveShopFromRequestOrCookie } from '@/lib/shopify/session';
 import { syncProgressFromRun } from '@/lib/sync';
 
 export const dynamic = 'force-dynamic';
@@ -22,15 +22,31 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const adapter = getAdapter();
 
   let shopDomain: string | null = null;
-  try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
-  } catch {
-    shopDomain = staticShopDomain();
-  }
-
-  if (shopDomain === null && getMode() === 'demo') {
+  if (getMode() === 'demo') {
+    // The demo adapter holds exactly one seeded shop — no tenancy to protect.
     const shops = await adapter.listShops();
     shopDomain = shops[0]?.shop_domain ?? null;
+  } else {
+    // Session token or signed pf_shop cookie only. Never "first shop in the
+    // table" — sync progress names another merchant's store otherwise.
+    try {
+      shopDomain = resolveShopFromRequestOrCookie(request).shopDomain;
+    } catch {
+      if (isProductionRuntime()) {
+        return NextResponse.json(
+          {
+            error: {
+              code: 'unauthenticated',
+              message: 'Open Priceflag from your Shopify admin to see sync progress.',
+              retryable: false,
+              details: null,
+            },
+          },
+          { status: 401 },
+        );
+      }
+      shopDomain = staticShopDomain();
+    }
   }
 
   const shop = shopDomain === null ? null : await adapter.getShopByDomain(shopDomain);

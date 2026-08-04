@@ -19,6 +19,7 @@ import {
   exchangeCodeForToken,
   missingScopes,
   normalizeShopDomain,
+  OAUTH_HOST_COOKIE,
   OAUTH_STATE_COOKIE,
   postInstallUrl,
   verifyOAuthState,
@@ -103,8 +104,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     ...(existing === null ? {} : { name: existing.name ?? undefined }),
   });
 
-  const response = NextResponse.redirect(postInstallUrl(shop));
-  // The nonce is single-use.
+  // TODO(post-install): webhook registration + initial sync kickoff land here
+  // (Sprint 3/4 wiring).
+
+  // Installs that started inside the Shopify admin land back inside it; the
+  // stashed host cookie is the signal (set by `GET /api/auth`).
+  const embeddedHost = request.cookies.get(OAUTH_HOST_COOKIE)?.value ?? null;
+  const response = NextResponse.redirect(postInstallUrl(shop, embeddedHost));
+  // The nonce is single-use, and so is the stashed host.
   response.cookies.delete(OAUTH_STATE_COOKIE);
+  response.cookies.delete(OAUTH_HOST_COOKIE);
   return response;
 }

@@ -112,6 +112,81 @@ export function verifySessionToken(
   return { shopDomain, claims: claims as SessionTokenClaims };
 }
 
+/**
+ * The `pf_shop` session cookie: `{shop_domain}.{expiry}.{sig}`.
+ *
+ * Session tokens live ~1 minute, which is fine for fetches App Bridge can attach
+ * a header to — but a server-rendered navigation and a CSV download link cannot
+ * carry an Authorization header. The cookie is the signed, longer-lived form of
+ * the same assertion, minted only after a session token has been verified
+ * (`POST /api/auth/session`). SameSite=None because it must arrive inside the
+ * Shopify admin iframe.
+ */
+export const SHOP_COOKIE = 'pf_shop';
+export const SHOP_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+export function signShopCookie(
+  shopDomain: string,
+  options: { clientSecret?: string; now?: Date } = {},
+): string {
+  const clientSecret = options.clientSecret ?? requireEnv('SHOPIFY_API_SECRET');
+  const expiry =
+    Math.floor((options.now ?? new Date()).getTime() / 1000) + SHOP_COOKIE_MAX_AGE_SECONDS;
+  const payload = `${shopDomain}.${expiry}`;
+  const sig = createHmac('sha256', clientSecret).update(payload, 'utf8').digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+/** The shop domain a cookie value authorises, or `null`. Never throws. */
+export function verifyShopCookie(
+  value: string,
+  options: { clientSecret?: string; now?: Date } = {},
+): string | null {
+  const clientSecret = options.clientSecret ?? env('SHOPIFY_API_SECRET');
+  if (clientSecret === undefined) return null;
+
+  // Parse from the right: the shop domain contains dots, the expiry and the
+  // base64url signature never do.
+  const sigIndex = value.lastIndexOf('.');
+  if (sigIndex === -1) return null;
+  const sig = value.slice(sigIndex + 1);
+  const payload = value.slice(0, sigIndex);
+  const expIndex = payload.lastIndexOf('.');
+  if (expIndex === -1) return null;
+  const expiryRaw = payload.slice(expIndex + 1);
+  if (!/^\d+$/.test(expiryRaw)) return null;
+
+  const expected = createHmac('sha256', clientSecret).update(payload, 'utf8').digest('base64url');
+  if (!safeEqual(expected, sig)) return null;
+
+  const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
+  if (Number(expiryRaw) < nowSeconds) return null;
+
+  try {
+    return normalizeShopDomain(payload.slice(0, expIndex));
+  } catch {
+    return null;
+  }
+}
+
+/** The raw `pf_shop` cookie value from a request, unverified. */
+export function shopCookieFromRequest(request: Request): string | null {
+  const header = request.headers.get('cookie');
+  if (header === null) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== SHOP_COOKIE) continue;
+    const raw = part.slice(eq + 1).trim();
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return null;
+}
+
 /** `Authorization: Bearer <token>` on requests from the embedded admin. */
 export function sessionTokenFromRequest(request: Request): string | null {
   const header = request.headers.get('authorization');
@@ -146,6 +221,42 @@ export function resolveShopFromRequest(
   const shop = new URL(request.url).searchParams.get('shop');
   if (shop === null) {
     throw new ShopifyAuthError('invalid_shop_domain', 'no session token and no ?shop= parameter');
+  }
+  return { shopDomain: normalizeShopDomain(shop), source: 'query' };
+}
+
+/**
+ * Like `resolveShopFromRequest`, but also accepts the signed `pf_shop` cookie.
+ *
+ * The cookie ranks below a session token (the token is fresher and issued by
+ * Shopify directly) and above the dev-only `?shop=` fallback. This is what API
+ * routes use: header-carrying fetches present the token, cookie-only requests
+ * (SSR navigations, `<a href>` downloads) present the cookie.
+ */
+export function resolveShopFromRequestOrCookie(
+  request: Request,
+  options: { allowQueryParam?: boolean; now?: Date } = {},
+): { shopDomain: string; source: 'session_token' | 'shop_cookie' | 'query' } {
+  const token = sessionTokenFromRequest(request);
+  if (token !== null) {
+    return { shopDomain: verifySessionToken(token, { now: options.now }).shopDomain, source: 'session_token' };
+  }
+
+  const cookie = shopCookieFromRequest(request);
+  if (cookie !== null) {
+    const shopDomain = verifyShopCookie(cookie, { now: options.now });
+    if (shopDomain !== null) return { shopDomain, source: 'shop_cookie' };
+  }
+
+  const isProduction = env('VERCEL_ENV') === 'production' || env('NODE_ENV') === 'production';
+  const allowQuery = options.allowQueryParam ?? !isProduction;
+  if (!allowQuery) {
+    throw new ShopifyAuthError('invalid_hmac', 'no session token and no valid shop cookie');
+  }
+
+  const shop = new URL(request.url).searchParams.get('shop');
+  if (shop === null) {
+    throw new ShopifyAuthError('invalid_shop_domain', 'no session token, shop cookie, or ?shop= parameter');
   }
   return { shopDomain: normalizeShopDomain(shop), source: 'query' };
 }

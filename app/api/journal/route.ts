@@ -10,9 +10,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
+import { getMode, isProductionRuntime } from '@/lib/config';
 import { journalToCsv, toJournalContract } from '@/lib/engine/journal';
 import { staticShopDomain } from '@/lib/shopify/credentials';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
+import { resolveShopFromRequestOrCookie } from '@/lib/shopify/session';
 import type { JournalSource } from '@/lib/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -25,14 +26,33 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const params = request.nextUrl.searchParams;
 
   let shopDomain: string | null;
-  try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
-  } catch {
-    shopDomain = staticShopDomain();
-  }
-  if (shopDomain === null) {
+  if (getMode() === 'demo') {
+    // The demo adapter holds exactly one seeded shop — no tenancy to protect.
     const shops = await adapter.listShops();
     shopDomain = shops[0]?.shop_domain ?? null;
+  } else {
+    // Real mode: a session token or the signed pf_shop cookie names the shop.
+    // (The cookie matters here — the CSV export is a plain link and cannot carry
+    // an Authorization header.) No "first shop in the table" fallback, ever:
+    // that would hand one merchant another merchant's price history.
+    try {
+      shopDomain = resolveShopFromRequestOrCookie(request).shopDomain;
+    } catch {
+      if (isProductionRuntime()) {
+        return NextResponse.json(
+          {
+            error: {
+              code: 'unauthenticated',
+              message: 'Open Priceflag from your Shopify admin to view the price journal.',
+              retryable: false,
+              details: null,
+            },
+          },
+          { status: 401 },
+        );
+      }
+      shopDomain = staticShopDomain();
+    }
   }
 
   const shop = shopDomain === null ? null : await adapter.getShopByDomain(shopDomain);

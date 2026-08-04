@@ -13,6 +13,7 @@ import {
   buildAuthorizeUrl,
   createOAuthState,
   normalizeShopDomain,
+  OAUTH_HOST_COOKIE,
   OAUTH_STATE_COOKIE,
   ShopifyAuthError,
 } from '@/lib/shopify/oauth';
@@ -94,6 +95,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     path: '/',
     maxAge: 600,
   });
+
+  // Preserve the embedded context through the round-trip: `host` is present only
+  // when the install started inside the Shopify admin, and the callback uses it
+  // to send the merchant back there. A separate cookie, not folded into `state`,
+  // so the nonce check stays exactly what it is.
+  const host = request.nextUrl.searchParams.get('host');
+  if (host !== null && host !== '') {
+    response.cookies.set(OAUTH_HOST_COOKIE, host, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: request.nextUrl.protocol === 'https:',
+      path: '/',
+      maxAge: 600,
+    });
+  } else {
+    response.cookies.delete(OAUTH_HOST_COOKIE);
+  }
 
   return response;
 }

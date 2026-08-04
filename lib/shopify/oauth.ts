@@ -63,6 +63,13 @@ export function verifyOAuthState(received: string | null, expected: string | und
 
 export const OAUTH_STATE_COOKIE = 'priceflag_oauth_state';
 
+/**
+ * Carries the `host` param Shopify sent when the install started from inside the
+ * admin. Its presence at callback time is what tells us to land the merchant
+ * back in the embedded app rather than on our own origin.
+ */
+export const OAUTH_HOST_COOKIE = 'priceflag_oauth_host';
+
 export function buildAuthorizeUrl(options: {
   shop: string;
   state: string;
@@ -160,9 +167,23 @@ export function missingScopes(granted: string, required: readonly string[] = get
   return required.filter((scope) => !have.has(scope));
 }
 
-/** Where to send the merchant after a successful install. */
-export function postInstallUrl(shop: string): string {
-  return `${getAppUrl()}/?shop=${encodeURIComponent(shop)}&installed=1`;
+/**
+ * Where to send the merchant after a successful install.
+ *
+ * An embedded install (Shopify sent a `host` param) must land back inside the
+ * Shopify admin — redirecting to our own origin would leave the merchant on a
+ * bare top-level page with no App Bridge and no session. The admin then reloads
+ * the app iframe with fresh launch params. The store handle is the myshopify
+ * subdomain.
+ */
+export function postInstallUrl(shop: string, host?: string | null): string {
+  const domain = normalizeShopDomain(shop);
+  if (host) {
+    const handle = domain.replace(/\.myshopify\.com$/, '');
+    const clientId = requireEnv('SHOPIFY_API_KEY');
+    return `https://admin.shopify.com/store/${handle}/apps/${clientId}`;
+  }
+  return `${getAppUrl()}/?shop=${encodeURIComponent(domain)}&installed=1`;
 }
 
 /** The Admin GraphQL endpoint for a shop, at the pinned API version. */

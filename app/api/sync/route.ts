@@ -11,10 +11,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getMode } from '@/lib/config';
+import { getMode, isProductionRuntime } from '@/lib/config';
 import { ensureStaticShop, resolveShopCredentials, CredentialError } from '@/lib/shopify/credentials';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
+import { resolveShopFromRequestOrCookie } from '@/lib/shopify/session';
 import { ShopifyAuthError } from '@/lib/shopify/oauth';
 
 export const dynamic = 'force-dynamic';
@@ -42,9 +42,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   let shopDomain: string;
   try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
+    shopDomain = resolveShopFromRequestOrCookie(request).shopDomain;
   } catch (cause) {
     if (cause instanceof ShopifyAuthError) {
+      // Production refuses to guess: a sync writes a catalog into whichever shop
+      // this resolves to. The static-token fallback is a dev/staging convenience.
+      if (isProductionRuntime()) {
+        return fail('unauthenticated', 'Open Priceflag from your Shopify admin to start a sync.', 401);
+      }
       const { staticShopDomain } = await import('@/lib/shopify/credentials');
       const fallback = staticShopDomain();
       if (fallback === null) return fail(cause.code, 'Could not work out which store this request is for.', 401);

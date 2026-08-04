@@ -13,27 +13,50 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
+import { getMode, isProductionRuntime } from '@/lib/config';
 import { rollbackRollout, verifyRollback } from '@/lib/pricing/writer';
 import { AdminGraphqlClient } from '@/lib/shopify/client';
 import { credentialsFromShop, staticShopDomain } from '@/lib/shopify/credentials';
 import { notify } from '@/lib/notify';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
+import { resolveShopFromRequestOrCookie } from '@/lib/shopify/session';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-async function resolveShopDomain(request: NextRequest): Promise<string | null> {
+/** Sentinel: the request is unidentified in production and must be refused. */
+const UNAUTHENTICATED = Symbol('unauthenticated');
+
+function unauthenticatedResponse(): NextResponse {
+  return NextResponse.json(
+    {
+      error: {
+        code: 'unauthenticated',
+        message: 'Open Priceflag from your Shopify admin to use the kill switch.',
+        retryable: false,
+        details: null,
+      },
+    },
+    { status: 401 },
+  );
+}
+
+function resolveShopDomain(request: NextRequest): string | null | typeof UNAUTHENTICATED {
   try {
-    return resolveShopFromRequest(request).shopDomain;
+    return resolveShopFromRequestOrCookie(request).shopDomain;
   } catch {
+    // This route writes prices, so in real-mode production an unidentified
+    // request is refused outright. Demo mode and local dev keep the static-shop
+    // fallback so the switch stays exercisable without an admin iframe.
+    if (getMode() === 'real' && isProductionRuntime()) return UNAUTHENTICATED;
     return staticShopDomain();
   }
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const adapter = getAdapter();
-  const shopDomain = await resolveShopDomain(request);
+  const shopDomain = resolveShopDomain(request);
+  if (shopDomain === UNAUTHENTICATED) return unauthenticatedResponse();
   const shop = shopDomain === null ? null : await adapter.getShopByDomain(shopDomain);
 
   if (shop === null) {
@@ -113,7 +136,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 /** Release the switch. Deliberately does not resume anything. */
 export async function DELETE(request: NextRequest): Promise<NextResponse> {
   const adapter = getAdapter();
-  const shopDomain = await resolveShopDomain(request);
+  const shopDomain = resolveShopDomain(request);
+  if (shopDomain === UNAUTHENTICATED) return unauthenticatedResponse();
   const shop = shopDomain === null ? null : await adapter.getShopByDomain(shopDomain);
 
   if (shop === null) {

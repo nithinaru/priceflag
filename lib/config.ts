@@ -56,6 +56,15 @@ export function isDemoMode(): boolean {
   return getMode() === 'demo';
 }
 
+/**
+ * True on the production deployment (and in `next build`/`next start` locally).
+ * The line that matters: production refuses the unauthenticated fallbacks that
+ * keep local development ergonomic.
+ */
+export function isProductionRuntime(): boolean {
+  return env('VERCEL_ENV') === 'production' || env('NODE_ENV') === 'production';
+}
+
 export function hasSupabaseConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && env('SUPABASE_SERVICE_ROLE_KEY') !== undefined;
 }

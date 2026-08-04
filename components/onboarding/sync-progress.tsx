@@ -5,6 +5,7 @@ import { cn } from "@/components/cn";
 import { Button, ButtonLink, Notice } from "@/components/ui";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf, formatUnits } from "@/components/format";
+import { authenticatedFetch } from "@/components/lib/shopify-fetch";
 import type { SyncProgress } from "@/lib/contracts";
 
 /**
@@ -44,7 +45,7 @@ export function SyncProgressPanel({
     if (progress.stage === "done" || progress.stage === "error") return;
 
     const timer = window.setInterval(() => {
-      void fetch("/api/sync/status")
+      void authenticatedFetch("/api/sync/status")
         .then((response) => (response.ok ? response.json() : null))
         .then((body: SyncProgress | null) => {
           if (body) setProgress(body);

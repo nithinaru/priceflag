@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { useToast } from "@/components/ui/toast";
 import { IconAlert } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
+import { authenticatedFetch } from "@/components/lib/shopify-fetch";
 
 /**
  * The store-level kill switch (R21): put back every price Priceflag ever changed,
@@ -151,7 +152,7 @@ async function engage(
   }
 
   try {
-    const response = await fetch("/api/kill-switch", {
+    const response = await authenticatedFetch("/api/kill-switch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: "Kill switch from the overview" }),
