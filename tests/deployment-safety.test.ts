@@ -262,10 +262,14 @@ assert.doesNotMatch(mlRoleHardening, /not database\.datistemplate/);
 assert.match(mlRoleHardening, /create schema if not exists priceflag_internal authorization postgres/);
 assert.match(mlRoleHardening, /pf_normalize_extension_privileges\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
 assert.match(mlRoleHardening, /pg_net 0\.12\.0 or newer is required/);
-assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements from public/);
-assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements_info from public/);
+assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements[\s\S]*from public, priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements_info[\s\S]*from public, priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /revoke all privileges on all tables in schema net from public/);
 assert.match(mlRoleHardening, /revoke all privileges on all routines in schema net from public/);
+assert.match(mlRoleHardening, /revoke all privileges on all tables in schema net[\s\S]*from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on all sequences in schema net[\s\S]*from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on all routines in schema net[\s\S]*from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on schema net from priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /supabase_functions_admin[\s\S]*authenticated[\s\S]*service_role/);
 assert.match(mlRoleHardening, /platform_role = 'postgres'[\s\S]*grant select, insert, update, delete on all tables/);
 assert.match(mlRoleHardening, /grant select, insert on net\.http_request_queue/);
@@ -284,7 +288,7 @@ assert.match(mlRoleHardening, /unexpected_column_privileges[\s\S]*INSERT,UPDATE,
 assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
 assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
 assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
-passed += 37;
+passed += 41;
 
 const migrationDirectory = resolve(process.cwd(), 'supabase/migrations');
 const unsafePgNetChanges = readdirSync(migrationDirectory)

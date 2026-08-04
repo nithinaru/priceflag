@@ -166,7 +166,8 @@ declare
   unsafe_extension_privileges integer;
 begin
   if to_regclass('extensions.pg_stat_statements') is not null then
-    revoke select on extensions.pg_stat_statements from public;
+    revoke select on extensions.pg_stat_statements
+      from public, priceflag_ml_readonly;
     foreach platform_role in array array['postgres', 'dashboard_user']
     loop
       if exists (select 1 from pg_roles where rolname = platform_role) then
@@ -179,7 +180,8 @@ begin
   end if;
 
   if to_regclass('extensions.pg_stat_statements_info') is not null then
-    revoke select on extensions.pg_stat_statements_info from public;
+    revoke select on extensions.pg_stat_statements_info
+      from public, priceflag_ml_readonly;
     foreach platform_role in array array['postgres', 'dashboard_user']
     loop
       if exists (select 1 from pg_roles where rolname = platform_role) then
@@ -219,6 +221,13 @@ begin
     revoke all privileges on all sequences in schema net from public;
     revoke all privileges on all routines in schema net from public;
     revoke all privileges on schema net from public;
+    revoke all privileges on all tables in schema net
+      from priceflag_ml_readonly;
+    revoke all privileges on all sequences in schema net
+      from priceflag_ml_readonly;
+    revoke all privileges on all routines in schema net
+      from priceflag_ml_readonly;
+    revoke all privileges on schema net from priceflag_ml_readonly;
 
     foreach platform_role in array array[
       'supabase_functions_admin', 'postgres', 'anon',
