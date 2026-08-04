@@ -250,6 +250,7 @@ const mlRoleHardening = readFileSync(
 assert.match(mlRoleHardening, /create role priceflag_ml_readonly nologin noinherit connection limit 0/);
 assert.match(mlRoleHardening, /alter role priceflag_ml_readonly nologin noinherit[\s\S]*connection limit 0/);
 assert.match(mlRoleHardening, /errcode = '42501'/);
+assert.match(mlRoleHardening, /revoke priceflag_ml_readonly from postgres/);
 assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*drain member sessions and remove memberships/);
 assert.match(mlRoleHardening, /Priceflag ML membership precheck v1 passed/);
 assert.match(mlRoleHardening, /drop policy if exists ml_readonly_select/);
@@ -261,7 +262,7 @@ assert.match(mlRoleHardening, /production design now reads through POST \/api\/m
 assert.doesNotMatch(mlRoleHardening, /alter role priceflag_ml_readonly login|password\s+'/i);
 assert.doesNotMatch(mlRoleHardening, /grant select .*priceflag_ml_readonly/i);
 assert.doesNotMatch(mlRoleHardening, /grant .*schema net|grant .*net\./i);
-passed += 13;
+passed += 14;
 
 const mlRoleLockout = readFileSync(
   resolve(process.cwd(), 'supabase/migrations/20260804193400_commit_ml_role_login_lockout.sql'),
