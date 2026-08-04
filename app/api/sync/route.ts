@@ -11,8 +11,9 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getMode, isProductionRuntime } from '@/lib/config';
+import { getAppUrl, getMode, isProductionRuntime } from '@/lib/config';
 import { ensureStaticShop, resolveShopCredentials, CredentialError } from '@/lib/shopify/credentials';
+import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
 import { resolveShopFromRequestOrCookie } from '@/lib/shopify/session';
 import { ShopifyAuthError } from '@/lib/shopify/oauth';
@@ -62,13 +63,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const shop = await adapter.getShopByDomain(shopDomain);
   if (shop === null) return fail('shop_not_connected', `${shopDomain} is not connected to Priceflag.`, 404);
 
+  let credentials;
   try {
     // Resolve credentials before starting, so a bad token fails immediately
     // rather than halfway through writing a catalog.
-    await resolveShopCredentials(adapter, shopDomain);
+    credentials = await resolveShopCredentials(adapter, shopDomain);
   } catch (cause) {
     if (cause instanceof CredentialError) return fail(cause.code, cause.message, 401);
     throw cause;
+  }
+
+  // Every manual sync is also a chance to converge webhook subscriptions — this
+  // is what heals a preview→production domain move without a reinstall.
+  // Non-fatal: a sync with stale webhooks is still a sync worth running.
+  let webhooks: 'ok' | 'error' = 'ok';
+  try {
+    await reconcileWebhooks(credentials, getAppUrl());
+  } catch (cause) {
+    webhooks = 'error';
+    console.error(
+      `[sync] webhook reconcile failed for ${shopDomain}: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
   }
 
   const url = new URL(request.url);
@@ -84,6 +100,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       progress: syncProgressFromRun(run),
       products: outcome.products,
       orders: outcome.orders,
+      webhooks,
     },
     { status: outcome.error === null ? 200 : 502 },
   );
