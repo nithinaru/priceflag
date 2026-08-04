@@ -3,18 +3,23 @@ import { pathToFileURL } from 'node:url';
 
 const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const DIAGNOSTIC_LINE = /(?:error|failed|failure|fatal|panic|migration|migrat|unhealthy|timed?\s*out|timeout|exited?|container|syntax|permission|does not exist|cannot|could not)/i;
-const SENSITIVE_ASSIGNMENT = /\b(?:anon(?:_key)?|service[_ -]?role(?:_key)?|secret(?:_key)?|publishable(?:_key)?|password|token|api[_ -]?key|jwt)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi;
+const SQL_FAILURE = /effect\/sql\/SqlError|failed to execute statement/i;
+const SENSITIVE_ASSIGNMENT = /\b(?:anon(?:[_ -]?key)?|service[_ -]?role(?:[_ -]?key)?|secret(?:[_ -]?key)?|publishable(?:[_ -]?key)?|password|token|api[_ -]?key|jwt)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi;
 const POSTGRES_CREDENTIALS = /\b(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
 const SUPABASE_KEY = /\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/gi;
 const LONG_TOKEN = /\b[A-Za-z0-9_+/=-]{80,}\b/g;
 
 export function sanitizeSupabaseStartLog(input) {
-  const lines = String(input)
+  const rawLines = String(input)
     .replaceAll('\r', '')
     .split('\n')
-    .map((line) => line.replace(ANSI_ESCAPE, ''))
-    .filter((line) => DIAGNOSTIC_LINE.test(line))
+    .map((line) => line.replace(ANSI_ESCAPE, ''));
+  const sqlFailureIndex = rawLines.findIndex((line) => SQL_FAILURE.test(line));
+  const selectedLines = sqlFailureIndex === -1
+    ? rawLines.filter((line) => DIAGNOSTIC_LINE.test(line))
+    : rawLines.slice(sqlFailureIndex);
+  const lines = selectedLines
     .map((line) => line
       .replace(POSTGRES_CREDENTIALS, '$1[REDACTED]@')
       .replace(JWT, '[REDACTED_JWT]')
@@ -32,7 +37,7 @@ export function sanitizeSupabaseStartLog(input) {
   for (const line of lines) {
     if (line.trim() !== '' && unique.at(-1) !== line) unique.push(line);
   }
-  return unique.slice(-120).join('\n');
+  return unique.slice(-220).join('\n');
 }
 
 function main() {

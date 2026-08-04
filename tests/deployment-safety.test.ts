@@ -263,11 +263,14 @@ async function verifyAttestation(): Promise<void> {
   const sanitized = sanitizer.sanitizeSupabaseStartLog([
     'API URL: http://127.0.0.1:54321',
     'service_role key: eyJabcdefghijk.abcdefghijklmnop.qrstuvwxyz12345',
+    'effect/sql/SqlError: Failed to execute statement',
+    'ordinary SQL context that must survive',
     'ERROR: migration 20260804180000 failed: token=very-secret-token',
     'could not connect to postgresql://postgres:database-password@127.0.0.1:54322/postgres',
     `fatal container output ${'a'.repeat(100)}`,
   ].join('\n'));
   assert.match(sanitized, /migration 20260804180000 failed/);
+  assert.match(sanitized, /ordinary SQL context that must survive/);
   assert.match(sanitized, /postgresql:\/\/\[REDACTED\]@127\.0\.0\.1/);
   assert.doesNotMatch(sanitized, /very-secret-token|database-password|eyJabcdefghijk|a{80}/);
   assert.doesNotMatch(sanitized, /API URL|service_role key/);
