@@ -286,14 +286,49 @@ async function verifyAttestation(): Promise<void> {
   assert.match(sanitized, /service_role key:\[REDACTED\]/);
   assert.doesNotMatch(sanitized, /very-secret-token|database-password|eyJabcdefghijk|a{80}/);
 
+  const privilegeDiagnosticUrl = pathToFileURL(
+    resolve(process.cwd(), 'scripts/ml-privilege-diagnostics.mjs'),
+  ).href;
+  const privilegeDiagnostic = (await import(privilegeDiagnosticUrl)) as {
+    buildDiagnosticMigration: (source: string) => string;
+    formatPrivilegeDiagnostics: (rows: Array<Record<string, unknown>>) => string;
+  };
+  const diagnosticMigration = privilegeDiagnostic.buildDiagnosticMigration(mlRoleHardening);
+  assert.match(diagnosticMigration, /if false and coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
+  assert.match(mlRoleHardening, /if coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
+  assert.throws(() => privilegeDiagnostic.buildDiagnosticMigration('select 1;'), /exactly one/);
+  const privilegeDescription = privilegeDiagnostic.formatPrivilegeDiagnostics([{
+    schema_name: 'public',
+    relation_name: 'example',
+    column_name: 'secret',
+    can_select: true,
+    can_insert: false,
+    can_update: true,
+    can_reference: false,
+  }]);
+  assert.equal(
+    privilegeDescription,
+    'Unexpected ML column privileges (1, maximum 30 shown):\npublic.example.secret [SELECT,UPDATE]',
+  );
+
   const productionWorkflow = readFileSync(
     resolve(process.cwd(), '.github/workflows/production-gates.yml'),
     'utf8',
   );
   assert.match(productionWorkflow, /supabase start --debug/);
   assert.match(productionWorkflow, /sanitize-supabase-start-log\.mjs/);
+  assert.match(productionWorkflow, /ml-privilege-diagnostics\.mjs prepare/);
+  assert.match(
+    productionWorkflow,
+    /SUPABASE_DB_URL="\$DB_URL" node scripts\/ml-privilege-diagnostics\.mjs inspect/,
+  );
+  assert.match(
+    productionWorkflow,
+    /PRICEFLAG_DIAGNOSTIC_ROOT="\$RUNNER_TEMP\/priceflag-supabase-diagnostic"/,
+  );
+  assert.match(productionWorkflow, /exit 1/);
   assert.doesNotMatch(productionWorkflow, /cat \"\$RUNNER_TEMP\/supabase-start\.log\"/);
-  passed += 7;
+  passed += 15;
 
   const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
   const guard = (await import(guardUrl)) as {
