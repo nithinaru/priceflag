@@ -6,10 +6,44 @@ import { MerchantApiError, merchantErrorResponse, readJson, resolveAuthenticated
 import { parseProposal, prepareForecast } from '@/lib/api/proposals';
 import { DEFAULT_HORIZON_DAYS } from '@/lib/contracts';
 import { normalizeStages, planRolloutVariants } from '@/lib/engine/rollout';
-import { exclusionReasonFor, type RolloutCreate } from '@/lib/types';
+import { buildRolloutView } from '@/lib/api/rollout-view';
+import { exclusionReasonFor, type RolloutCreate, type RolloutStatus } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+const STATUSES: readonly RolloutStatus[] = [
+  'draft',
+  'scheduled',
+  'running',
+  'paused',
+  'completed',
+  'rolled_back',
+  'cancelled',
+];
+
+export async function GET(request: Request): Promise<NextResponse> {
+  try {
+    const adapter = getAdapter();
+    const { shop } = await resolveAuthenticatedShop(request, adapter);
+    const requested = new URL(request.url).searchParams.getAll('status');
+    const invalid = requested.find((value) => !STATUSES.includes(value as RolloutStatus));
+    if (invalid !== undefined) {
+      throw new MerchantApiError('invalid_rollout_status', `“${invalid}” is not a rollout status.`, 400);
+    }
+    const rollouts = await adapter.listRollouts(
+      shop.id,
+      requested.length === 0 ? undefined : (requested as RolloutStatus[]),
+    );
+    const items = await Promise.all(rollouts.map((rollout) => buildRolloutView(adapter, rollout)));
+    return NextResponse.json(
+      { items, total: items.length },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
+  } catch (cause) {
+    return merchantErrorResponse(cause);
+  }
+}
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {

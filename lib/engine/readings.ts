@@ -92,8 +92,14 @@ export function rolloutHealth(
 export function healthSentence(health: RolloutHealth, decision: EvaluationDecision, streak = 0): string {
   switch (health) {
     case 'breaching':
+      if (decision === 'rollback') {
+        return 'Orders are below the range you set as acceptable. A rollback is being applied.';
+      }
+      if (decision === 'pause') {
+        return 'Orders are below the range you set as acceptable. Priceflag paused the rollout for your decision; no prices were restored automatically.';
+      }
       return streak >= 2
-        ? 'Orders are below the range you set as acceptable, for a second day. A rollback is being applied.'
+        ? 'Orders are below the range you set as acceptable for a second day. Priceflag will pause before any additional prices change.'
         : 'Orders are below the range you set as acceptable.';
     case 'watching':
       return 'Orders came in low yesterday. Nothing has changed yet — your guardrail needs more than one day before it acts.';

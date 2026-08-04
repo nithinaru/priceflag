@@ -2948,6 +2948,13 @@ async function testReadings(): Promise<void> {
     }
   });
 
+  await test('beta breach copy says pause, never automatic rollback', () => {
+    const sentence = healthSentence('breaching', 'pause', 2);
+    assert(sentence.includes('paused the rollout'), `pause is explicit: ${sentence}`);
+    assert(sentence.includes('no prices were restored automatically'), `no automatic write is explicit: ${sentence}`);
+    assert(!sentence.includes('rollback is being applied'), `does not claim a rollback: ${sentence}`);
+  });
+
   await test('unknown profit does not sum to zero', () => {
     const known = sumReadings([
       { actual_units: 10, actual_revenue_cents: 32000, actual_profit_cents: 20500 },

@@ -169,6 +169,16 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   no tenant data, Shopify credentials are stripped, unsupported fields are
   rejected, and notification/cost validation is covered. Local typecheck,
   production build, 138/138 smoke and 28/28 merchant API checks pass.
+- `2026-08-04T05:22:04Z` — `codex/prod-backend-safety` completed the remaining
+  safe beta read/control contracts: authenticated catalog, live overview,
+  rollout list, report, and draft/scheduled cancellation APIs. Cancellation is
+  confirmation-gated, tenant-scoped, lock-serialized and refuses any rollout
+  with price-write history; beta resume remains disabled so an external Shopify
+  edit cannot be overwritten. Shared breach copy now says pause-and-alert unless
+  an actual rollback decision exists. Local gates: typecheck, production build,
+  139/139 smoke, 31/31 merchant API, 51/51 demo integration, price-write,
+  webhook and ML-ingest suites all pass. Claude PR #1 remains unrevised and
+  unrebased, so integration and invite access remain closed.
 
 ## Current launch checklist
 
@@ -200,5 +210,10 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   call the PATCH routes with `authenticatedFetch` from the client and remove the
   cookie-authorized write path from `app/settings/actions.ts` and
   `app/products/actions.ts` after rebasing.
+- `2026-08-04T05:22:04Z` — Codex added bearer-only `GET /api/products`,
+  `GET /api/live`, `GET /api/rollouts`, `GET /api/rollouts/[id]/report`, and
+  `POST /api/rollouts/[id]/cancel`. Claude may use these instead of duplicating
+  rollout/readiness view logic, but must keep `resume: false` and must not create
+  a beta resume control for external-change pauses.
   Claude still owns App Bridge token attachment, real-mode page data, Partner
   app webhook registration/config, browser UX, and preview infrastructure.

@@ -1,22 +1,26 @@
 import { createHmac } from 'node:crypto';
 
 import { DemoAdapter, setAdapter } from '../lib/adapters';
-import { CONTRACT_VERSION, type Guardrails } from '../lib/contracts';
+import { CONTRACT_VERSION, type Guardrails, type RolloutReport } from '../lib/contracts';
 import { DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
 import { encryptSecret } from '../lib/crypto';
 import type { Rollout, RolloutVariant } from '../lib/types';
 import { POST as forecast } from '../app/api/forecast/route';
-import { POST as createRollout } from '../app/api/rollouts/route';
+import { GET as listRollouts, POST as createRollout } from '../app/api/rollouts/route';
 import { GET as getRollout } from '../app/api/rollouts/[id]/route';
 import { POST as confirmRollout } from '../app/api/rollouts/[id]/confirm/route';
 import { POST as pauseRollout } from '../app/api/rollouts/[id]/pause/route';
 import { POST as rollback } from '../app/api/rollouts/[id]/rollback/route';
+import { POST as cancelRollout } from '../app/api/rollouts/[id]/cancel/route';
+import { GET as getRolloutReport } from '../app/api/rollouts/[id]/report/route';
 import { GET as journal } from '../app/api/journal/route';
 import { POST as killSwitch, DELETE as releaseKillSwitch } from '../app/api/kill-switch/route';
 import { POST as sync } from '../app/api/sync/route';
 import { GET as syncStatus } from '../app/api/sync/status/route';
 import { PATCH as setCogs } from '../app/api/products/[variantId]/cogs/route';
+import { GET as listProducts } from '../app/api/products/route';
 import { GET as getShopSettings, PATCH as updateShopSettings } from '../app/api/shop/route';
+import { GET as getLive } from '../app/api/live/route';
 
 const API_KEY = 'merchant-api-test-key';
 const API_SECRET = 'merchant-api-test-secret';
@@ -264,6 +268,17 @@ test('every legacy merchant route rejects missing and forged session tokens', as
       patchRequest('/api/products/unknown/cogs?shop=' + DEMO_SHOP_DOMAIN, { cogs_cents: 100 }, bearer),
       { params: Promise.resolve({ variantId: 'unknown' }) },
     ),
+    (bearer?: string) => listProducts(authGet('/api/products?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => getLive(authGet('/api/live?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => listRollouts(authGet('/api/rollouts?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => cancelRollout(
+      request('/api/rollouts/unknown/cancel?shop=' + DEMO_SHOP_DOMAIN, { confirm: true }, bearer),
+      { params: Promise.resolve({ id: 'unknown' }) },
+    ),
+    (bearer?: string) => getRolloutReport(
+      authGet('/api/rollouts/unknown/report?shop=' + DEMO_SHOP_DOMAIN, bearer),
+      { params: Promise.resolve({ id: 'unknown' }) },
+    ),
   ];
   for (const call of calls) {
     const missing = await call();
@@ -271,6 +286,150 @@ test('every legacy merchant route rejects missing and forged session tokens', as
     assert(missing.status === 401, `missing token returned ${missing.status}`);
     assert(invalid.status === 401, `forged token returned ${invalid.status}`);
   }
+});
+
+test('catalog and live views ignore cross-shop query parameters', async () => {
+  const primaryCatalogResponse = await listProducts(
+    authGet('/api/products?only_repriceable=true&limit=2', token(DEMO_SHOP_DOMAIN)),
+  );
+  const primaryCatalog = await json(primaryCatalogResponse);
+  assert(primaryCatalogResponse.status === 200, `catalog returned ${primaryCatalogResponse.status}`);
+  assert(primaryCatalog.items.length === 2, 'catalog limit was not applied');
+  assert(primaryCatalog.items.every((product: { shop_id: string }) => product.shop_id === shopId), 'catalog mixed tenants');
+
+  const otherCatalog = await json(
+    await listProducts(authGet(`/api/products?shop=${DEMO_SHOP_DOMAIN}`, token(OTHER_SHOP))),
+  );
+  assert(otherCatalog.total === 0, 'cross-shop query parameter exposed the primary catalog');
+
+  const primaryLive = await json(await getLive(authGet('/api/live', token(DEMO_SHOP_DOMAIN))));
+  const otherLive = await json(
+    await getLive(authGet(`/api/live?shop=${DEMO_SHOP_DOMAIN}`, token(OTHER_SHOP))),
+  );
+  assert(typeof primaryLive.products_missing_cost === 'number', 'live view omitted readiness data');
+  assert(otherLive.rollouts.length === 0, 'cross-shop live view exposed a rollout');
+  assert(otherLive.skus_holding_priceflag_price === 0, 'cross-shop live view exposed a live price');
+
+  const invalidQuery = await listProducts(
+    authGet('/api/products?only_repriceable=yes', token(DEMO_SHOP_DOMAIN)),
+  );
+  assert(invalidQuery.status === 400, 'catalog accepted an invalid boolean query');
+});
+
+test('rollout listing and reports remain tenant-scoped', async () => {
+  const fixture = await createTestDraft();
+  const primaryResponse = await listRollouts(
+    authGet('/api/rollouts?status=draft', token(DEMO_SHOP_DOMAIN)),
+  );
+  const primary = await json(primaryResponse);
+  assert(primaryResponse.status === 200, `rollout list returned ${primaryResponse.status}`);
+  assert(
+    primary.items.some((item: { rollout: Rollout }) => item.rollout.id === fixture.rollout.id),
+    'token tenant rollout was missing from the list',
+  );
+
+  const other = await json(
+    await listRollouts(authGet(`/api/rollouts?shop=${DEMO_SHOP_DOMAIN}`, token(OTHER_SHOP))),
+  );
+  assert(other.total === 0, 'cross-shop query parameter exposed a rollout');
+
+  const crossReport = await getRolloutReport(
+    authGet(`/api/rollouts/${fixture.rollout.id}/report`, token(OTHER_SHOP)),
+    { params: Promise.resolve({ id: fixture.rollout.id }) },
+  );
+  assert(crossReport.status === 404, 'cross-shop report lookup did not return 404');
+  const pendingReport = await getRolloutReport(
+    authGet(`/api/rollouts/${fixture.rollout.id}/report`, token(DEMO_SHOP_DOMAIN)),
+    { params: Promise.resolve({ id: fixture.rollout.id }) },
+  );
+  const pendingBody = await json(pendingReport);
+  assert(pendingReport.status === 404, 'missing report did not return 404');
+  assert(pendingBody.error?.code === 'report_not_ready', 'missing report error code drifted');
+
+  const report: RolloutReport = {
+    contract_version: CONTRACT_VERSION,
+    rollout_id: fixture.rollout.id,
+    generated_at: new Date().toISOString(),
+    model_version: 'merchant-api-report-v1',
+    model_run_id: null,
+    window: { start_day: '2026-07-01', end_day: '2026-07-30', days: 30 },
+    predicted: {
+      expected: { units_change_pct: -5, revenue_delta_cents: 5000, profit_delta_cents: 3000 },
+      low: { units_change_pct: -12, revenue_delta_cents: 1000, profit_delta_cents: 200 },
+      high: { units_change_pct: 1, revenue_delta_cents: 9000, profit_delta_cents: 6000 },
+    },
+    realized: { units_change_pct: -4, revenue_delta_cents: 5600, profit_delta_cents: 3400 },
+    in_range: true,
+    elasticity_update: null,
+    narrative: 'The observed result stayed within the approved forecast range.',
+    per_variant: [],
+  };
+  await adapter.ingestModelRunAtomic({
+    shopId,
+    ingestKey: `merchant-report:${fixture.rollout.id}`,
+    run: {
+      kind: 'report',
+      model_version: report.model_version,
+      git_sha: null,
+      status: 'succeeded',
+      gate_passed: true,
+      incumbent_version: null,
+      metrics: {},
+      rows_written: 1,
+      notes: null,
+      error: null,
+    },
+    fits: [],
+    bands: [],
+    reports: [report],
+  });
+  const readyReport = await getRolloutReport(
+    authGet(`/api/rollouts/${fixture.rollout.id}/report`, token(DEMO_SHOP_DOMAIN)),
+    { params: Promise.resolve({ id: fixture.rollout.id }) },
+  );
+  const readyBody = await json(readyReport);
+  assert(readyReport.status === 200, `ready report returned ${readyReport.status}`);
+  assert(readyBody.rollout_id === fixture.rollout.id, 'report returned the wrong rollout');
+  assert(!Object.hasOwn(readyBody, 'shop_id'), 'report exposed database tenant metadata');
+  assert(!Object.hasOwn(readyBody, 'id'), 'report exposed database row metadata');
+  assert(!Object.hasOwn(readyBody, 'created_at'), 'report violated its frozen schema');
+});
+
+test('cancel requires confirmation and is forbidden after any price-write history', async () => {
+  const fixture = await createTestDraft();
+  const context = { params: Promise.resolve({ id: fixture.rollout.id }) };
+
+  const crossShop = await cancelRollout(
+    request(`/api/rollouts/${fixture.rollout.id}/cancel`, { confirm: true }, token(OTHER_SHOP)),
+    context,
+  );
+  assert(crossShop.status === 404, 'cross-shop cancellation did not return 404');
+  const unconfirmed = await cancelRollout(
+    request(`/api/rollouts/${fixture.rollout.id}/cancel`, {}, token(DEMO_SHOP_DOMAIN)),
+    context,
+  );
+  assert(unconfirmed.status === 400, 'unconfirmed cancellation was accepted');
+  const cancelled = await cancelRollout(
+    request(`/api/rollouts/${fixture.rollout.id}/cancel`, { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+    context,
+  );
+  const cancelledBody = await json(cancelled);
+  assert(cancelled.status === 200, `cancel returned ${cancelled.status}: ${JSON.stringify(cancelledBody)}`);
+  assert(cancelledBody.rollout.status === 'cancelled', 'draft did not become cancelled');
+  assert(cancelledBody.rollout.ended_reason === 'cancelled', 'cancel end reason was not recorded');
+
+  const unsafe = await createTestDraft();
+  const unsafeVariant = unsafe.variants[0];
+  assert(unsafeVariant !== undefined, 'unsafe cancellation fixture has no variant');
+  await adapter.updateRolloutVariant(unsafeVariant.id, { applied_at: new Date().toISOString() });
+  const unsafeResponse = await cancelRollout(
+    request(`/api/rollouts/${unsafe.rollout.id}/cancel`, { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+    { params: Promise.resolve({ id: unsafe.rollout.id }) },
+  );
+  const unsafeBody = await json(unsafeResponse);
+  assert(unsafeResponse.status === 409, 'write-history rollout was cancelled instead of requiring rollback');
+  assert(unsafeBody.error?.code === 'cancel_not_safe', 'unsafe cancel error code drifted');
+  assert((await adapter.getRollout(unsafe.rollout.id))?.status === 'draft', 'unsafe cancellation changed rollout state');
 });
 
 test('shop settings are token-scoped and never expose Shopify credentials', async () => {

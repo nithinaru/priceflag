@@ -45,27 +45,27 @@ Cross-cutting rules:
 | GET | `/api/auth` | Start Shopify OAuth (redirects) | B2 |
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
 | POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
-| GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | B4 |
+| GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | ✅ beta |
 | GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | ✅ beta |
 | PATCH | `/api/shop` | Update notification addresses | ✅ beta |
 | POST | `/api/sync` | Start (or resume) a sync | B3 |
 | GET | `/api/sync/status` | `sync_progress.schema.json` | B3 |
-| GET | `/api/products` | Paged catalog with search and filters | B3 |
+| GET | `/api/products` | Paged catalog with search and filters | ✅ beta |
 | PATCH | `/api/products/[variantId]/cogs` | Set or clear a unit cost | ✅ beta |
-| POST | `/api/forecast` | Dry-run forecast; writes nothing | B3 |
-| POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | B4 |
-| GET | `/api/rollouts` | List rollouts | B4 |
-| GET | `/api/rollouts/[id]` | Rollout with variants, readings and events | B4 |
-| POST | `/api/rollouts/[id]/confirm` | Explicitly confirm and start now or schedule | ✅ B4 |
-| POST | `/api/rollouts/[id]/pause` | Manually pause a running or scheduled rollout | ✅ B4 |
-| POST | `/api/rollouts/[id]/rollback` | One-click manual rollback | B4 |
-| POST | `/api/rollouts/[id]/cancel` | Cancel a draft or scheduled rollout | B4 |
-| POST | `/api/rollouts/[id]/resume` | Resume after an external-change pause | B4 |
+| POST | `/api/forecast` | Dry-run forecast; writes nothing | ✅ beta |
+| POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | ✅ beta |
+| GET | `/api/rollouts` | List rollouts | ✅ beta |
+| GET | `/api/rollouts/[id]` | Rollout with variants, readings and events | ✅ beta |
+| POST | `/api/rollouts/[id]/confirm` | Explicitly confirm and start now or schedule | ✅ beta |
+| POST | `/api/rollouts/[id]/pause` | Manually pause a running or scheduled rollout | ✅ beta |
+| POST | `/api/rollouts/[id]/rollback` | One-click manual rollback | ✅ beta |
+| POST | `/api/rollouts/[id]/cancel` | Cancel a draft or scheduled rollout | ✅ beta |
+| POST | `/api/rollouts/[id]/resume` | Resume after an external-change pause | — disabled for beta |
 | GET | `/api/journal` | Filterable price journal | B4 |
 | GET | `/api/journal.csv` | CSV export | B7 |
 | POST | `/api/kill-switch` | Revert everything Priceflag ever changed (R21) | B5 |
 | POST | `/api/cron/evaluate` | Evaluator tick. `Authorization: Bearer $CRON_SECRET` | B5 |
-| GET | `/api/rollouts/[id]/report` | `rollout_report.schema.json` | B6 |
+| GET | `/api/rollouts/[id]/report` | `rollout_report.schema.json` | ✅ beta |
 
 ### `GET /api/health` ✅
 
