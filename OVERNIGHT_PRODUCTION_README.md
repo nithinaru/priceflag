@@ -443,6 +443,28 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   remain open. Invite access stays closed; no merge, promotion, hosted database
   mutation or Shopify price write occurred.
 
+- `2026-08-04T18:20Z` — `claude/owner-launch-gates` rebased onto `a5f9ce9`
+  (announced ML-readiness commit) before ML configuration, per lane
+  instruction. DONE for the real-store nightly: GitHub Environment
+  `priceflag-ml-production` created to the guard's exact contract (custom
+  branch policy, allowlist exactly `main`); its five environment secrets set
+  without printing any value — `SUPABASE_URL`, `SUPABASE_ML_READONLY_KEY`
+  (normalized at set-time: dedicated `priceflag_ml_readonly` role confirmed,
+  password percent-encoded, `sslmode=require` appended), `ML_INGEST_SECRET`,
+  `VERCEL_TOKEN`, and a freshly generated `SUPABASE_ML_SENTINEL`. REMAINING
+  (owner-only): the three production database identity settings
+  (`app.priceflag_environment`, `app.priceflag_project_ref`,
+  `app.priceflag_ml_sentinel`) — an owner-run script is staged locally that
+  applies them from the local environment without echoing values; this lane
+  does not mutate the production database. NOTE: `ml-nightly.yml` at this
+  commit is schedule-only and gated `if: github.ref == 'refs/heads/main'` with
+  no `workflow_dispatch`, so the required "manual run with redacted evidence"
+  cannot exist before the candidate merges to `main`; the first scheduled
+  post-merge run (07:00 UTC) is the earliest possible proof, and
+  `verify_nightly_evidence.py` + the 30-day artifact provide the required
+  evidence trail. Invite access remains closed; nothing merged or promoted; no
+  production system mutated.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
