@@ -17,10 +17,13 @@ import { saveNotificationEmails } from "@/app/settings/actions";
 export function NotificationSettings({
   initialEmails,
   emailConfigured,
+  demoMode = true,
 }: {
   initialEmails: string[];
   /** Whether this deployment can actually send mail. */
   emailConfigured: boolean;
+  /** Defaults to the safe claim: never say "saved to your shop" unless told otherwise. */
+  demoMode?: boolean;
 }) {
   const [emails, setEmails] = useState<string[]>(
     initialEmails.length > 0 ? initialEmails : [""],
@@ -48,7 +51,9 @@ export function NotificationSettings({
         ? reply.emails.length === 0
           ? "Nobody will be emailed about price changes on this store."
           : `We will email ${reply.emails.length === 1 ? "this address" : "these addresses"} whenever a price change starts, moves on, or is undone.`
-        : "This is the demo store, so nothing was stored. On a connected store these addresses would be saved against your shop.",
+        : demoMode
+          ? "This is the demo store, so nothing was stored. On a connected store these addresses would be saved against your shop."
+          : "These addresses were not saved to your shop. They will show here until you leave the page — try saving again.",
     });
   }
 

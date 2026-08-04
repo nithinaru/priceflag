@@ -24,6 +24,7 @@ export function CostCell({
   cogsSource,
   currency,
   onSaved,
+  demoMode = true,
 }: {
   variantGid: string;
   productTitle: string;
@@ -32,6 +33,8 @@ export function CostCell({
   cogsSource: CogsSource;
   currency: string;
   onSaved: (cogsCents: Cents | null) => void;
+  /** Defaults to the safe claim: never say "saved to your store" unless told otherwise. */
+  demoMode?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => centsToInputValue(cogsCents));
@@ -93,7 +96,9 @@ export function CostCell({
         ? next === null
           ? `${productTitle} has no cost again, so its profit is unknown.`
           : `${productTitle} costs ${formatMoney(next, { currency })}. Profit is worked out from that.`
-        : `This is the demo store, so nothing was written back to Shopify. On a connected store, ${productTitle} would keep this cost.`,
+        : demoMode
+          ? `This is the demo store, so nothing was written back to Shopify. On a connected store, ${productTitle} would keep this cost.`
+          : `The cost was not saved to your store. It will show here until you leave the page — try saving again.`,
     });
   }
 

@@ -1,11 +1,13 @@
 "use server";
 
 import { getAdapter } from "@/lib/adapters";
+import { isDemoMode } from "@/lib/config";
 import { buildForecast } from "@/lib/engine/forecast";
 import { CONTRACT_VERSION, type ForecastResult, type Guardrails } from "@/lib/contracts";
-import { exclusionReasonFor } from "@/lib/types";
+import { exclusionReasonFor, type OrderDay, type Product, type Shop } from "@/lib/types";
 import type { Rounding } from "@/lib/money";
 import { DEMO_NOW, getDemoStore, getProductsByGid } from "@/components/demo/store";
+import { resolveShopForSession } from "@/app/lib/shop-context";
 
 /**
  * The forecast and create calls, as server actions.
@@ -15,6 +17,11 @@ import { DEMO_NOW, getDemoStore, getProductsByGid } from "@/components/demo/stor
  * are the contract's, so swapping in a `fetch` later is a body change and
  * nothing else. Running the engine on the server also keeps 180 days × 14
  * variants of order history out of the browser bundle.
+ *
+ * In real mode the shop comes from the session cookie
+ * (`resolveShopForSession`), never from anything the client sends — a
+ * client-supplied shop domain would let one merchant's browser forecast against
+ * another merchant's history.
  */
 
 export type ForecastRequest = {
@@ -32,10 +39,54 @@ export type ForecastReply =
   | { ok: true; forecast: ForecastResult }
   | { ok: false; code: string; message: string };
 
-export async function requestForecast(input: ForecastRequest): Promise<ForecastReply> {
-  const store = getDemoStore();
-  const products = getProductsByGid(input.variant_gids);
+const NOT_CONNECTED: { ok: false; code: string; message: string } = {
+  ok: false,
+  code: "not_connected",
+  message:
+    "We could not tell which store this is. Open Priceflag from your Shopify admin and try again.",
+};
 
+export async function requestForecast(input: ForecastRequest): Promise<ForecastReply> {
+  if (isDemoMode()) {
+    const store = getDemoStore();
+    const products = getProductsByGid(input.variant_gids);
+    return forecastFor(products, input, {
+      shopId: store.shop.id,
+      currency: store.shop.currency,
+      timezone: store.shop.timezone,
+      orderDays: () => Promise.resolve(store.orderDays),
+      now: DEMO_NOW,
+    });
+  }
+
+  const ctx = await resolveShopForSession();
+  const shop = ctx.mode === "real" ? ctx.shop : null;
+  if (shop === null) return NOT_CONNECTED;
+
+  const adapter = getAdapter();
+  const products = await adapter.getProductsByVariantGids(shop.id, input.variant_gids);
+  return forecastFor(products, input, {
+    shopId: shop.id,
+    currency: shop.currency,
+    timezone: shop.timezone,
+    orderDays: () =>
+      adapter.getOrderDays(shop.id, { variant_gids: products.map((p) => p.variant_gid) }),
+    now: new Date(),
+  });
+}
+
+/** The engine call itself — identical in both modes, only the data source differs. */
+async function forecastFor(
+  products: Product[],
+  input: ForecastRequest,
+  source: {
+    shopId: string;
+    currency: string;
+    timezone: string;
+    orderDays: () => Promise<OrderDay[]>;
+    now: Date;
+  },
+): Promise<ForecastReply> {
   if (products.length === 0) {
     return {
       ok: false,
@@ -61,17 +112,17 @@ export async function requestForecast(input: ForecastRequest): Promise<ForecastR
     // for them. A store with no fits still works: absent entries fall back to
     // bracket math, per the contract's fallback chain.
     const fits = await getAdapter().getLatestFits(
-      store.shop.id,
+      source.shopId,
       products.map((product) => product.variant_gid),
     );
 
     const forecast = buildForecast({
-      shop: { currency: store.shop.currency, timezone: store.shop.timezone },
+      shop: { currency: source.currency, timezone: source.timezone },
       products,
-      orderDays: store.orderDays,
+      orderDays: await source.orderDays(),
       change: input.change,
       horizonDays: input.horizon_days,
-      now: DEMO_NOW,
+      now: source.now,
       fits,
     });
     return { ok: true, forecast };
@@ -101,7 +152,10 @@ export type CreateRolloutReply =
 /**
  * Creating the rollout is `POST /api/rollouts` (B4), which freezes the baseline
  * prices that make rollback correct — that has to happen server-side against a
- * real store, so demo mode says exactly that rather than pretending.
+ * real store, so demo mode says exactly that rather than pretending. Real mode
+ * routes through that authenticated API when it lands; this action never writes
+ * a rollout via the adapter directly, because the API is where baselines are
+ * frozen and journalled.
  */
 export async function createRollout(input: CreateRolloutRequest): Promise<CreateRolloutReply> {
   if (input.guardrails.contract_version !== CONTRACT_VERSION) {
@@ -119,9 +173,33 @@ export async function createRollout(input: CreateRolloutRequest): Promise<Create
     };
   }
 
-  const eligible = getProductsByGid(input.variant_gids).filter(
-    (product) => exclusionReasonFor(product) === null,
-  );
+  if (isDemoMode()) {
+    const eligible = getProductsByGid(input.variant_gids).filter(
+      (product) => exclusionReasonFor(product) === null,
+    );
+    if (eligible.length === 0) {
+      return {
+        ok: false,
+        code: "no_eligible_variants",
+        message: "None of those products can be repriced, so there is nothing to start.",
+      };
+    }
+
+    return {
+      ok: true,
+      rollout_id: null,
+      message:
+        "This is the demo store, so no prices were changed and nothing was sent to Shopify. On a connected store this would create the change as a draft, freeze today's prices as the ones to roll back to, and wait for you to start it.",
+    };
+  }
+
+  const ctx = await resolveShopForSession();
+  const shop: Shop | null = ctx.mode === "real" ? ctx.shop : null;
+  if (shop === null) return NOT_CONNECTED;
+
+  const eligible = (
+    await getAdapter().getProductsByVariantGids(shop.id, input.variant_gids)
+  ).filter((product) => exclusionReasonFor(product) === null);
   if (eligible.length === 0) {
     return {
       ok: false,
@@ -130,10 +208,13 @@ export async function createRollout(input: CreateRolloutRequest): Promise<Create
     };
   }
 
+  // Honest, not aspirational: the piece that freezes baselines, journals every
+  // write and talks to Shopify is the rollout API, and it is not switched on in
+  // this build yet. Pretending here would break the one promise that matters.
   return {
-    ok: true,
-    rollout_id: null,
+    ok: false,
+    code: "not_available_yet",
     message:
-      "This is the demo store, so no prices were changed and nothing was sent to Shopify. On a connected store this would create the change as a draft, freeze today's prices as the ones to roll back to, and wait for you to start it.",
+      "Starting a price change on a connected store is not switched on in this version yet — the part that freezes today's prices as the ones to roll back to arrives with the rollout service. Nothing was changed and nothing was sent to Shopify.",
   };
 }

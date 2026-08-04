@@ -113,3 +113,16 @@ export async function resolveShopForPage(searchParams: PageSearchParams): Promis
 
   return { mode: 'real', shop: null };
 }
+
+/**
+ * Cookie-only resolution, for the renders that have no `searchParams` at all:
+ * layout chrome (the nav's store card and live-status) and server actions.
+ * Equivalent to `resolveShopForPage` with an empty query — the `pf_shop`
+ * cookie minted by the embedded boot is the normal case, with the non-prod
+ * `SHOPIFY_SHOP_DOMAIN` fallback so local dev works. A server action must use
+ * this rather than any client-supplied shop domain, which would let one
+ * merchant's browser write another merchant's data.
+ */
+export async function resolveShopForSession(): Promise<PageShopContext> {
+  return resolveShopForPage({});
+}
