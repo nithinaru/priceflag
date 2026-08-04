@@ -74,6 +74,17 @@ are exempt because they authenticate themselves, and health is deliberately
 non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/webhooks/*`,
 `/api/health`.
 
+Operational Shopify webhook callback URLs are capabilities, not public paths:
+subscription reconciliation generates a token bound to both the topic and the
+normalized shop domain. Never copy one store's callback URL to another store.
+The operational set includes `orders/create`, `refunds/create`,
+`products/update`, and `app/uninstalled`; refunds must be reconciled so live
+revenue and profit guardrails see post-order returns.
+Partner-configured privacy callbacks use a topic-bound URL and additionally bind
+destructive `shop/redact` requests to the signed `shop_domain` in the payload.
+After changing `APP_URL` or the Shopify API secret, reconcile every invited
+shop's subscriptions before reopening access.
+
 If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
 everything returns 401. Set it in Vercel and redeploy.
 
@@ -294,8 +305,10 @@ commit;
 
 Worth knowing before "fixing" them:
 
-- **`confidence: "assumption"` and no predicted range.** Correct whenever a store
-  has no price variation to learn from. The breakeven sentence is still exact.
+- **`confidence: "assumption"` with a broad predicted range.** Correct whenever a
+  store has sales volume but no reliable price variation to learn from. The
+  range uses the documented consumer-goods elasticity default and is labelled
+  as an assumption. No range is shown only when usable sales volume is absent.
 - **`profit_cents_per_day: null`.** The merchant has not entered a cost. Never a
   zero.
 - **`status: "skipped_noop"` in the journal.** The price already matched the

@@ -4,7 +4,7 @@ import { verdictForReading } from "@/lib/engine/readings";
 import type { RolloutReading } from "@/lib/types";
 
 /**
- * One day's orders against the range we expected, as an interval mark.
+ * One day's unit sales against the range we expected, as an interval mark.
  *
  * Deliberately a mark, not a chart: BUILD_BRIEF gives the actual-vs-expected
  * chart with its uncertainty band to A4. Conventions kept so A4 builds on this
@@ -28,7 +28,7 @@ export function ExpectedRangeMark({
     // No honest range to draw. Saying so beats drawing a band nobody should read.
     return (
       <div className="flex h-5 items-center text-xs text-ink-subtle">
-        Too few orders a day to draw a range
+        Too few unit sales a day to draw a range
       </div>
     );
   }
@@ -37,7 +37,7 @@ export function ExpectedRangeMark({
     <div
       className="relative h-5 w-full min-w-[8rem]"
       role="img"
-      aria-label={`${formatUnits(reading.actual_units)} orders against an expected ${formatUnits(
+      aria-label={`${formatUnits(reading.actual_units)} units sold against an expected ${formatUnits(
         reading.expected_low,
         1,
       )} to ${formatUnits(reading.expected_high, 1)}.`}
@@ -101,7 +101,7 @@ export function ExpectedRangeLegend({ className }: { className?: string }) {
       </li>
       <li className="flex items-center gap-1.5">
         <span className="size-2.5 rounded-full bg-ink ring-2 ring-surface" aria-hidden="true" />
-        Orders you got
+        Units sold
       </li>
       <li className="flex items-center gap-1.5">
         <span className="size-2.5 rounded-full bg-breach ring-2 ring-surface" aria-hidden="true" />

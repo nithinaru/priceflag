@@ -75,7 +75,7 @@ export interface AtomicModelIngestResult {
 
 export interface AtomicOrderWebhookInput {
   event: WebhookEventCreate & { shop_id: string };
-  /** Additive per-variant deltas for exactly one distinct Shopify order. */
+  /** Additive per-variant deltas for one Shopify order or refund event. */
   rows: readonly OrderDayUpsert[];
 }
 
@@ -130,6 +130,12 @@ export interface StoreAdapter {
   // -- order history -------------------------------------------------------
   getOrderDays(shopId: string, query?: OrderDayQuery): Promise<OrderDay[]>;
   upsertOrderDays(shopId: string, rows: readonly OrderDayUpsert[]): Promise<number>;
+  /** Atomically reject a stale full-sync snapshot if a sales webhook arrived after it began. */
+  commitOrderDaySyncSnapshot(
+    shopId: string,
+    rows: readonly OrderDayUpsert[],
+    snapshotStartedAt: string,
+  ): Promise<number>;
 
   // -- rollouts ------------------------------------------------------------
   createRollout(input: RolloutCreate): Promise<Rollout>;
@@ -139,7 +145,7 @@ export interface StoreAdapter {
     variants: readonly RolloutVariantCreate[],
   ): Promise<{ rollout: Rollout; variants: RolloutVariant[] }>;
   getRollout(rolloutId: string): Promise<Rollout | null>;
-  /** Newest first, with deterministic creation-order handling for timestamp ties. */
+  /** Newest timestamp first with a stable tie-breaker; safety logic must not infer tie creation order. */
   listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]>;
   /** Active across every shop — what the evaluator cron iterates. */
   listActiveRollouts(): Promise<Rollout[]>;
@@ -147,6 +153,8 @@ export interface StoreAdapter {
 
   insertRolloutVariants(rows: readonly RolloutVariantCreate[]): Promise<number>;
   getRolloutVariants(rolloutId: string): Promise<RolloutVariant[]>;
+  /** One shop-scoped batch read for store-wide safety operations. */
+  listRolloutVariantsForShop(shopId: string): Promise<RolloutVariant[]>;
   updateRolloutVariant(id: string, patch: Partial<RolloutVariant>): Promise<RolloutVariant>;
 
   /** Idempotent on `(rollout_id, day)` — a same-day re-run updates, never duplicates. */

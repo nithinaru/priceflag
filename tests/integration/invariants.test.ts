@@ -513,6 +513,106 @@ export async function runInvariantSuite(adapter: StoreAdapter, shop: Shop, label
     const healed = (await adapter.getRolloutVariants(scenario.rollout.id))[0] as RolloutVariant;
     assert(healed.reverted_at !== null, 'database did not stamp rollback after live verification');
   });
+
+  section(`[${label}] refunds/create accounting`);
+
+  await test('a high-value refund on a mixed day stores no negative realized sale price', async () => {
+    const numericId = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const variantGid = `gid://shopify/ProductVariant/${numericId}`;
+    const day = '2099-02-01' as const;
+    await adapter.upsertOrderDays(shop.id, [
+      {
+        variant_gid: variantGid,
+        product_gid: null,
+        day,
+        units: 2,
+        orders: 1,
+        gross_revenue_cents: 2000,
+        discount_cents: 0,
+        refund_units: 0,
+        refund_cents: 0,
+        net_revenue_cents: 2000,
+        realized_unit_price_cents: 1000,
+        list_price_cents: 1000,
+        had_stockout: false,
+        on_promo: false,
+        source: 'sync',
+      },
+    ]);
+
+    const event = {
+      shop_domain: shop.shop_domain,
+      shop_id: shop.id,
+      topic: 'refunds/create',
+      webhook_id: uniqueId('refund-mixed-day'),
+      api_version: '2026-07',
+      triggered_at: '2099-02-01T12:00:00Z',
+      payload: null,
+    };
+    const refundDelta = {
+      variant_gid: variantGid,
+      product_gid: null,
+      day,
+      units: 0,
+      orders: 0,
+      gross_revenue_cents: 0,
+      discount_cents: 0,
+      refund_units: 1,
+      refund_cents: 3000,
+      net_revenue_cents: -3000,
+      realized_unit_price_cents: null,
+      list_price_cents: null,
+      had_stockout: false,
+      on_promo: false,
+      source: 'webhook' as const,
+    };
+
+    const first = await adapter.ingestOrderWebhook({ event, rows: [refundDelta] });
+    assert(!first.duplicate, 'the first refund delivery was treated as a duplicate');
+    const retry = await adapter.ingestOrderWebhook({ event, rows: [refundDelta] });
+    assert(retry.duplicate, 'a retried refund delivery was not deduplicated');
+    const [row] = await adapter.getOrderDays(shop.id, { variant_gids: [variantGid], from_day: day, to_day: day });
+    assert(row !== undefined, 'the mixed sale/refund row was not persisted');
+    assertEqual(row.net_revenue_cents, -1000, 'the refund delta was counted incorrectly or more than once');
+    assertEqual(row.units - row.refund_units, 1, 'the mixed day should retain one net unit');
+    assertEqual(row.realized_unit_price_cents, null, 'negative net revenue became an invalid negative sale price');
+
+    let rejectedStaleSnapshot = false;
+    try {
+      await adapter.commitOrderDaySyncSnapshot(
+        shop.id,
+        [
+          {
+            variant_gid: variantGid,
+            product_gid: null,
+            day,
+            units: 2,
+            orders: 1,
+            gross_revenue_cents: 2000,
+            discount_cents: 0,
+            refund_units: 0,
+            refund_cents: 0,
+            net_revenue_cents: 2000,
+            realized_unit_price_cents: 1000,
+            list_price_cents: 1000,
+            had_stockout: false,
+            on_promo: false,
+            source: 'sync',
+          },
+        ],
+        '2000-01-01T00:00:00.000Z',
+      );
+    } catch {
+      rejectedStaleSnapshot = true;
+    }
+    assert(rejectedStaleSnapshot, 'a stale full-sync snapshot overwrote a newer refund webhook');
+    const [preserved] = await adapter.getOrderDays(shop.id, {
+      variant_gids: [variantGid],
+      from_day: day,
+      to_day: day,
+    });
+    assertEqual(preserved?.net_revenue_cents, -1000, 'stale snapshot rejection did not preserve the refund');
+  });
 }
 
 // ---------------------------------------------------------------------------

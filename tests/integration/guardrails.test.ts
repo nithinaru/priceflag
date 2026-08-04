@@ -11,13 +11,15 @@ import type { GuardrailRule, Guardrails } from '../../lib/contracts';
 import { evaluateGuardrails, ruleConditionHolds, type DailyObservation } from '../../lib/engine/guardrails';
 import {
   evaluatorAllowsShop,
+  exactExpectedEconomics,
+  historicalGuardrailObservation,
   forecastDemandMultiplier,
   parseEvaluatorShopAllowlist,
   selectExpectedBandsForRollout,
   weightedUnitEconomics,
 } from '../../lib/evaluator';
 import type { DayString } from '../../lib/dates';
-import type { ExpectedBandRow, Rollout, RolloutVariant, Shop } from '../../lib/types';
+import type { ExpectedBandRow, Rollout, RolloutReading, RolloutVariant, Shop } from '../../lib/types';
 
 import { assert, assertEqual, section, test } from './_harness';
 
@@ -33,6 +35,10 @@ function observation(overrides: Partial<DailyObservation> = {}): DailyObservatio
     expected_high: 120,
     expected_revenue_cents: 100_000,
     expected_profit_cents: 40_000,
+    expected_revenue_low_cents: 80_000,
+    expected_revenue_high_cents: 120_000,
+    expected_profit_low_cents: 32_000,
+    expected_profit_high_cents: 48_000,
     breach_probability: null,
     ...overrides,
   };
@@ -100,6 +106,20 @@ export async function runGuardrailSuite(): Promise<void> {
     );
   });
 
+  await test('a percentage threshold is measured from expected, not discounted from the band edge', async () => {
+    const configured = rule({ threshold_pct: 30, consecutive_days: 1 });
+    const aboveLimit = ruleConditionHolds(
+      configured,
+      observation({ actual_units: 70, expected_units: 100, expected_low: 80 }),
+    );
+    const belowLimit = ruleConditionHolds(
+      configured,
+      observation({ actual_units: 69, expected_units: 100, expected_low: 80 }),
+    );
+    assertEqual(aboveLimit.holds, false, 'exactly 30% below expected has not fallen more than the limit');
+    assertEqual(belowLimit.holds, true, 'more than 30% below expected crosses the merchant-approved limit');
+  });
+
   await test('a 99% threshold effectively disables the rule', async () => {
     const history = run(3, () => ({ actual_units: 5, expected_units: 100 }));
     const assessment = evaluateGuardrails(guardrails([rule({ threshold_pct: 99, consecutive_days: 2 })]), history);
@@ -140,6 +160,36 @@ export async function runGuardrailSuite(): Promise<void> {
       (assessment.skipped[0]?.why ?? '').includes('cost'),
       'the skip explains itself in merchant language',
     );
+  });
+
+  await test('a revenue guardrail uses its own heterogeneous-SKU lower band', async () => {
+    const result = ruleConditionHolds(
+      rule({ metric: 'revenue', threshold_pct: 5, consecutive_days: 1 }),
+      observation({
+        actual_units: 100,
+        expected_units: 101,
+        expected_low: 100,
+        expected_high: 102,
+        actual_revenue_cents: 10_000,
+        expected_revenue_cents: 110_000,
+        expected_revenue_low_cents: 10_000,
+        expected_revenue_high_cents: 210_000,
+      }),
+    );
+    assertEqual(result.holds, false, 'the true revenue-band low is not replaced by average revenue per unit');
+  });
+
+  await test('a percentage money rule skips legacy rows without a metric-specific band', async () => {
+    const result = ruleConditionHolds(
+      rule({ metric: 'revenue', threshold_pct: 5, consecutive_days: 1 }),
+      observation({
+        actual_revenue_cents: 10_000,
+        expected_revenue_cents: 100_000,
+        expected_revenue_low_cents: null,
+        expected_revenue_high_cents: null,
+      }),
+    );
+    assertEqual(result.known, false, 'missing money uncertainty is skipped rather than inferred from units');
   });
 
   section('guardrails — breach probability precedence (R29)');
@@ -195,7 +245,7 @@ export async function runGuardrailSuite(): Promise<void> {
 
   section('evaluator — model selection and production isolation');
 
-  await test('one latest band per variant is selected, preferring this rollout only', async () => {
+  await test('one independent baseline per variant is selected and cohort counterfactual rows are ignored', async () => {
     const now = new Date('2026-07-20T12:00:00Z');
     const base = (overrides: Partial<ExpectedBandRow>): ExpectedBandRow => ({
       id: 'base',
@@ -228,9 +278,13 @@ export async function runGuardrailSuite(): Promise<void> {
       now,
     );
     assertEqual(selected.length, 2, 'duplicates and prior-rollout bands do not add extra expectations');
-    assertEqual(selected.find((band) => band.variant_gid.endsWith('/1'))?.id, 'current-cf', 'current counterfactual wins');
+    assertEqual(
+      selected.find((band) => band.variant_gid.endsWith('/1'))?.id,
+      'new-base',
+      'cohort-stamped counterfactuals are not summed as per-SKU expectations',
+    );
     assertEqual(selected.find((band) => band.variant_gid.endsWith('/2'))?.id, 'variant-2-new', 'latest baseline wins');
-    assertEqual(selected.reduce((sum, band) => sum + band.expected_units, 0), 12, 'aggregate cannot be inflated');
+    assertEqual(selected.reduce((sum, band) => sum + band.expected_units, 0), 25, 'independent baselines aggregate once');
   });
 
   await test('the evaluator shop allowlist fails closed when configured badly', async () => {
@@ -259,18 +313,108 @@ export async function runGuardrailSuite(): Promise<void> {
     assertEqual(result.cost, 760, 'cost uses the same units weights');
   });
 
+  await test('expected and counterfactual money preserve the frozen discount rate', async () => {
+    const variant = {
+      variant_gid: 'gid://shopify/ProductVariant/discounted',
+      baseline_price_cents: 10_000,
+      target_price_cents: 11_000,
+      cogs_cents_at_creation: 4_000,
+    } as RolloutVariant;
+    const rollout = {
+      forecast: {
+        products: [{
+          variant_gid: variant.variant_gid,
+          excluded: false,
+          revenue_realization_rate: 0.9,
+        }],
+      },
+    } as unknown as Rollout;
+    const band = (expected_units: number, low: number, high: number) => ({
+      expected_units,
+      low,
+      high,
+      interval: 0.8,
+      floored: false,
+      source: 'bracket' as const,
+      n_obs: 60,
+    });
+    const result = exactExpectedEconomics(rollout, [variant], [{
+      variant_gid: variant.variant_gid,
+      counterfactual: band(10, 9, 11),
+      conditioned: band(10, 9, 11),
+    }]);
+    assertEqual(result.counterfactual_revenue_cents, 90_000, 'old-price counterfactual stays net of discount');
+    assertEqual(result.expected_revenue_cents, 99_000, 'target expectation uses the same frozen discount');
+    assertEqual(result.expected_profit_cents, 59_000, 'profit uses net revenue before frozen COGS');
+  });
+
+  await test('aggregate money uncertainty combines independent SKU variance', async () => {
+    const rollout = { forecast: { products: [] } } as unknown as Rollout;
+    const variants = Array.from({ length: 100 }, (_, index) => ({
+      variant_gid: `gid://shopify/ProductVariant/${index + 1}`,
+      baseline_price_cents: 1_000,
+      target_price_cents: 1_000,
+      cogs_cents_at_creation: 400,
+    } as RolloutVariant));
+    const band = { expected_units: 1, low: 0.6, high: 1.4, interval: 0.8, floored: false, source: 'bracket' as const, n_obs: 60 };
+    const economics = exactExpectedEconomics(
+      rollout,
+      variants,
+      variants.map((variant) => ({ variant_gid: variant.variant_gid, counterfactual: band, conditioned: band })),
+    );
+    assertEqual(economics.expected_revenue_low_cents, 96_000, 'independent lows combine by root-sum-square');
+    assertEqual(economics.expected_revenue_high_cents, 104_000, 'independent highs combine by root-sum-square');
+    const condition = ruleConditionHolds(
+      rule({ metric: 'revenue', threshold_pct: 35, consecutive_days: 1 }),
+      observation({
+        actual_revenue_cents: 64_000,
+        expected_revenue_cents: economics.expected_revenue_cents,
+        expected_revenue_low_cents: economics.expected_revenue_low_cents,
+        expected_revenue_high_cents: economics.expected_revenue_high_cents,
+      }),
+    );
+    assert(condition.holds, 'a genuine 36% revenue collapse is not hidden by summed marginal ranges');
+  });
+
+  await test('legacy readings do not reconstruct money bands into a safety streak', async () => {
+    const rollout = { forecast: { products: [] } } as unknown as Rollout;
+    const reading = {
+      day: '2026-07-19',
+      stage_index: 0,
+      actual_units: 10,
+      actual_revenue_cents: 10_000,
+      actual_profit_cents: 5_000,
+      expected_units: 100,
+      expected_low: 80,
+      expected_high: 120,
+      expected_revenue_cents: 100_000,
+      expected_profit_cents: 50_000,
+      breach_probability: null,
+    } as RolloutReading;
+    const legacy = historicalGuardrailObservation(rollout, [], reading);
+    assertEqual(legacy.expected_revenue_low_cents, null, 'legacy revenue uncertainty remains absent');
+    const assessment = evaluateGuardrails(
+      guardrails([rule({ metric: 'revenue', threshold_pct: 30, consecutive_days: 2 })]),
+      [legacy, observation({ day: '2026-07-20' as DayString, actual_revenue_cents: 10_000 })],
+    );
+    assertEqual(assessment.streak, 1, 'a legacy day cannot silently count toward a money breach streak');
+    assertEqual(assessment.action, null, 'one modern bad day does not fire a two-day money rule');
+  });
+
   await test('assumption-tier forecasts use the -1.5 elasticity fallback', async () => {
     const rollout = {
       forecast: {
         fitted: null,
         products: [
           {
+            variant_gid: 'gid://shopify/ProductVariant/1',
             excluded: false,
             current_price_cents: 1_000,
             target_price_cents: 1_100,
             baseline_units_per_day: 9,
           },
           {
+            variant_gid: 'gid://shopify/ProductVariant/2',
             excluded: false,
             current_price_cents: 1_000,
             target_price_cents: 2_000,
@@ -283,6 +427,44 @@ export async function runGuardrailSuite(): Promise<void> {
     assert(
       Math.abs(forecastDemandMultiplier(rollout) - expected) < 1e-12,
       'fallback response is SKU-level and baseline-units weighted',
+    );
+  });
+
+  await test('stage monitoring uses only each live SKU frozen demand response', async () => {
+    const rollout = {
+      forecast: {
+        products: [
+          {
+            variant_gid: 'gid://shopify/ProductVariant/1',
+            excluded: false,
+            current_price_cents: 1_000,
+            target_price_cents: 1_100,
+            baseline_units_per_day: 9,
+            demand_multiplier: 0.9,
+          },
+          {
+            variant_gid: 'gid://shopify/ProductVariant/2',
+            excluded: false,
+            current_price_cents: 1_000,
+            target_price_cents: 2_000,
+            baseline_units_per_day: 1,
+            demand_multiplier: 0.4,
+          },
+        ],
+      },
+    } as unknown as Rollout;
+
+    assert(
+      Math.abs(forecastDemandMultiplier(rollout, ['gid://shopify/ProductVariant/1']) - 0.9) < 1e-12,
+      'the first stage is not conditioned by an SKU that is not live yet',
+    );
+    assert(
+      Math.abs(forecastDemandMultiplier(rollout, ['gid://shopify/ProductVariant/2']) - 0.4) < 1e-12,
+      'the second SKU keeps its own approved response',
+    );
+    assert(
+      Math.abs(forecastDemandMultiplier(rollout) - 0.85) < 1e-12,
+      'the full stage uses baseline-demand weighting across frozen SKU responses',
     );
   });
 }

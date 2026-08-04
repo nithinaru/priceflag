@@ -155,6 +155,26 @@ const CHECKS: RouteCheck[] = [
     },
   },
   {
+    name: '/ — store-wide undo requires explicit acknowledgement',
+    path: '/',
+    run: async (page) => {
+      const open = page.getByRole('button', { name: 'Put every price back', exact: true });
+      await open.waitFor({ state: 'visible', timeout: 10_000 });
+      await open.click();
+      const modal = page.getByRole('dialog');
+      await modal.waitFor({ state: 'visible', timeout: 5_000 });
+      const confirm = modal.getByRole('button', { name: 'Yes, put everything back' });
+      const lockedBeforeAcknowledgement = await confirm.isDisabled();
+      await modal
+        .getByLabel('I understand this undoes every price change, not just one')
+        .check();
+      return {
+        ok: lockedBeforeAcknowledgement && !(await confirm.isDisabled()),
+        detail: 'global undo stays locked until the merchant acknowledges its scope',
+      };
+    },
+  },
+  {
     name: '/rollouts — the page renders interactive content',
     path: '/rollouts',
     run: async (page) => {

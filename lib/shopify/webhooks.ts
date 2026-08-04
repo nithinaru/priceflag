@@ -26,6 +26,9 @@
  * only knows how to converge one shop.
  */
 
+import { createHmac } from 'node:crypto';
+
+import { env } from '../config';
 import { AdminGraphqlClient, assertNoUserErrors, type GraphqlUserError } from './client';
 import type { ShopCredentials } from './credentials';
 
@@ -49,13 +52,30 @@ export interface RequiredWebhookTopic {
 
 export const REQUIRED_WEBHOOK_TOPICS: readonly RequiredWebhookTopic[] = [
   { topic: 'ORDERS_CREATE', topicPath: 'orders/create', segment: 'orders--create' },
+  { topic: 'REFUNDS_CREATE', topicPath: 'refunds/create', segment: 'refunds--create' },
   { topic: 'PRODUCTS_UPDATE', topicPath: 'products/update', segment: 'products--update' },
   { topic: 'APP_UNINSTALLED', topicPath: 'app/uninstalled', segment: 'app--uninstalled' },
 ];
 
+/** A topic/shop-specific capability embedded in its registered callback URL. */
+export function webhookTopicToken(secret: string, topicPath: string, shopDomain?: string): string {
+  const audience = shopDomain === undefined ? 'partner-config' : shopDomain.trim().toLowerCase();
+  return createHmac('sha256', secret)
+    .update(`priceflag:webhook-topic:v2:${topicPath}:${audience}`)
+    .digest('base64url');
+}
+
 /** The exact callback URL a topic's subscription must point at. */
-export function webhookCallbackUrl(appUrl: string, segment: string): string {
-  return `${appUrl.replace(/\/+$/, '')}/api/webhooks/${segment}`;
+export function webhookCallbackUrl(
+  appUrl: string,
+  segment: string,
+  topicPath: string,
+  secret: string,
+  shopDomain?: string,
+): string {
+  const url = new URL(`${appUrl.replace(/\/+$/, '')}/api/webhooks/${segment}`);
+  url.searchParams.set('pf_topic_token', webhookTopicToken(secret, topicPath, shopDomain));
+  return url.toString();
 }
 
 export interface WebhookReconcileResult {
@@ -147,9 +167,13 @@ interface SubscriptionNode {
 export async function reconcileWebhooks(
   credentials: ShopCredentials,
   appUrl: string,
-  options: { client?: AdminGraphqlClient } = {},
+  options: { client?: AdminGraphqlClient; webhookSecret?: string } = {},
 ): Promise<WebhookReconcileResult> {
   const client = options.client ?? new AdminGraphqlClient(credentials);
+  const webhookSecret = options.webhookSecret ?? env('SHOPIFY_API_SECRET');
+  if (webhookSecret === undefined) {
+    throw new Error('SHOPIFY_API_SECRET is required to register topic-bound webhook callbacks');
+  }
 
   const data = await client.request<{
     webhookSubscriptions: { nodes: SubscriptionNode[] };
@@ -176,7 +200,13 @@ export async function reconcileWebhooks(
   }
 
   for (const required of REQUIRED_WEBHOOK_TOPICS) {
-    const expectedUrl = webhookCallbackUrl(appUrl, required.segment);
+    const expectedUrl = webhookCallbackUrl(
+      appUrl,
+      required.segment,
+      required.topicPath,
+      webhookSecret,
+      credentials.shopDomain,
+    );
     const forTopic = existing.filter((node) => node.topic === required.topic);
 
     // Already pointing at the right place? Done — zero writes.

@@ -252,6 +252,32 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   Preview remains skipped; invite access remains closed. No hosted database,
   production deployment, evaluator, or Shopify price was touched.
 
+- `2026-08-04T10:37:39Z` — `codex/prod-integration` candidate based on
+  `59b9131` closes the final local safety findings: metric-specific,
+  price-conditioned revenue/profit guardrails; exact heterogeneous-SKU
+  reporting; deterministic chained rollback to the earliest baseline; a
+  batched 1,001-variant rollback regression; Shopify topic/shop capability
+  binding; and atomic, deduplicated `refunds/create` ingestion so post-order
+  returns reach live profit readings. The mixed-day refund regression treats a
+  negative accounting day as an unknown realized sale price instead of an
+  invalid negative price. Full sync now commits through the same per-shop
+  database lock and rejects a snapshot if an order/refund webhook arrived while
+  Shopify was being read, so a stale sync cannot erase an already-deduplicated
+  refund. Both cases are included in the real-Supabase adapter suite. Final
+  independent safety rechecks report no open P0/P1 findings in rollback,
+  guardrails, refund ingestion, or sync concurrency.
+  Fresh local evidence: clean dependency install; typecheck; production build;
+  144/144 smoke; 38/38 merchant API; 15/15 price-write safety; ML-ingest and
+  webhook integrity; 63/63 demo adversarial integration; Python 117/117;
+  golden-only nightly; zero dependency vulnerabilities; and 12/12 compiled
+  browser interactions with no blocking console, request, render, or framework
+  errors. Four new migrations remain unapplied to hosted staging and must pass
+  the isolated GitHub Supabase replay after this candidate is pushed. Real-data
+  ML, Shopify Partner/test-store, hosted staging/advisors, protected preview,
+  and production-log gates remain external and open. Invite access remains
+  closed; automatic rollback remains disabled; no hosted database, evaluator,
+  Shopify price, merge, or deployment was touched.
+
 ## Current launch checklist
 
 - [x] Clean dependency install

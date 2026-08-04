@@ -514,6 +514,27 @@ export class DemoAdapter implements StoreAdapter {
     return rows.length;
   }
 
+  async commitOrderDaySyncSnapshot(
+    shopId: string,
+    rows: readonly OrderDayUpsert[],
+    snapshotStartedAt: string,
+  ): Promise<number> {
+    const started = new Date(snapshotStartedAt).getTime();
+    if (!Number.isFinite(started)) throw new Error('sync snapshot start is invalid');
+    const newerSalesWebhook = this.state.webhooks.some(
+      (event) =>
+        event.shop_id === shopId &&
+        (event.topic === 'orders/create' || event.topic === 'refunds/create') &&
+        new Date(event.received_at).getTime() >= started,
+    );
+    if (newerSalesWebhook) {
+      throw new Error('sales data changed while the full sync was running; retry the sync');
+    }
+    // JavaScript is single-threaded here, so the check and write are one
+    // critical section for the demo adapter.
+    return this.upsertOrderDays(shopId, rows);
+  }
+
   // -- rollouts ------------------------------------------------------------
 
   async createRollout(input: RolloutCreate): Promise<Rollout> {
@@ -526,6 +547,7 @@ export class DemoAdapter implements StoreAdapter {
       eval_locked_until: null,
       last_evaluated_at: null,
       last_evaluated_day: null,
+      creation_sequence: this.state.rollouts.length + 1,
       created_at: now,
       updated_at: now,
     };
@@ -583,6 +605,7 @@ export class DemoAdapter implements StoreAdapter {
       eval_locked_until: null,
       last_evaluated_at: null,
       last_evaluated_day: null,
+      creation_sequence: this.state.rollouts.length + 1,
       created_at: now,
       updated_at: now,
     };
@@ -633,7 +656,8 @@ export class DemoAdapter implements StoreAdapter {
     // a clock tick, the append index is the only deterministic newest-first key.
     rows.sort(
       (a, b) =>
-        b.row.created_at.localeCompare(a.row.created_at) || b.insertionIndex - a.insertionIndex,
+        b.row.created_at.localeCompare(a.row.created_at) ||
+        (b.row.creation_sequence ?? b.insertionIndex) - (a.row.creation_sequence ?? a.insertionIndex),
     );
     return clone(rows.map(({ row }) => row));
   }
@@ -684,6 +708,10 @@ export class DemoAdapter implements StoreAdapter {
       a.cohort_stage === b.cohort_stage ? a.variant_gid.localeCompare(b.variant_gid) : a.cohort_stage - b.cohort_stage,
     );
     return clone(rows);
+  }
+
+  async listRolloutVariantsForShop(shopId: string): Promise<RolloutVariant[]> {
+    return clone(this.state.rolloutVariants.filter((row) => row.shop_id === shopId));
   }
 
   async updateRolloutVariant(id: string, patch: Partial<RolloutVariant>): Promise<RolloutVariant> {
@@ -910,7 +938,9 @@ export class DemoAdapter implements StoreAdapter {
         current.net_revenue_cents += delta.net_revenue_cents;
         const netUnits = current.units - current.refund_units;
         current.realized_unit_price_cents =
-          netUnits > 0 ? Math.round(current.net_revenue_cents / netUnits) : null;
+          netUnits > 0 && current.net_revenue_cents >= 0
+            ? Math.round(current.net_revenue_cents / netUnits)
+            : null;
         current.product_gid = delta.product_gid ?? current.product_gid;
         current.list_price_cents = delta.list_price_cents ?? current.list_price_cents;
         current.had_stockout ||= delta.had_stockout;

@@ -32,8 +32,9 @@ import type { ForecastResult, ForecastWarningCode } from "@/lib/contracts";
  *
  * Order is the argument (R6, R8):
  *
- * 1. the breakeven sentence — pure margin arithmetic, true whatever customers do
- * 2. the predicted range, drawn, only when the engine actually produced one
+ * 1. the breakeven sentence — transparent unit-margin arithmetic with any
+ *    multi-product proportional-demand assumption visible beside it
+ * 2. the predicted range, store-fitted or visibly based on a broad default
  * 3. how much to trust it, in one line the engine wrote
  * 4. every assumption, and the scenario table, one click away
  *
@@ -50,7 +51,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
   /**
    * A store with no trading yet. Every scenario row is zero units and zero
    * money, and breakeven is undefined because there is no order volume to break
-   * even against — so the whole "pick a level of order loss and read across"
+   * even against — so the whole "pick a level of unit change and read across"
    * apparatus has nothing in it. Rendering it anyway is how a correct fallback
    * chain ends up looking like a broken app. This is the *default* first-run
    * state on a young store, not an edge case.
@@ -66,11 +67,11 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
         />
 
         <CardBody className="space-y-6">
-          {/* 1. Arithmetic that is true regardless of any model. */}
+          {/* 1. Arithmetic independent of the demand model, with its multi-SKU assumption visible. */}
           {noTrading ? (
             <div className="space-y-1.5">
               <p className="max-w-prose text-lg font-medium text-ink">
-                We cannot tell you what this change will do — your store has no orders for us to
+                We cannot tell you what this change will do — your store has no sales for us to
                 learn from yet.
               </p>
               <p className="max-w-prose text-sm text-ink-muted">
@@ -85,8 +86,9 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                 {forecast.breakeven.sentence}
               </p>
               <p className="text-sm text-ink-muted">
-                That is your own margins, worked out exactly. It does not depend on predicting
-                anything.
+                {included.length === 1
+                  ? "That is transparent unit-margin arithmetic. It does not depend on predicting demand."
+                  : "That arithmetic assumes unit demand moves proportionally across the selected products. The range below models each product separately."}
               </p>
             </div>
           )}
@@ -130,7 +132,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                     •
                   </span>
                   <span className="max-w-prose">
-                    As orders come in we start building the expected range, and we will tell you the
+                    As unit sales come in we start building the expected range, and we will tell you the
                     moment there is enough to be worth reading.
                   </span>
                 </li>
@@ -146,8 +148,9 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                   What we think will actually happen
                 </h3>
                 <span className="text-xs text-ink-subtle">
-                  Range, not a single number — {formatPct(forecast.fitted.price_variation_pct, 0)}{" "}
-                  price movement in your history to learn from
+                  {forecast.fitted.source === "category_default"
+                    ? "Broad default range — not learned from your store"
+                    : `Range, not a single number — ${formatPct(forecast.fitted.price_variation_pct, 0)} price movement in your history to learn from`}
                 </span>
               </div>
 
@@ -169,22 +172,22 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                   note="Revenue can fall while profit rises."
                 />
                 <RangedStat
-                  label="Orders"
+                  label="Unit sales"
                   low={forecast.fitted.low.units_change_pct}
                   high={forecast.fitted.high.units_change_pct}
                   expected={forecast.fitted.expected.units_change_pct}
                   format={(value) => formatPctDelta(value, 0)}
-                  // Orders falling when a price rises is the expected trade, not
+                  // Units falling when a price rises is the expected trade, not
                   // a warning — the tint is reserved for profit.
                   tone="neutral"
-                  note="How many fewer or more units you would sell."
+                  note="How many fewer or more units you would sell. This is not order count."
                 />
               </div>
             </div>
           ) : noTrading ? null : (
             <Notice tone="info" title="We are not going to guess what your customers will do">
-              {forecast.confidence_explanation} Everything below is exact arithmetic instead — pick
-              the level of order loss you believe and read across.
+              {forecast.confidence_explanation} The table below shows the arithmetic at several
+              levels of unit-sales change.
             </Notice>
           )}
 
@@ -224,9 +227,11 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
           <span>
             {forecast.model_version
               ? `Predicted by ${forecast.model_version}.`
-              : noTrading
-                ? "Nothing here is predicted."
-                : "No model was used — this is margin arithmetic."}
+              : forecast.fitted?.source === "category_default"
+                ? "Predicted with a broad consumer-goods assumption."
+                : noTrading
+                  ? "Nothing here is predicted."
+                  : "No model was used — this is margin arithmetic."}
           </span>
         </CardFooter>
       </Card>
@@ -251,7 +256,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
             <span className="min-w-0">
               <span className="block text-md font-semibold text-ink">Show your work</span>
               <span className="block text-base text-ink-muted">
-                Every assumption, and what happens at each level of order loss.
+                Every assumption, and what happens at each level of unit-sales change.
               </span>
             </span>
             <span
@@ -271,12 +276,12 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
           <div className="border-t border-border">
             <Table
               layout="intrinsic"
-              caption="What happens to revenue and profit at each level of order change"
+              caption="What happens to revenue and profit at each level of unit-sales change"
             >
               <THead>
                 <TR>
-                  <TH>If orders…</TH>
-                  <TH numeric>Change in orders</TH>
+                  <TH>If unit sales…</TH>
+                  <TH numeric>Change in units</TH>
                   <TH numeric>Units over {forecast.horizon_days} days</TH>
                   <TH numeric>Revenue</TH>
                   <TH numeric>Profit</TH>

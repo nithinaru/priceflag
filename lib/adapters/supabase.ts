@@ -307,6 +307,20 @@ export class SupabaseAdapter implements StoreAdapter {
     return written;
   }
 
+  async commitOrderDaySyncSnapshot(
+    shopId: string,
+    rows: readonly OrderDayUpsert[],
+    snapshotStartedAt: string,
+  ): Promise<number> {
+    if (rows.length === 0) return 0;
+    const result = await this.db.rpc('pf_commit_order_day_sync_snapshot', {
+      p_shop_id: shopId,
+      p_rows: rows,
+      p_snapshot_started_at: snapshotStartedAt,
+    });
+    return num(unwrap(result, `commitOrderDaySyncSnapshot(${shopId})`));
+  }
+
   // -- rollouts ------------------------------------------------------------
 
   async createRollout(input: RolloutCreate): Promise<Rollout> {
@@ -341,8 +355,11 @@ export class SupabaseAdapter implements StoreAdapter {
   async listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]> {
     let builder = this.db.from('rollouts').select('*').eq('shop_id', shopId);
     if (statuses?.length) builder = builder.in('status', [...statuses]);
+    // UUID is only a stable tie-breaker, not evidence of creation order. Callers
+    // such as the kill switch must remain correct under either tied-row order.
     const result = await builder
       .order('created_at', { ascending: false })
+      .order('creation_sequence', { ascending: false })
       .order('id', { ascending: false });
     return unwrap(result, `listRollouts(${shopId})`).map((row) => mapRollout(row as Row));
   }
@@ -382,6 +399,26 @@ export class SupabaseAdapter implements StoreAdapter {
       .order('cohort_stage', { ascending: true })
       .order('variant_gid', { ascending: true });
     return unwrap(result, `getRolloutVariants(${rolloutId})`).map((row) => mapRolloutVariant(row as Row));
+  }
+
+  async listRolloutVariantsForShop(shopId: string): Promise<RolloutVariant[]> {
+    const rows: RolloutVariant[] = [];
+    for (let offset = 0; ; offset += 1000) {
+      const result = await this.db
+        .from('rollout_variants')
+        .select('*')
+        .eq('shop_id', shopId)
+        .order('created_at', { ascending: true })
+        // Batched inserts commonly share a timestamp. Without a unique
+        // tie-breaker, OFFSET pages can duplicate one tied row and silently
+        // omit another from the shop-wide rollback verification.
+        .order('id', { ascending: true })
+        .range(offset, offset + 999);
+      const page = unwrap(result, `listRolloutVariantsForShop(${shopId})`);
+      rows.push(...page.map((row) => mapRolloutVariant(row as Row)));
+      if (page.length < 1000) break;
+    }
+    return rows;
   }
 
   async updateRolloutVariant(id: string, patch: Partial<RolloutVariant>): Promise<RolloutVariant> {
@@ -560,12 +597,13 @@ export class SupabaseAdapter implements StoreAdapter {
   }
 
   async ingestOrderWebhook(input: AtomicOrderWebhookInput): Promise<AtomicOrderWebhookResult> {
-    const result = await this.db.rpc('pf_ingest_order_webhook', {
+    const functionName = input.event.topic === 'refunds/create' ? 'pf_ingest_refund_webhook' : 'pf_ingest_order_webhook';
+    const result = await this.db.rpc(functionName, {
       p_shop_id: input.event.shop_id,
       p_event: { ...input.event, payload: null },
       p_rows: input.rows,
     });
-    const raw = unwrap(result, `ingestOrderWebhook(${input.event.webhook_id})`) as unknown;
+    const raw = unwrap(result, `${functionName}(${input.event.webhook_id})`) as unknown;
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new Error('pf_ingest_order_webhook returned an invalid result');
     }
@@ -876,6 +914,7 @@ function mapRollout(row: Row): Rollout {
     last_evaluated_at: (row.last_evaluated_at as string | null) ?? null,
     last_evaluated_day: (row.last_evaluated_day as DayString | null) ?? null,
     created_by: String(row.created_by ?? 'merchant'),
+    creation_sequence: row.creation_sequence == null ? undefined : num(row.creation_sequence),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -922,6 +961,15 @@ function mapReading(row: Row): RolloutReading {
     expected_units: num(row.expected_units),
     expected_low: num(row.expected_low),
     expected_high: num(row.expected_high),
+    counterfactual_units: numOrNull(row.counterfactual_units),
+    counterfactual_revenue_cents: numOrNull(row.counterfactual_revenue_cents),
+    counterfactual_profit_cents: numOrNull(row.counterfactual_profit_cents),
+    expected_revenue_cents: numOrNull(row.expected_revenue_cents),
+    expected_profit_cents: numOrNull(row.expected_profit_cents),
+    expected_revenue_low_cents: numOrNull(row.expected_revenue_low_cents),
+    expected_revenue_high_cents: numOrNull(row.expected_revenue_high_cents),
+    expected_profit_low_cents: numOrNull(row.expected_profit_low_cents),
+    expected_profit_high_cents: numOrNull(row.expected_profit_high_cents),
     expected_source: (row.expected_source as RolloutReading['expected_source']) ?? 'bracket',
     interval_nominal: num(row.interval_nominal, 0.8),
     model_version: (row.model_version as string | null) ?? null,

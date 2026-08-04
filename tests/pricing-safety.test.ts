@@ -2,7 +2,7 @@ import { DemoAdapter } from '../lib/adapters/demo';
 import type { StoreAdapter } from '../lib/adapters/types';
 import { computeTargetPrice } from '../lib/engine/forecast';
 import { normalizeStages, planRolloutVariants } from '../lib/engine/rollout';
-import { applyStage } from '../lib/pricing/writer';
+import { applyStage, rollbackRollout } from '../lib/pricing/writer';
 import { ShopifyApiError, type AdminGraphqlClient } from '../lib/shopify/client';
 import { CredentialError, credentialsFromShop } from '../lib/shopify/credentials';
 import { writeProductVariantPrices, type PriceWrite } from '../lib/shopify/prices';
@@ -119,6 +119,26 @@ async function main(): Promise<void> {
     ),
   );
 
+  await test('the shared Shopify mutation boundary rejects a zero-dollar write', async () => {
+    let contacted = false;
+    const client = {
+      request: async () => {
+        contacted = true;
+        throw new Error('the zero-dollar write reached Shopify');
+      },
+    } as unknown as AdminGraphqlClient;
+    let error: unknown;
+    try {
+      await writeProductVariantPrices(client, 'gid://shopify/Product/1', [
+        { variantGid: 'gid://shopify/ProductVariant/1', priceCents: 0 },
+      ]);
+    } catch (cause) {
+      error = cause;
+    }
+    assert(error instanceof RangeError, 'the low-level writer accepted a zero-dollar price');
+    assert(!contacted, 'the low-level writer contacted Shopify before validating the price');
+  });
+
   const envNames = ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_ADMIN_ACCESS_TOKEN', 'VERCEL_ENV'] as const;
   const originalEnv = new Map(envNames.map((name) => [name, process.env[name]]));
   try {
@@ -217,6 +237,200 @@ async function main(): Promise<void> {
     );
     assert(result.applied === 0 && result.failed === 1, 'writer did not reject corrupt zero-dollar intent');
     assert(fakeShopify.writeLog.length === 0, 'zero-dollar mutation reached Shopify');
+  });
+
+  await test('rollback rejects a corrupt zero-dollar baseline before Shopify', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const storedShop = await adapter.upsertShop({
+      shop_domain: 'rollback-pricing-safety.myshopify.com',
+      mode: 'demo',
+      currency: 'USD',
+    });
+    const product = makeProduct(901, { priceCents: 1000, productIndex: 901 }, storedShop.id);
+    const stages = normalizeStages(undefined, 1);
+    const rollout = await adapter.createRollout(
+      makeRolloutCreate({
+        shop_id: storedShop.id,
+        status: 'running',
+        stages,
+        current_stage: stages.length - 1,
+        stage_entered_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      }),
+    );
+    await adapter.insertRolloutVariants(
+      planRolloutVariants({
+        rolloutId: rollout.id,
+        shopId: storedShop.id,
+        products: [product],
+        change: { type: 'percent', percent: 10 },
+        stages,
+      }),
+    );
+    const corruptAdapter = new Proxy(adapter, {
+      get(target, property, receiver) {
+        if (property === 'getRolloutVariants') {
+          return async (rolloutId: string): Promise<RolloutVariant[]> =>
+            (await target.getRolloutVariants(rolloutId)).map((row) => ({
+              ...row,
+              excluded: false,
+              baseline_price_cents: 0,
+            }));
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as StoreAdapter;
+    const fakeShopify = new FakeShopify().seed([product]);
+    fakeShopify.setPrice(product.variant_gid, 1100);
+    const result = await rollbackRollout(
+      { adapter: corruptAdapter, client: fakeShopify.asClient(), shop: storedShop },
+      rollout,
+      { reason: 'corrupt baseline regression' },
+    );
+    assert(result.applied === 0 && result.failed === 1, 'rollback accepted a zero-dollar baseline');
+    assert(fakeShopify.writeLog.length === 0, 'zero-dollar rollback mutation reached Shopify');
+    assert(fakeShopify.priceOf(product.variant_gid) === 1100, 'rollback changed the live price after rejecting it');
+  });
+
+  await test('a shop stop stamped after the live read blocks the forward mutation', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const storedShop = await adapter.upsertShop({
+      shop_domain: 'last-boundary-stop.myshopify.com',
+      mode: 'demo',
+      currency: 'USD',
+    });
+    const product = makeProduct(902, { priceCents: 1000, productIndex: 902 }, storedShop.id);
+    const stages = normalizeStages(undefined, 1);
+    const rollout = await adapter.createRollout(
+      makeRolloutCreate({
+        shop_id: storedShop.id,
+        status: 'running',
+        stages,
+        current_stage: stages.length - 1,
+        stage_entered_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      }),
+    );
+    await adapter.insertRolloutVariants(
+      planRolloutVariants({
+        rolloutId: rollout.id,
+        shopId: storedShop.id,
+        products: [product],
+        change: { type: 'percent', percent: 10 },
+        stages,
+      }),
+    );
+    const fakeShopify = new FakeShopify().seed([product]);
+    const underlying = fakeShopify.asClient();
+    let stopStamped = false;
+    const client = {
+      request: async (query: string, variables: Record<string, unknown>) => {
+        const response = await underlying.request(query, variables);
+        if (!stopStamped && query.includes('PriceflagVariantPrices')) {
+          stopStamped = true;
+          await adapter.updateShop(storedShop.id, {
+            kill_switch_engaged_at: new Date().toISOString(),
+            kill_switch_reason: 'race regression',
+          });
+        }
+        return response;
+      },
+    } as unknown as AdminGraphqlClient;
+
+    const result = await applyStage({ adapter, client, shop: storedShop }, rollout, stages.length - 1);
+    assert(stopStamped, 'fixture did not stamp the stop after the live read');
+    assert(result.applied === 0 && result.failed === 1, 'writer continued after the store-wide stop');
+    assert(fakeShopify.writeLog.length === 0, 'a Shopify mutation happened after the store-wide stop');
+    assert(fakeShopify.priceOf(product.variant_gid) === 1000, 'the storefront price changed after the stop');
+  });
+
+  await test('rollback preserves compare-at when Priceflag never managed it', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const storedShop = await adapter.upsertShop({
+      shop_domain: 'unmanaged-compare-at.myshopify.com',
+      mode: 'demo',
+      currency: 'USD',
+    });
+    const product = makeProduct(903, { priceCents: 1000, compareAtCents: null, productIndex: 903 }, storedShop.id);
+    const stages = normalizeStages(undefined, 1);
+    const rollout = await adapter.createRollout(
+      makeRolloutCreate({
+        shop_id: storedShop.id,
+        status: 'running',
+        stages,
+        current_stage: 0,
+        stage_entered_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      }),
+    );
+    await adapter.insertRolloutVariants(
+      planRolloutVariants({
+        rolloutId: rollout.id,
+        shopId: storedShop.id,
+        products: [product],
+        change: { type: 'percent', percent: 10 },
+        stages,
+      }),
+    );
+    const fakeShopify = new FakeShopify().seed([product]);
+    const applied = await applyStage({ adapter, client: fakeShopify.asClient(), shop: storedShop }, rollout, 0);
+    assert(applied.fully_applied, 'fixture did not activate the target price');
+    fakeShopify.setPrice(product.variant_gid, 1100, 1500);
+
+    const undo = await rollbackRollout(
+      { adapter, client: fakeShopify.asClient(), shop: storedShop },
+      rollout,
+      { reason: 'unmanaged compare-at regression' },
+    );
+    assert(undo.fully_applied, 'an unmanaged compare-at blocked the price rollback');
+    assert(fakeShopify.priceOf(product.variant_gid) === 1000, 'baseline price was not restored');
+    assert(fakeShopify.compareAtOf(product.variant_gid) === 1500, 'merchant compare-at was overwritten');
+  });
+
+  await test('rollback pauses on a merchant compare-at edit that Priceflag had managed', async () => {
+    const adapter = new DemoAdapter({ persist: false, autoSeed: false });
+    const storedShop = await adapter.upsertShop({
+      shop_domain: 'managed-compare-at.myshopify.com',
+      mode: 'demo',
+      currency: 'USD',
+    });
+    const product = makeProduct(904, { priceCents: 1000, compareAtCents: 1050, productIndex: 904 }, storedShop.id);
+    const stages = normalizeStages(undefined, 1);
+    const rollout = await adapter.createRollout(
+      makeRolloutCreate({
+        shop_id: storedShop.id,
+        status: 'running',
+        stages,
+        current_stage: 0,
+        stage_entered_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      }),
+    );
+    await adapter.insertRolloutVariants(
+      planRolloutVariants({
+        rolloutId: rollout.id,
+        shopId: storedShop.id,
+        products: [product],
+        change: { type: 'percent', percent: 10 },
+        stages,
+      }),
+    );
+    const fakeShopify = new FakeShopify().seed([product]);
+    const applied = await applyStage({ adapter, client: fakeShopify.asClient(), shop: storedShop }, rollout, 0);
+    assert(applied.fully_applied, 'fixture did not activate the managed compare-at target');
+    fakeShopify.setPrice(product.variant_gid, 1100, 1300);
+    const writesBefore = fakeShopify.writeLog.length;
+
+    const undo = await rollbackRollout(
+      { adapter, client: fakeShopify.asClient(), shop: storedShop },
+      rollout,
+      { reason: 'managed compare-at merchant edit regression' },
+    );
+    assert(undo.external_changes.length === 1, 'compare-at-only merchant edit was not reported external');
+    assert(fakeShopify.writeLog.length === writesBefore, 'rollback wrote over a merchant compare-at edit');
+    assert(fakeShopify.priceOf(product.variant_gid) === 1100, 'merchant-edited target price moved');
+    assert(fakeShopify.compareAtOf(product.variant_gid) === 1300, 'merchant compare-at was overwritten');
   });
 
   process.stdout.write(`${passed}/${passed} pricing safety tests passed\n`);

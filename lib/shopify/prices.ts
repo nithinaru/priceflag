@@ -17,7 +17,12 @@
  */
 
 import { assertNoUserErrors, ShopifyApiError, type AdminGraphqlClient, type GraphqlUserError } from './client';
-import { formatCentsAsShopifyMoney, parseMoneyToCents, type Cents } from '../money';
+import {
+  assertStorefrontPrice,
+  formatCentsAsShopifyMoney,
+  parseMoneyToCents,
+  type Cents,
+} from '../money';
 
 export const VARIANT_PRICES_QUERY = /* GraphQL */ `
   query PriceflagVariantPrices($ids: [ID!]!) {
@@ -117,6 +122,9 @@ export async function writeProductVariantPrices(
 
   const requested = new Map<string, PriceWrite>();
   for (const write of writes) {
+    // This is the final shared Shopify mutation boundary. Callers validate too,
+    // but persisted rollback baselines and future write paths are untrusted.
+    assertStorefrontPrice(write.priceCents, 'Shopify price');
     if (requested.has(write.variantGid)) {
       throw new ShopifyApiError(
         'invalid_response',

@@ -1,10 +1,11 @@
 import { createHmac } from 'node:crypto';
 
 import { DemoAdapter, setAdapter } from '../lib/adapters';
+import { SupabaseAdapter } from '../lib/adapters/supabase';
 import { CONTRACT_VERSION, type Guardrails, type RolloutReport } from '../lib/contracts';
 import { DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
 import { encryptSecret } from '../lib/crypto';
-import type { Rollout, RolloutVariant } from '../lib/types';
+import type { ProductUpsert, Rollout, RolloutVariant } from '../lib/types';
 import { POST as forecast } from '../app/api/forecast/route';
 import { GET as listRollouts, POST as createRollout } from '../app/api/rollouts/route';
 import { GET as getRollout } from '../app/api/rollouts/[id]/route';
@@ -26,6 +27,7 @@ import { POST as reconcileWebhookSubscriptions } from '../app/api/webhook-subscr
 const API_KEY = 'merchant-api-test-key';
 const API_SECRET = 'merchant-api-test-secret';
 const OTHER_SHOP = 'other-merchant.myshopify.com';
+const CHAIN_SHOP = 'chain-safety.myshopify.com';
 const originalFetch = globalThis.fetch;
 
 interface TestCase {
@@ -83,6 +85,16 @@ function patchRequest(path: string, body: unknown, bearer?: string): Request {
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   return new Request(`https://priceflag.test${path}`, {
     method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+function deleteRequest(path: string, body: unknown, bearer?: string): Request {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  return new Request(`https://priceflag.test${path}`, {
+    method: 'DELETE',
     headers,
     body: JSON.stringify(body),
   });
@@ -272,7 +284,9 @@ test('every legacy merchant route rejects missing and forged session tokens', as
     (bearer?: string) => sync(request('/api/sync?shop=' + DEMO_SHOP_DOMAIN, {}, bearer)),
     (bearer?: string) => syncStatus(authGet('/api/sync/status?shop=' + DEMO_SHOP_DOMAIN, bearer)),
     (bearer?: string) => killSwitch(request('/api/kill-switch?shop=' + DEMO_SHOP_DOMAIN, {}, bearer)),
-    (bearer?: string) => releaseKillSwitch(authGet('/api/kill-switch?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => releaseKillSwitch(
+      deleteRequest('/api/kill-switch?shop=' + DEMO_SHOP_DOMAIN, { confirm: true }, bearer),
+    ),
     (bearer?: string) => confirmRollout(request('/api/rollouts/unknown/confirm', { confirm: true }, bearer), {
       params: Promise.resolve({ id: 'unknown' }),
     }),
@@ -611,14 +625,22 @@ test('kill-switch release mutates only the session-token tenant', async () => {
   await adapter.updateShop(otherShopId, {
     kill_switch_engaged_at: new Date().toISOString(),
     kill_switch_reason: 'other fixture',
+    access_token_enc: encryptSecret('shpat_other_release_test'),
   });
 
+  const unconfirmed = await releaseKillSwitch(
+    deleteRequest('/api/kill-switch', {}, token(OTHER_SHOP)),
+  );
+  assert(unconfirmed.status === 400, `unconfirmed release returned ${unconfirmed.status}`);
+  assert((await adapter.getShop(otherShopId))?.kill_switch_engaged_at !== null, 'unconfirmed release changed the store');
+
   const response = await releaseKillSwitch(
-    authGet(`/api/kill-switch?shop=${DEMO_SHOP_DOMAIN}`, token(OTHER_SHOP)),
+    deleteRequest(`/api/kill-switch?shop=${DEMO_SHOP_DOMAIN}`, { confirm: true }, token(OTHER_SHOP)),
   );
   assert(response.status === 200, `release returned ${response.status}`);
   assert((await adapter.getShop(shopId))?.kill_switch_engaged_at !== null, 'primary switch was released cross-shop');
   assert((await adapter.getShop(otherShopId))?.kill_switch_engaged_at === null, 'token tenant switch stayed engaged');
+  await adapter.updateShop(otherShopId, { access_token_enc: null });
 
   // Restore the primary fixture for later writer tests.
   await adapter.updateShop(shopId, { kill_switch_engaged_at: null, kill_switch_reason: null });
@@ -633,6 +655,25 @@ test('automatic rollback cannot be enabled during the beta', async () => {
   );
   assert(response.status === 422, `expected 422, got ${response.status}`);
   assert((await adapter.listRollouts(shopId)).length === before.length, 'rejected request created a rollout');
+});
+
+test('draft creation is blocked while the store-wide kill switch is engaged', async () => {
+  const before = await adapter.listRollouts(shopId);
+  await adapter.updateShop(shopId, {
+    kill_switch_engaged_at: new Date().toISOString(),
+    kill_switch_reason: 'draft creation regression',
+  });
+  try {
+    const response = await createRollout(
+      request('/api/rollouts', proposal(variantGid, true), token(DEMO_SHOP_DOMAIN)),
+    );
+    const body = await json(response);
+    assert(response.status === 409, `kill-switched draft creation returned ${response.status}`);
+    assert(body.error?.code === 'kill_switch_engaged', 'kill-switched draft used the wrong error code');
+    assert((await adapter.listRollouts(shopId)).length === before.length, 'kill-switched request created a draft');
+  } finally {
+    await adapter.updateShop(shopId, { kill_switch_engaged_at: null, kill_switch_reason: null });
+  }
 });
 
 test('draft creation atomically freezes baselines, targets, cohorts, and the approved forecast', async () => {
@@ -883,6 +924,53 @@ test('manual rollback requires an explicit merchant confirmation', async () => {
   assert(body.error?.code === 'rollback_confirmation_required', 'confirmation error code drifted');
 });
 
+test('manual rollback rechecks a store-wide stop at the final Shopify write boundary', async () => {
+  const fixture = await createTestDraft();
+  const frozen = fixture.variants[0];
+  assert(frozen !== undefined, 'rollback stop-race fixture has no variant');
+  await adapter.updateRollout(fixture.rollout.id, {
+    status: 'running',
+    current_stage: 0,
+    stage_entered_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+  });
+  await adapter.updateRolloutVariant(frozen.id, {
+    applied_at: new Date().toISOString(),
+    applied_price_cents: frozen.target_price_cents,
+  });
+  const shopify = installShopifyPriceMock([frozen], 'target');
+
+  let shopReads = 0;
+  const stoppingAdapter = new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property === 'getShop') {
+        return async (wantedShopId: string) => {
+          const current = await target.getShop(wantedShopId);
+          shopReads += 1;
+          return current !== null && shopReads >= 2
+            ? { ...current, kill_switch_engaged_at: new Date().toISOString(), kill_switch_reason: 'race regression' }
+            : current;
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  setAdapter(stoppingAdapter);
+  try {
+    const response = await rollback(
+      request(`/api/rollouts/${fixture.rollout.id}/rollback`, { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+      { params: Promise.resolve({ id: fixture.rollout.id }) },
+    );
+    assert(response.status === 207, `stopped rollback did not report a safe partial result (${response.status})`);
+    assert(shopify.writes.count === 0, 'rollback contacted Shopify after the final stop check');
+    assert((await adapter.getRollout(fixture.rollout.id))?.status === 'paused', 'stopped rollback was not left retryable');
+  } finally {
+    setAdapter(adapter);
+  }
+});
+
 test('manual rollback verifies Shopify before reporting success and is idempotent', async () => {
   createdRollout = await adapter.updateRollout(createdRollout.id, {
     status: 'running',
@@ -1012,8 +1100,16 @@ test('partial rollback stays non-terminal and reports the unverified SKU', async
 
 test('rollback remains partial when Shopify restores price but not the frozen compare-at value', async () => {
   const fixture = await createTestDraft();
-  const frozen = fixture.variants[0];
-  assert(frozen !== undefined, 'compare-at fixture has no variant');
+  const original = fixture.variants[0];
+  assert(original !== undefined, 'compare-at fixture has no variant');
+  // This regression is specifically about a compare-at value Priceflag managed.
+  // Unmanaged compare-at values belong to the merchant and are deliberately
+  // preserved (covered by pricing-safety.test.ts).
+  const frozen = await adapter.updateRolloutVariant(original.id, {
+    baseline_compare_at_cents: original.baseline_price_cents + 500,
+    target_compare_at_cents: null,
+    compare_at_action: 'clear',
+  });
   await adapter.updateRollout(fixture.rollout.id, {
     status: 'running',
     current_stage: 0,
@@ -1074,6 +1170,11 @@ test('rollback remains partial when Shopify restores price but not the frozen co
   assert(body.unverified?.[0]?.expected_compare_at === frozen.baseline_compare_at_cents, 'expected compare-at missing');
   assert(body.unverified?.[0]?.found_compare_at === liveCompareAt, 'live compare-at mismatch missing');
   assert(stored?.status === 'paused' && stored.ended_at === null, 'compare-at mismatch became terminal');
+  await adapter.updateRolloutVariant(frozen.id, {
+    baseline_compare_at_cents: original.baseline_compare_at_cents,
+    target_compare_at_cents: original.target_compare_at_cents,
+    compare_at_action: original.compare_at_action,
+  });
 });
 
 test('rollback restores every live variant when all write acknowledgements were lost', async () => {
@@ -1141,6 +1242,172 @@ test('rollback restores every live variant when all write acknowledgements were 
   }
 });
 
+test('kill switch reaches the original chain root after a terminal-status crash without replaying an intermediate price', async () => {
+  const chainShop = await adapter.upsertShop({
+    shop_domain: CHAIN_SHOP,
+    mode: 'demo',
+    currency: 'USD',
+    access_token_enc: encryptSecret('shpat_chain_safety_test'),
+  });
+  const source = (await adapter.listProducts(shopId, { only_repriceable: true, limit: 1 })).items[0];
+  assert(source !== undefined, 'chain fixture has no source product');
+  const sourceInput: ProductUpsert = {
+    product_gid: source.product_gid,
+    variant_gid: source.variant_gid,
+    inventory_item_gid: source.inventory_item_gid,
+    title: source.title,
+    variant_title: source.variant_title,
+    sku: source.sku,
+    vendor: source.vendor,
+    product_type: source.product_type,
+    tags: source.tags,
+    image_url: source.image_url,
+    status: source.status,
+    price_cents: source.price_cents,
+    compare_at_cents: source.compare_at_cents,
+    currency: source.currency,
+    cogs_cents: source.cogs_cents,
+    cogs_source: source.cogs_source,
+    cogs_updated_at: source.cogs_updated_at,
+    is_gift_card: source.is_gift_card,
+    requires_selling_plan: source.requires_selling_plan,
+    has_selling_plan: source.has_selling_plan,
+    inventory_quantity: source.inventory_quantity,
+    available_for_sale: source.available_for_sale,
+  };
+  const chainVariantGid = 'gid://shopify/ProductVariant/990001';
+  const chainProductGid = 'gid://shopify/Product/990001';
+  await adapter.upsertProducts(chainShop.id, [{
+    ...sourceInput,
+    variant_gid: chainVariantGid,
+    product_gid: chainProductGid,
+    inventory_item_gid: 'gid://shopify/InventoryItem/990001',
+    title: 'Chain safety product',
+    price_cents: 1000,
+    compare_at_cents: null,
+  }]);
+
+  const firstResponse = await createRollout(
+    request('/api/rollouts', proposal(chainVariantGid, true), token(CHAIN_SHOP)),
+  );
+  const firstBody = await json(firstResponse);
+  assert(firstResponse.status === 201, `could not create first chain rollout: ${JSON.stringify(firstBody)}`);
+  const firstRollout = await adapter.updateRollout(firstBody.rollout.id, {
+    status: 'completed',
+    current_stage: 0,
+    stage_entered_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    ended_at: new Date().toISOString(),
+    ended_reason: 'completed',
+  });
+  const firstVariant = (await adapter.getRolloutVariants(firstRollout.id))[0];
+  assert(firstVariant !== undefined, 'first chain rollout has no variant');
+  await adapter.updateRolloutVariant(firstVariant.id, {
+    applied_at: new Date().toISOString(),
+    applied_price_cents: firstVariant.target_price_cents,
+  });
+
+  await adapter.upsertProducts(chainShop.id, [{
+    ...sourceInput,
+    variant_gid: chainVariantGid,
+    product_gid: chainProductGid,
+    inventory_item_gid: 'gid://shopify/InventoryItem/990001',
+    title: 'Chain safety product',
+    price_cents: 1100,
+    compare_at_cents: null,
+  }]);
+  const secondProposal = proposal(chainVariantGid, true);
+  secondProposal.change = { type: 'absolute', absolute_cents: -100, rounding: 'none' };
+  const secondResponse = await createRollout(
+    request('/api/rollouts', secondProposal, token(CHAIN_SHOP)),
+  );
+  const secondBody = await json(secondResponse);
+  assert(secondResponse.status === 201, `could not create second chain rollout: ${JSON.stringify(secondBody)}`);
+  const secondRollout = await adapter.updateRollout(secondBody.rollout.id, {
+    status: 'completed',
+    current_stage: 0,
+    stage_entered_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    ended_at: new Date().toISOString(),
+    ended_reason: 'completed',
+  });
+  const secondVariant = (await adapter.getRolloutVariants(secondRollout.id))[0];
+  assert(secondVariant !== undefined, 'second chain rollout has no variant');
+  await adapter.updateRolloutVariant(secondVariant.id, {
+    applied_at: new Date().toISOString(),
+    applied_price_cents: secondVariant.target_price_cents,
+  });
+
+  const shopify = installShopifyPriceMock([firstVariant, secondVariant], 'target');
+  let terminalFailuresRemaining = 3;
+  const arbitraryOrderAdapter = new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property === 'listRollouts') {
+        return async (wantedShopId: string, statuses?: readonly Rollout['status'][]) => {
+          const rows = await target.listRollouts(wantedShopId, statuses);
+          return wantedShopId === chainShop.id ? [...rows].reverse() : rows;
+        };
+      }
+      if (property === 'updateRollout') {
+        return async (rolloutId: string, patch: Partial<Rollout>) => {
+          if (
+            rolloutId === secondRollout.id &&
+            patch.status === 'rolled_back' &&
+            terminalFailuresRemaining > 0
+          ) {
+            terminalFailuresRemaining -= 1;
+            throw new Error('simulated database failure after Shopify restored the price');
+          }
+          return target.updateRollout(rolloutId, patch);
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  setAdapter(arbitraryOrderAdapter);
+  try {
+    const firstKill = await killSwitch(
+      request('/api/kill-switch', { confirm: true, reason: 'arbitrary-order chain regression' }, token(CHAIN_SHOP)),
+    );
+    const firstKillBody = await json(firstKill);
+    assert(firstKill.status === 207, `crash-window kill did not report partial state: ${JSON.stringify(firstKillBody)}`);
+    assert(shopify.live.get(chainVariantGid)?.price === 1000, 'kill switch left the chain on an intermediate price');
+    assert((await adapter.getRollout(firstRollout.id))?.status === 'rolled_back', 'old chain link was not resolved');
+    assert(
+      (await adapter.getRollout(secondRollout.id))?.status !== 'rolled_back',
+      'crash-window chain link did not remain visibly unfinished and retryable',
+    );
+
+    const writesAfterFirst = shopify.writes.count;
+    terminalFailuresRemaining = 0;
+    const retry = await killSwitch(
+      request('/api/kill-switch', { confirm: true, reason: 'idempotent chain retry' }, token(CHAIN_SHOP)),
+    );
+    assert(retry.status === 200, `chain retry failed: ${JSON.stringify(await json(retry))}`);
+    assert(shopify.writes.count === writesAfterFirst, 'chain retry rewrote an already restored storefront');
+    assert((await adapter.getRollout(secondRollout.id))?.status === 'rolled_back', 'retry reopened a restored chain link');
+
+    const chainLive = shopify.live.get(chainVariantGid);
+    assert(chainLive !== undefined, 'chain live price disappeared');
+    chainLive.price = 1050;
+    const unverifiedRelease = await releaseKillSwitch(
+      deleteRequest('/api/kill-switch', { confirm: true }, token(CHAIN_SHOP)),
+    );
+    const unverifiedBody = await json(unverifiedRelease);
+    assert(unverifiedRelease.status === 409, 'release ignored a live price that was not at the chain root');
+    assert(unverifiedBody.error?.code === 'kill_switch_release_unverified', 'unverified release used the wrong code');
+    chainLive.price = 1000;
+
+    const released = await releaseKillSwitch(
+      deleteRequest('/api/kill-switch', { confirm: true }, token(CHAIN_SHOP)),
+    );
+    assert(released.status === 200, `verified chain could not release its kill switch (${released.status})`);
+  } finally {
+    setAdapter(adapter);
+  }
+});
+
 test('kill switch fails honestly when an evaluator still holds a rollout lease', async () => {
   const fixture = await createTestDraft();
   const busyDraft = await createTestDraft([secondVariantGid]);
@@ -1183,7 +1450,86 @@ test('kill switch fails honestly when an evaluator still holds a rollout lease',
     );
   }
   assert((await adapter.getShop(shopId))?.kill_switch_engaged_at !== null, 'partial kill switch was released');
-  await releaseKillSwitch(authGet('/api/kill-switch', token(DEMO_SHOP_DOMAIN)));
+  const blockedRelease = await releaseKillSwitch(
+    deleteRequest('/api/kill-switch', { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+  );
+  const blockedBody = await json(blockedRelease);
+  assert(blockedRelease.status === 409, 'an incomplete emergency stop could be released');
+  assert(blockedBody.error?.code === 'kill_switch_release_blocked', 'blocked release used the wrong error code');
+
+  const retry = await killSwitch(
+    request('/api/kill-switch', { confirm: true, reason: 'finish lease race regression' }, token(DEMO_SHOP_DOMAIN)),
+  );
+  assert(retry.status === 200, `kill-switch retry did not converge: ${JSON.stringify(await json(retry))}`);
+  const released = await releaseKillSwitch(
+    deleteRequest('/api/kill-switch', { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+  );
+  assert(released.status === 200, `verified emergency stop could not be released (${released.status})`);
+});
+
+test('shop-wide rollback pagination cannot omit variants with tied timestamps', async () => {
+  const createdAt = '2026-08-04T00:00:00.000Z';
+  const source = Array.from({ length: 1001 }, (_, index) => ({
+    id: `rv-${String(index).padStart(4, '0')}`,
+    rollout_id: 'rollout-pagination',
+    shop_id: 'shop-pagination',
+    variant_gid: `gid://shopify/ProductVariant/${index + 1}`,
+    product_gid: `gid://shopify/Product/${index + 1}`,
+    title: `Variant ${index + 1}`,
+    sku: null,
+    baseline_price_cents: 1000,
+    baseline_compare_at_cents: null,
+    target_price_cents: 1100,
+    target_compare_at_cents: null,
+    compare_at_action: 'none',
+    baseline_units_per_day: 1,
+    cogs_cents_at_creation: 400,
+    cohort_stage: 0,
+    applied_price_cents: null,
+    applied_at: null,
+    reverted_at: null,
+    excluded: false,
+    exclusion_reason: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+  }));
+  const orderCalls: string[][] = [];
+
+  const fakeDb = {
+    from(table: string) {
+      assert(table === 'rollout_variants', `unexpected table ${table}`);
+      const orders: string[] = [];
+      return {
+        select() {
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        order(column: string) {
+          orders.push(column);
+          return this;
+        },
+        async range(from: number, to: number) {
+          orderCalls.push([...orders]);
+          const rows = [...source].sort(
+            (left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id),
+          );
+          return { data: rows.slice(from, to + 1), error: null };
+        },
+      };
+    },
+  };
+
+  const supabase = new SupabaseAdapter(fakeDb as never);
+  const variants = await supabase.listRolloutVariantsForShop('shop-pagination');
+  assert(variants.length === 1001, `expected 1001 variants, got ${variants.length}`);
+  assert(new Set(variants.map((variant) => variant.id)).size === 1001, 'a pagination boundary duplicated a variant');
+  assert(orderCalls.length === 2, `expected two pages, got ${orderCalls.length}`);
+  assert(
+    orderCalls.every((columns) => columns.join(',') === 'created_at,id'),
+    `pagination order was not uniquely deterministic: ${JSON.stringify(orderCalls)}`,
+  );
 });
 
 async function main(): Promise<void> {

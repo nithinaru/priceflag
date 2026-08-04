@@ -21,7 +21,7 @@ import {
  *
  * The live preview translates the percentage into units, which is the number a
  * merchant actually recognises: "a day below 25 units" means something,
- * "30% below expected" does not.
+ * "35% below expected" does not.
  */
 
 export type GuardrailDraft = {
@@ -32,7 +32,7 @@ export type GuardrailDraft = {
 
 export const DEFAULT_GUARDRAIL_DRAFT: GuardrailDraft = {
   metric: "units",
-  thresholdPct: 30,
+  thresholdPct: 35,
   consecutiveDays: 2,
 };
 
@@ -140,7 +140,8 @@ export function GuardrailBuilder({
               </span>{" "}
               across these products. On that basis we would act on a day below roughly{" "}
               <span className="font-medium text-ink">{formatUnits(trigger, 1)} units</span> — and
-              only if that happened {countOf(draft.consecutiveDays, "day")} in a row.
+              only if it was also outside the expected range and happened{" "}
+              {countOf(draft.consecutiveDays, "day")} in a row.
             </p>
           ) : (
             <p className="mt-1 max-w-prose text-base text-ink-muted">

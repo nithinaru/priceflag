@@ -169,8 +169,9 @@ was written. Compare-before-write makes that common; it is not an error.
 
 `UNIQUE (webhook_id)` on the `X-Shopify-Webhook-Id` header turns Shopify's
 at-least-once delivery into effectively-once processing. A duplicate
-`orders/create` that slipped through would corrupt `order_days`, which drives
-auto-rollback.
+`orders/create` or `refunds/create` that slipped through would corrupt
+`order_days`, which drives live guardrail decisions. Raw order and refund
+payloads are never retained.
 
 ### `model_runs`, `elasticity_fits`, `expected_bands`, `rollout_reports`
 

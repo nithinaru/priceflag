@@ -136,7 +136,7 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
               note="Revenue can fall while profit rises — that is often the point."
             />
             <Stat
-              label="Orders"
+              label="Unit sales"
               value={formatPctDelta(report.realized.units_change_pct, 0)}
               note="Against what we expected those days to do without a price change."
             />
@@ -146,7 +146,7 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
           <span>
             {scored
               ? "Every forecast Priceflag makes is checked against what happened, including the ones we got wrong."
-              : "There was not enough sales history to predict a range when this change was created, so we did not make one."}
+              : "There was not enough usable sales volume to predict a range when this change was created, so we did not make one."}
           </span>
         </CardFooter>
       </Card>
@@ -170,7 +170,7 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
               />
             ) : null}
             <PredictedVsRealized
-              label="Orders"
+              label="Unit sales"
               low={report.predicted.low.units_change_pct}
               high={report.predicted.high.units_change_pct}
               predicted={report.predicted.expected.units_change_pct}
@@ -181,11 +181,11 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
         </Card>
       ) : (
         <Notice tone="info" title="Why there is no score here">
-          When this change was created, these products had not sold at more than one price, so there
-          was nothing in your own history to predict from. We said so at the time rather than
-          guessing, and we are not going to invent a prediction now just to grade ourselves against
-          it. As your store builds up more selling history, these reports start carrying a real
-          prediction to check.
+          When this change was created, these products did not have enough usable sales volume to
+          support even a broad forecast range. We said so at the time, and we are not going to
+          invent a prediction now just to grade ourselves against it. Once there is enough volume,
+          Priceflag will show either a store-specific range or a clearly labelled category-default
+          range.
         </Notice>
       )}
 
@@ -216,7 +216,7 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
               {countOf(bundle.variants.filter((variant) => !variant.excluded).length, "product")}
             </DetailRow>
             <DetailRow label="How it ended">{rolloutStatusMeta(rollout.status).sentence}</DetailRow>
-            <DetailRow label="Days of orders behind this">
+            <DetailRow label="Days of sales behind this">
               {countOf(report.window.days, "day")}
             </DetailRow>
             <DetailRow label="Units sold while live">

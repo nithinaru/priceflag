@@ -1,12 +1,13 @@
 /**
  * The forecast. Two layers, deliberately in this order:
  *
- *   1. **Breakeven arithmetic** — pure margin math. It is true regardless of any
- *      model, so it leads the card (R6) and it is the thing a merchant can check
- *      on the back of an envelope.
- *   2. **A fitted range** — only when Lane C has a usable elasticity for these
- *      products. Missing or stale fits degrade to layer 1 tagged `assumption`
- *      (R32); they never block and never masquerade as fresh.
+ *   1. **Breakeven arithmetic** — unit-margin math, independent of the demand
+ *      model. For a multi-product selection it explicitly assumes proportional
+ *      demand movement, so that limitation travels with the result.
+ *   2. **A predicted range** — Lane C's fitted elasticity where available, with
+ *      a deliberately broad category default where history cannot identify the
+ *      response. Missing data is tagged `assumption`; it never masquerades as a
+ *      store-specific fit.
  *
  * Everything the card shows must be traceable to the scenario table or the
  * explanation string — no black boxes (R8).
@@ -44,6 +45,13 @@ const Z_95 = 1.96;
  * so the range is drawn as if the SE were this fraction of the estimate.
  */
 const IMPLIED_SE_FRACTION = 0.5;
+
+/** Honest consumer-goods fallback when the store cannot identify elasticity. */
+const DEFAULT_ELASTICITY = -1.5;
+const DEFAULT_ELASTICITY_LOW = -2.5;
+const DEFAULT_ELASTICITY_HIGH = -0.5;
+const DEFAULT_ELASTICITY_SE =
+  (DEFAULT_ELASTICITY_HIGH - DEFAULT_ELASTICITY_LOW) / (2 * Z_95);
 
 /** A fitted range wider than this many points of unit change gets a warning. */
 const WIDE_RANGE_POINTS = 40;
@@ -87,6 +95,7 @@ interface VariantLine {
   targetPriceCents: Cents;
   targetCompareAtCents: Cents | null;
   compareAtAction: 'keep' | 'clear' | 'none';
+  revenueRealizationRate: number;
   cogsCents: Cents | null;
   fit: ElasticityFitRow | null;
   fitConfidence: Confidence;
@@ -150,6 +159,7 @@ interface BaselineStats {
   windowDays: number;
   historyDays: number;
   observedPriceLevels: number;
+  revenueRealizationRate: number;
 }
 
 /**
@@ -177,7 +187,14 @@ function baselineFromRows(
   windowDays = BASELINE_WINDOW_DAYS,
 ): BaselineStats {
   if (rows.length === 0) {
-    return { unitsPerDay: 0, ordersPerDay: 0, windowDays: 0, historyDays: 0, observedPriceLevels: 0 };
+    return {
+      unitsPerDay: 0,
+      ordersPerDay: 0,
+      windowDays: 0,
+      historyDays: 0,
+      observedPriceLevels: 0,
+      revenueRealizationRate: 1,
+    };
   }
 
   const days = rows.map((row) => row.day).sort();
@@ -194,11 +211,15 @@ function baselineFromRows(
 
   let units = 0;
   let orders = 0;
+  let grossRevenue = 0;
+  let netRevenue = 0;
   const priceLevels = new Set<number>();
   for (const row of rows) {
     if (row.day >= windowStart && row.day <= windowEnd) {
       units += row.units;
       orders += row.orders;
+      grossRevenue += Math.max(0, row.gross_revenue_cents);
+      netRevenue += row.net_revenue_cents;
     }
     const price = row.list_price_cents ?? row.realized_unit_price_cents;
     if (price !== null && price !== undefined && row.units > 0) priceLevels.add(price);
@@ -210,6 +231,10 @@ function baselineFromRows(
     windowDays: effectiveDays,
     historyDays,
     observedPriceLevels: priceLevels.size,
+    revenueRealizationRate:
+      grossRevenue > 0
+        ? Math.min(1, Math.max(0, netRevenue / grossRevenue))
+        : 1,
   };
 }
 
@@ -230,8 +255,8 @@ export interface Breakeven {
  *   breakeven multiplier k = margin_before / margin_after
  *
  * A price rise makes margin_after larger, so k < 1: units may fall by (1 - k)
- * before profit is worse than today. This is arithmetic, not a prediction, which
- * is exactly why it leads the card.
+ * before profit is worse than today. This is arithmetic, not a demand prediction;
+ * with multiple products it assumes their unit demand moves proportionally.
  */
 export function computeBreakeven(lines: readonly VariantLine[]): Breakeven {
   const anyMissingCogs = lines.some((line) => line.cogsCents === null);
@@ -242,7 +267,7 @@ export function computeBreakeven(lines: readonly VariantLine[]): Breakeven {
       units_change_pct: null,
       direction: 'undefined',
       sentence:
-        'Add your cost for these products and we can tell you exactly how many orders you could afford to lose.',
+        'Add your cost for these products and we can show the unit-sales change where margin breaks even.',
     };
   }
   if (totalUnits <= 0) {
@@ -257,8 +282,8 @@ export function computeBreakeven(lines: readonly VariantLine[]): Breakeven {
   let marginAfter = 0;
   for (const line of lines) {
     const cogs = line.cogsCents as Cents;
-    marginBefore += (line.basePriceCents - cogs) * line.unitsPerDay;
-    marginAfter += (line.targetPriceCents - cogs) * line.unitsPerDay;
+    marginBefore += (line.basePriceCents * line.revenueRealizationRate - cogs) * line.unitsPerDay;
+    marginAfter += (line.targetPriceCents * line.revenueRealizationRate - cogs) * line.unitsPerDay;
   }
 
   if (marginBefore <= 0) {
@@ -283,13 +308,19 @@ export function computeBreakeven(lines: readonly VariantLine[]): Breakeven {
     return {
       units_change_pct: pct,
       direction: 'can_lose',
-      sentence: `You can lose up to ${Math.abs(pct).toFixed(0)}% of orders and still make the same profit.`,
+      sentence:
+        lines.length === 1
+          ? `You can sell up to ${Math.abs(pct).toFixed(0)}% fewer units and still make the same profit.`
+          : `If unit demand moves proportionally across these products, you can sell up to ${Math.abs(pct).toFixed(0)}% fewer units and still make the same profit.`,
     };
   }
   return {
     units_change_pct: pct,
     direction: 'must_gain',
-    sentence: `You need at least ${pct.toFixed(0)}% more orders to make the same profit.`,
+    sentence:
+      lines.length === 1
+        ? `You need to sell at least ${pct.toFixed(0)}% more units to make the same profit.`
+        : `If unit demand moves proportionally across these products, you need to sell at least ${pct.toFixed(0)}% more units to make the same profit.`,
   };
 }
 
@@ -314,12 +345,12 @@ function outcomeAtUnitChange(
     const units = line.unitsPerDay;
     const grown = units * growth;
     unitsAfter += grown;
-    revenueBefore += line.basePriceCents * units;
-    revenueAfter += line.targetPriceCents * grown;
+    revenueBefore += line.basePriceCents * line.revenueRealizationRate * units;
+    revenueAfter += line.targetPriceCents * line.revenueRealizationRate * grown;
     if (hasCogs) {
       const cogs = line.cogsCents as Cents;
-      profitBefore += (line.basePriceCents - cogs) * units;
-      profitAfter += (line.targetPriceCents - cogs) * grown;
+      profitBefore += (line.basePriceCents * line.revenueRealizationRate - cogs) * units;
+      profitAfter += (line.targetPriceCents * line.revenueRealizationRate - cogs) * grown;
     }
   }
 
@@ -332,8 +363,8 @@ function outcomeAtUnitChange(
 
 function scenarioLabel(pct: number, isBreakeven: boolean): string {
   if (isBreakeven) return 'Breakeven';
-  if (pct === 0) return 'Orders unchanged';
-  return pct < 0 ? `${Math.abs(pct).toFixed(0)}% fewer orders` : `${pct.toFixed(0)}% more orders`;
+  if (pct === 0) return 'Units unchanged';
+  return pct < 0 ? `${Math.abs(pct).toFixed(0)}% fewer units` : `${pct.toFixed(0)}% more units`;
 }
 
 /**
@@ -393,8 +424,6 @@ function fitSe(fit: ElasticityFitRow): number {
   return fit.se ?? Math.abs(fit.elasticity) * IMPLIED_SE_FRACTION;
 }
 
-const pickExpected: ElasticityPick = (fit) => fit.elasticity;
-
 /**
  * Prefer Lane C's own credible bounds. Their posterior is asymmetric at the edges
  * — the high side is clipped near zero and wrong-sign fits vacate precision — so a
@@ -408,34 +437,58 @@ const pickLow: ElasticityPick = (fit) =>
 const pickHigh: ElasticityPick = (fit) =>
   fit.high !== null && fit.high !== undefined ? fit.high : fit.elasticity + Z_95 * fitSe(fit);
 
-function aggregateUnitChange(lines: readonly VariantLine[], pick: ElasticityPick): number {
-  // Weight each variant's own response by its own volume, then aggregate — a
-  // single blended elasticity would misprice a selection that mixes a
-  // high-volume staple with a long tail.
-  let baseUnits = 0;
-  let newUnits = 0;
-  for (const line of lines) {
-    const changePct = line.fit
-      ? unitChangeFromElasticity(line.basePriceCents, line.targetPriceCents, pick(line.fit))
-      : 0;
-    baseUnits += line.unitsPerDay;
-    newUnits += line.unitsPerDay * (1 + changePct / 100);
-  }
-  if (baseUnits <= 0) return 0;
-  return (newUnits / baseUnits - 1) * 100;
-}
+type LineElasticityPick = (line: VariantLine) => number;
 
-function toOutcome(
+const expectedElasticity: LineElasticityPick = (line) => line.fit?.elasticity ?? DEFAULT_ELASTICITY;
+const lowElasticity: LineElasticityPick = (line) =>
+  line.fit ? pickLow(line.fit) : DEFAULT_ELASTICITY_LOW;
+const highElasticity: LineElasticityPick = (line) =>
+  line.fit ? pickHigh(line.fit) : DEFAULT_ELASTICITY_HIGH;
+
+/**
+ * Apply each SKU's own elasticity before adding money. Aggregating unit response
+ * first and then applying it uniformly can reverse the profit sign when products
+ * have different margins and demand sensitivity.
+ */
+function outcomeAtElasticities(
   lines: readonly VariantLine[],
-  unitsChangePct: number,
+  pick: LineElasticityPick,
   horizonDays: number,
   hasCogs: boolean,
 ): ForecastOutcome {
-  const outcome = outcomeAtUnitChange(lines, unitsChangePct, horizonDays, hasCogs);
+  let baseUnits = 0;
+  let newUnits = 0;
+  let revenueBefore = 0;
+  let revenueAfter = 0;
+  let profitBefore = 0;
+  let profitAfter = 0;
+
+  for (const line of lines) {
+    const base = line.unitsPerDay;
+    const changePct = unitChangeFromElasticity(
+      line.basePriceCents,
+      line.targetPriceCents,
+      pick(line),
+    );
+    const next = base * (1 + changePct / 100);
+    baseUnits += base;
+    newUnits += next;
+    revenueBefore += line.basePriceCents * line.revenueRealizationRate * base;
+    revenueAfter += line.targetPriceCents * line.revenueRealizationRate * next;
+    if (hasCogs) {
+      const cogs = line.cogsCents as Cents;
+      profitBefore += (line.basePriceCents * line.revenueRealizationRate - cogs) * base;
+      profitAfter += (line.targetPriceCents * line.revenueRealizationRate - cogs) * next;
+    }
+  }
+
+  const unitsChangePct = baseUnits > 0 ? (newUnits / baseUnits - 1) * 100 : 0;
   return {
     units_change_pct: Number(unitsChangePct.toFixed(2)),
-    revenue_delta_cents: outcome.revenue,
-    profit_delta_cents: outcome.profit,
+    revenue_delta_cents: roundCents((revenueAfter - revenueBefore) * horizonDays),
+    profit_delta_cents: hasCogs
+      ? roundCents((profitAfter - profitBefore) * horizonDays)
+      : null,
   };
 }
 
@@ -462,6 +515,7 @@ export function buildForecast(input: ForecastInput): ForecastResult {
   const productLines: ForecastProductLine[] = [];
   const lines: VariantLine[] = [];
   let excludedCount = 0;
+  let staleFitCount = 0;
 
   // Index once. A 500-SKU selection against 180 days of history is 90k rows, and
   // re-filtering that per variant per statistic is how a fast page turns slow.
@@ -488,6 +542,8 @@ export function buildForecast(input: ForecastInput): ForecastResult {
         cogs_cents: product.cogs_cents,
         cogs_source: product.cogs_source,
         baseline_units_per_day: Number(baseline.unitsPerDay.toFixed(4)),
+        demand_multiplier: null,
+        revenue_realization_rate: Number(baseline.revenueRealizationRate.toFixed(6)),
         confidence: 'assumption',
         excluded: true,
         exclusion_reason: exclusion,
@@ -499,9 +555,17 @@ export function buildForecast(input: ForecastInput): ForecastResult {
     const compareAt = resolveCompareAt(product.price_cents, product.compare_at_cents, targetPriceCents);
     const fit = input.fits?.get(product.variant_gid) ?? null;
     const fitConfidence = effectiveFitConfidence(fit, now);
-    // An `assumption`-tier fit is Lane C telling us not to lean on it, so the
-    // bracket table is the whole story for that variant.
-    const usableFit = fit !== null && fitConfidence !== 'assumption' ? fit : null;
+    const fitWasDemoted = fit !== null && fitConfidence !== fit.confidence;
+    if (fitWasDemoted) staleFitCount += 1;
+    // An `assumption`-tier fit is Lane C telling us not to lean on it. Use the
+    // explicitly labelled broad default rather than presenting that weak fit as
+    // store-specific evidence.
+    const usableFit =
+      fit !== null && !fitWasDemoted && fitConfidence !== 'assumption' ? fit : null;
+    const demandMultiplier = Math.pow(
+      targetPriceCents / product.price_cents,
+      usableFit?.elasticity ?? DEFAULT_ELASTICITY,
+    );
 
     lines.push({
       product,
@@ -512,6 +576,7 @@ export function buildForecast(input: ForecastInput): ForecastResult {
       targetPriceCents,
       targetCompareAtCents: compareAt.target,
       compareAtAction: compareAt.action,
+      revenueRealizationRate: baseline.revenueRealizationRate,
       cogsCents: product.cogs_cents,
       fit: usableFit,
       fitConfidence: usableFit ? fitConfidence : 'assumption',
@@ -527,6 +592,8 @@ export function buildForecast(input: ForecastInput): ForecastResult {
       cogs_cents: product.cogs_cents,
       cogs_source: product.cogs_source,
       baseline_units_per_day: Number(baseline.unitsPerDay.toFixed(4)),
+      demand_multiplier: Number(demandMultiplier.toFixed(6)),
+      revenue_realization_rate: Number(baseline.revenueRealizationRate.toFixed(6)),
       confidence: usableFit ? fitConfidence : 'assumption',
       excluded: false,
       exclusion_reason: null,
@@ -553,18 +620,27 @@ export function buildForecast(input: ForecastInput): ForecastResult {
   if (!hasCogs) {
     warnings.push({
       code: 'missing_cogs',
-      message: 'Profit is unknown because some of these products have no cost saved. Revenue is still exact.',
+      message: 'Profit is unknown because some of these products have no cost saved. Revenue can still be calculated for each stated unit-demand scenario.',
     });
   }
 
   const totalUnitsPerDay = lines.reduce((sum, line) => sum + line.unitsPerDay, 0);
   const totalOrdersPerDay = lines.reduce((sum, line) => sum + line.ordersPerDay, 0);
   const revenuePerDay = roundCents(
-    lines.reduce((sum, line) => sum + line.basePriceCents * line.unitsPerDay, 0),
+    lines.reduce(
+      (sum, line) => sum + line.basePriceCents * line.revenueRealizationRate * line.unitsPerDay,
+      0,
+    ),
   );
   const profitPerDay = hasCogs
     ? roundCents(
-        lines.reduce((sum, line) => sum + (line.basePriceCents - (line.cogsCents as Cents)) * line.unitsPerDay, 0),
+        lines.reduce(
+          (sum, line) =>
+            sum +
+            (line.basePriceCents * line.revenueRealizationRate - (line.cogsCents as Cents)) *
+              line.unitsPerDay,
+          0,
+        ),
       )
     : null;
 
@@ -611,26 +687,30 @@ export function buildForecast(input: ForecastInput): ForecastResult {
     });
   }
 
-  // --- fitted range ---
+  // --- predicted range ---
   const contributing = lines.filter((line) => line.fit !== null);
-  const fittedWeight = contributing.reduce((sum, line) => sum + line.unitsPerDay, 0);
-  const useFit = contributing.length > 0 && (fittedWeight > 0 || totalUnitsPerDay === 0);
+  const usesDefaultElasticity = contributing.length !== lines.length;
+  // With trading history, always return a range. A store-specific fit is better;
+  // the broad category default is still more honest than a lone point estimate.
+  const useRange = totalUnitsPerDay > 0;
 
   let fitted: ForecastResult['fitted'] = null;
   let confidence: Confidence = 'assumption';
   let modelVersion: string | null = null;
 
-  if (useFit) {
+  if (useRange) {
     const tiers = lines.map((line) => line.fitConfidence);
     confidence = worstConfidence(tiers);
 
     const elasticity = weightedAverage(
-      contributing.map((line) => [(line.fit as ElasticityFitRow).elasticity, Math.max(line.unitsPerDay, 1e-9)]),
+      lines.map((line) => [expectedElasticity(line), Math.max(line.unitsPerDay, 1e-9)]),
     ) as number;
     const se =
       weightedAverage(
-        contributing.map((line) => [
-          (line.fit as ElasticityFitRow).se ?? Math.abs((line.fit as ElasticityFitRow).elasticity) * IMPLIED_SE_FRACTION,
+        lines.map((line) => [
+          line.fit
+            ? line.fit.se ?? Math.abs(line.fit.elasticity) * IMPLIED_SE_FRACTION
+            : DEFAULT_ELASTICITY_SE,
           Math.max(line.unitsPerDay, 1e-9),
         ]),
       ) ?? null;
@@ -643,55 +723,74 @@ export function buildForecast(input: ForecastInput): ForecastResult {
         ]),
       ) ?? 0;
 
-    const expectedChange = aggregateUnitChange(lines, pickExpected);
-    const candidateA = aggregateUnitChange(lines, pickLow);
-    const candidateB = aggregateUnitChange(lines, pickHigh);
+    const expectedOutcome = outcomeAtElasticities(lines, expectedElasticity, horizonDays, hasCogs);
+    const candidateA = outcomeAtElasticities(lines, lowElasticity, horizonDays, hasCogs);
+    const candidateB = outcomeAtElasticities(lines, highElasticity, horizonDays, hasCogs);
 
-    // Sort by outcome rather than by elasticity sign: which end of the interval
-    // is the bad end flips between a price rise and a price cut.
-    const outcomes = [candidateA, candidateB]
-      .map((change) => toOutcome(lines, change, horizonDays, hasCogs))
-      .sort((a, b) => rankOutcome(a) - rankOutcome(b));
+    // A single joint draw can be pessimistic for profit but high for units (for
+    // example, a below-cost price cut). `low` / `high` are displayable metric
+    // bounds, so normalize each metric independently instead of emitting a
+    // backwards range for the non-ranking metrics.
+    const lowerOutcome: ForecastOutcome = {
+      units_change_pct: Math.min(candidateA.units_change_pct, candidateB.units_change_pct),
+      revenue_delta_cents: Math.min(candidateA.revenue_delta_cents, candidateB.revenue_delta_cents),
+      profit_delta_cents:
+        candidateA.profit_delta_cents === null || candidateB.profit_delta_cents === null
+          ? null
+          : Math.min(candidateA.profit_delta_cents, candidateB.profit_delta_cents),
+    };
+    const upperOutcome: ForecastOutcome = {
+      units_change_pct: Math.max(candidateA.units_change_pct, candidateB.units_change_pct),
+      revenue_delta_cents: Math.max(candidateA.revenue_delta_cents, candidateB.revenue_delta_cents),
+      profit_delta_cents:
+        candidateA.profit_delta_cents === null || candidateB.profit_delta_cents === null
+          ? null
+          : Math.max(candidateA.profit_delta_cents, candidateB.profit_delta_cents),
+    };
 
     fitted = {
       elasticity: Number(elasticity.toFixed(4)),
       elasticity_se: se === null ? null : Number(se.toFixed(4)),
       n_obs: nObs,
       price_variation_pct: Number(priceVariation.toFixed(4)),
-      source: contributing.every((line) => ((line.fit as ElasticityFitRow).shrinkage_weight ?? 1) < 0.5)
-        ? 'portfolio_prior'
-        : 'model',
-      expected: toOutcome(lines, expectedChange, horizonDays, hasCogs),
-      low: outcomes[0] as ForecastOutcome,
-      high: outcomes[1] as ForecastOutcome,
+      source: usesDefaultElasticity
+        ? 'category_default'
+        : contributing.every((line) => ((line.fit as ElasticityFitRow).shrinkage_weight ?? 1) < 0.5)
+          ? 'portfolio_prior'
+          : 'model',
+      expected: expectedOutcome,
+      low: lowerOutcome,
+      high: upperOutcome,
     };
-    modelVersion = (contributing[0] as VariantLine).fit?.model_version ?? null;
+    modelVersion = usesDefaultElasticity
+      ? null
+      : (contributing[0] as VariantLine | undefined)?.fit?.model_version ?? null;
 
-    if (lines.some((line) => line.fit !== null && line.fitConfidence !== (line.fit as ElasticityFitRow).confidence)) {
+    if (staleFitCount > 0) {
       warnings.push({
         code: 'stale_model',
-        message: 'Our fitted numbers for these products are more than a month old, so we have widened the range.',
+        message:
+          staleFitCount === 1
+            ? 'One fitted model is more than a month old, so its old range was replaced with the broad consumer-goods default.'
+            : `${staleFitCount} fitted models are more than a month old, so their old ranges were replaced with the broad consumer-goods default.`,
       });
     }
     if (Math.abs(fitted.high.units_change_pct - fitted.low.units_change_pct) > WIDE_RANGE_POINTS) {
       warnings.push({
         code: 'wide_range',
-        message: 'The range is wide because your history does not pin demand down tightly. The breakeven number is still exact.',
+        message: 'The range is wide because your history does not pin demand down tightly. The breakeven arithmetic and its proportional-demand assumption are shown below.',
       });
     }
   }
 
-  // The contract says `fitted` is null when the tier is `assumption`, and it has
-  // to be: a range the card would draw while the tier tells the merchant we
-  // cannot predict demand is two contradictory claims on one screen. This
-  // happens whenever a selection mixes variants that have usable fits with
-  // variants that do not — the worst tier wins, so the range must go.
-  if (confidence === 'assumption' && fitted !== null) {
-    fitted = null;
-    modelVersion = null;
-  }
-
-  const assumptions = buildAssumptions(lines, horizonDays, hasCogs, rounding, historyDays);
+  const assumptions = buildAssumptions(
+    lines,
+    horizonDays,
+    hasCogs,
+    rounding,
+    historyDays,
+    usesDefaultElasticity && useRange,
+  );
 
   return {
     contract_version: CONTRACT_VERSION,
@@ -747,9 +846,9 @@ function explainConfidence(
     return 'Your history has only a little price movement, so the range is wider than usual and worth treating as a rough guide.';
   }
   if (priceLevels <= 1) {
-    return 'These prices have never changed, so we cannot learn demand from your history yet. The table below shows what happens at each level of order loss instead.';
+    return 'These prices have never changed, so the range uses a broad consumer-goods assumption rather than claiming it was learned from your store.';
   }
-  return 'We do not have enough sales history on these products to predict demand, so the table below shows what happens at each level of order loss instead.';
+  return 'We do not have enough sales history on every selected product, so the range uses a broad consumer-goods assumption where your own data is missing.';
 }
 
 function buildExplanation(
@@ -761,12 +860,16 @@ function buildExplanation(
 ): string {
   const parts: string[] = [breakeven.sentence];
 
-  if (fitted && confidence !== 'assumption') {
+  if (fitted) {
     const expected = fitted.expected.units_change_pct;
     const direction = expected < 0 ? 'fall' : 'rise';
+    const basis =
+      confidence === 'assumption'
+        ? 'Using a broad consumer-goods assumption'
+        : 'Based on how these products have sold at different prices';
     parts.push(
-      `Based on how these products have sold at different prices, we expect orders to ${direction} about ` +
-        `${Math.abs(expected).toFixed(0)}% (somewhere between ${formatPct(fitted.low.units_change_pct, 0)} and ` +
+      `${basis}, unit sales could ${direction} about ${Math.abs(expected).toFixed(0)}% ` +
+        `(with a likely range from ${formatPct(fitted.low.units_change_pct, 0)} to ` +
         `${formatPct(fitted.high.units_change_pct, 0)}).`,
     );
     if (hasCogs && breakeven.units_change_pct !== null) {
@@ -783,7 +886,7 @@ function buildExplanation(
     }
   } else {
     parts.push(
-      `Every row in the table below is exact arithmetic over ${horizonDays} days — pick the level of order loss you believe and read across.`,
+      `Every row in the table below is arithmetic over ${horizonDays} days under the stated proportional unit-demand assumption.`,
     );
   }
 
@@ -796,6 +899,7 @@ function buildAssumptions(
   hasCogs: boolean,
   rounding: Rounding,
   historyDays: number,
+  usesDefaultElasticity: boolean,
 ): string[] {
   const assumptions = [
     `Baseline demand is your average daily units over the last ${BASELINE_WINDOW_DAYS} days (${historyDays} days of history available).`,
@@ -811,7 +915,14 @@ function buildAssumptions(
     assumptions.push(`New prices are rounded to end in ${rounding === 'end_00' ? 'a whole amount' : `.${rounding.slice(-2)}`}.`);
   }
   if (lines.length > 1) {
-    assumptions.push('All selected products are assumed to respond to the price change independently.');
+    assumptions.push(
+      'Breakeven scenarios assume unit demand moves proportionally across the selected products; the predicted range applies each product’s own fitted or default response before adding money.',
+    );
+  }
+  if (usesDefaultElasticity) {
+    assumptions.push(
+      `Where store history cannot identify demand response, the range uses a consumer-goods elasticity of ${DEFAULT_ELASTICITY.toFixed(1)}, with a deliberately broad ${DEFAULT_ELASTICITY_LOW.toFixed(1)} to ${DEFAULT_ELASTICITY_HIGH.toFixed(1)} range.`,
+    );
   }
   return assumptions;
 }
@@ -840,9 +951,4 @@ function weightedAverage(pairs: readonly [number, number][]): number | null {
 function averageOf(values: readonly number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-/** Order outcomes worst-to-best. Profit decides when we know it, revenue otherwise. */
-function rankOutcome(outcome: ForecastOutcome): number {
-  return outcome.profit_delta_cents ?? outcome.revenue_delta_cents;
 }

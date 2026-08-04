@@ -1,4 +1,9 @@
-import { bracketBand, combineBands, type DailyUnits } from "@/lib/engine/bands";
+import {
+  bracketBand,
+  combineBands,
+  conditionBandOnDemandEffect,
+  type DailyUnits,
+} from "@/lib/engine/bands";
 import { buildForecast } from "@/lib/engine/forecast";
 import type { ForecastResult } from "@/lib/contracts";
 import { evaluateGuardrails, type DailyObservation } from "@/lib/engine/guardrails";
@@ -239,6 +244,19 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
       stages,
       baselineUnitsPerDay: baselinePerDay,
     });
+    const frozenForecast = forecastAtProposal(products, spec, store);
+    const multiplierByVariant = new Map(
+      (frozenForecast?.products ?? []).map((product) => [
+        product.variant_gid,
+        product.demand_multiplier ?? 1,
+      ]),
+    );
+    const realizationByVariant = new Map(
+      (frozenForecast?.products ?? []).map((product) => [
+        product.variant_gid,
+        product.revenue_realization_rate,
+      ]),
+    );
 
     const events: RolloutEvent[] = [];
     const readings: RolloutReading[] = [];
@@ -305,34 +323,73 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
         let actualRevenue = 0;
         let actualProfit = 0;
         let profitKnown = true;
-        const bands = [];
+        const counterfactualBands = [];
+        const conditionedBands = [];
+        let counterfactualRevenue = 0;
+        let counterfactualProfit = 0;
+        let expectedRevenue = 0;
+        let expectedProfit = 0;
+        let expectedRevenueLow = 0;
+        let expectedRevenueHigh = 0;
+        let expectedProfitLow = 0;
+        let expectedProfitHigh = 0;
 
         for (const variant of liveVariants) {
+          const realization = realizationByVariant.get(variant.variant_gid) ?? 1;
+          const baselineRevenuePerUnit = variant.baseline_price_cents * realization;
+          const targetRevenuePerUnit = variant.target_price_cents * realization;
           const rawUnits = unitsByVariantDay.get(`${variant.variant_gid}|${day}`) ?? 0;
           const units = Math.round(rawUnits * factor);
           actualUnits += units;
-          actualRevenue += units * variant.target_price_cents;
+          actualRevenue += units * targetRevenuePerUnit;
           if (variant.cogs_cents_at_creation === null) profitKnown = false;
-          else actualProfit += units * (variant.target_price_cents - variant.cogs_cents_at_creation);
+          else actualProfit += units * (targetRevenuePerUnit - variant.cogs_cents_at_creation);
 
-          bands.push(
-            bracketBand(preChangeHistory(historyByVariant, variant.variant_gid, spec.startDay), day),
+          const counterfactualBand = bracketBand(
+            preChangeHistory(historyByVariant, variant.variant_gid, spec.startDay),
+            day,
           );
+          const conditionedBand = conditionBandOnDemandEffect(
+            counterfactualBand,
+            multiplierByVariant.get(variant.variant_gid) ?? 1,
+          );
+          counterfactualBands.push(counterfactualBand);
+          conditionedBands.push(conditionedBand);
+          counterfactualRevenue +=
+            counterfactualBand.expected_units * baselineRevenuePerUnit;
+          expectedRevenue += conditionedBand.expected_units * targetRevenuePerUnit;
+          expectedRevenueLow += conditionedBand.low * targetRevenuePerUnit;
+          expectedRevenueHigh += conditionedBand.high * targetRevenuePerUnit;
+          if (variant.cogs_cents_at_creation !== null) {
+            counterfactualProfit +=
+              counterfactualBand.expected_units *
+              (baselineRevenuePerUnit - variant.cogs_cents_at_creation);
+            expectedProfit +=
+              conditionedBand.expected_units *
+              (targetRevenuePerUnit - variant.cogs_cents_at_creation);
+            const margin = targetRevenuePerUnit - variant.cogs_cents_at_creation;
+            expectedProfitLow += Math.min(conditionedBand.low * margin, conditionedBand.high * margin);
+            expectedProfitHigh += Math.max(conditionedBand.low * margin, conditionedBand.high * margin);
+          }
         }
 
-        const band = combineBands(bands);
-        const expectedRevenue = Math.round(band.expected_units * averagePrice(liveVariants));
+        const counterfactualBand = combineBands(counterfactualBands);
+        const band = combineBands(conditionedBands);
         observations.push({
           day,
           stage_index: stageIndex,
           actual_units: actualUnits,
-          actual_revenue_cents: actualRevenue,
-          actual_profit_cents: profitKnown ? actualProfit : null,
+          actual_revenue_cents: Math.round(actualRevenue),
+          actual_profit_cents: profitKnown ? Math.round(actualProfit) : null,
           expected_units: band.expected_units,
           expected_low: band.low,
           expected_high: band.high,
-          expected_revenue_cents: expectedRevenue,
-          expected_profit_cents: null,
+          expected_revenue_cents: Math.round(expectedRevenue),
+          expected_profit_cents: profitKnown ? Math.round(expectedProfit) : null,
+          expected_revenue_low_cents: Math.round(expectedRevenueLow),
+          expected_revenue_high_cents: Math.round(expectedRevenueHigh),
+          expected_profit_low_cents: profitKnown ? Math.round(expectedProfitLow) : null,
+          expected_profit_high_cents: profitKnown ? Math.round(expectedProfitHigh) : null,
         });
 
         const assessment = evaluateGuardrails(guardrails, observations, store.shop.currency);
@@ -359,11 +416,20 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
           stage_index: stageIndex,
           actual_units: actualUnits,
           actual_orders: Math.max(1, Math.round(actualUnits * 0.86)),
-          actual_revenue_cents: actualRevenue,
-          actual_profit_cents: profitKnown ? actualProfit : null,
+          actual_revenue_cents: Math.round(actualRevenue),
+          actual_profit_cents: profitKnown ? Math.round(actualProfit) : null,
           expected_units: band.expected_units,
           expected_low: band.low,
           expected_high: band.high,
+          counterfactual_units: counterfactualBand.expected_units,
+          counterfactual_revenue_cents: Math.round(counterfactualRevenue),
+          counterfactual_profit_cents: profitKnown ? Math.round(counterfactualProfit) : null,
+          expected_revenue_cents: Math.round(expectedRevenue),
+          expected_profit_cents: profitKnown ? Math.round(expectedProfit) : null,
+          expected_revenue_low_cents: Math.round(expectedRevenueLow),
+          expected_revenue_high_cents: Math.round(expectedRevenueHigh),
+          expected_profit_low_cents: profitKnown ? Math.round(expectedProfitLow) : null,
+          expected_profit_high_cents: profitKnown ? Math.round(expectedProfitHigh) : null,
           expected_source: "bracket",
           interval_nominal: band.interval,
           model_version: null,
@@ -499,7 +565,7 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
       // The forecast as of proposal time. Stored on the rollout on purpose: the
       // post-rollout report has to compare against what was actually promised,
       // not against what the engine would say today (R20/R30).
-      forecast: forecastAtProposal(products, spec, store),
+      forecast: frozenForecast,
       scheduled_start_at: spec.scheduledStartAt ?? null,
       started_at: spec.startDay ? `${spec.startDay}T10:00:00.000Z` : null,
       ended_at:
@@ -721,11 +787,6 @@ function cohortCountAt(
   return variants.filter((variant) => !variant.excluded && variant.cohort_stage <= stageIndex).length;
 }
 
-function averagePrice(variants: readonly { target_price_cents: Cents }[]): number {
-  if (variants.length === 0) return 0;
-  return variants.reduce((sum, variant) => sum + variant.target_price_cents, 0) / variants.length;
-}
-
 function minDay(a: DayString, b: DayString): DayString {
   return a <= b ? a : b;
 }
@@ -814,7 +875,7 @@ function journalFor(
         stage_index: variant.cohort_stage,
         source: "rollback",
         actor: "priceflag",
-        reason: "Undone automatically — orders below the range you set, two days running",
+        reason: "Undone automatically — unit sales below the range you set, two days running",
         status: "applied",
         before_price_cents: variant.target_price_cents,
         after_price_cents: variant.baseline_price_cents,

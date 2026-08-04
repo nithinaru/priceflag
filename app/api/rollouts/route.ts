@@ -49,6 +49,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     const adapter = getAdapter();
     const { shop } = await resolveAuthenticatedShop(request, adapter);
+    if (shop.kill_switch_engaged_at !== null) {
+      throw new MerchantApiError(
+        'kill_switch_engaged',
+        'Finish the store-wide undo and explicitly re-enable price changes before creating another rollout.',
+        409,
+      );
+    }
     const proposal = parseProposal(await readJson(request));
     if (proposal.guardrails === undefined) {
       throw new MerchantApiError(
@@ -105,6 +112,25 @@ export async function POST(request: Request): Promise<NextResponse> {
       notify_emails: proposal.notify_emails ?? shop.notify_emails,
       created_by: 'merchant',
     };
+
+    // Forecasting can take long enough for a store-wide stop to be engaged
+    // after authentication. Re-read immediately before committing the draft so
+    // the UI cannot queue new work behind an emergency stop.
+    const currentShop = await adapter.getShop(shop.id);
+    if (currentShop === null || currentShop.uninstalled_at !== null) {
+      throw new MerchantApiError(
+        'shop_not_connected',
+        'This store is no longer connected to Priceflag.',
+        409,
+      );
+    }
+    if (currentShop.kill_switch_engaged_at !== null) {
+      throw new MerchantApiError(
+        'kill_switch_engaged',
+        'Finish the store-wide undo and explicitly re-enable price changes before creating another rollout.',
+        409,
+      );
+    }
 
     const created = await adapter.createDraftRollout(input, variants);
 

@@ -252,6 +252,15 @@ export async function applyStage(
   // --- the writes, one atomic call per product ------------------------------
   for (const [productGid, items] of byProduct) {
     try {
+      // Shop-level stops are stamped before they can wait for this rollout's
+      // lease. Re-read at the last mutation boundary so a writer that started
+      // moments earlier cannot continue behind a kill switch or uninstall.
+      const freshShop = await context.adapter.getShop(context.shop.id);
+      if (freshShop === null) throw new Error('The connected shop disappeared before the price write.');
+      if (freshShop.uninstalled_at !== null) {
+        throw new Error('Priceflag was uninstalled before the price write. No price was changed.');
+      }
+      assertWritable(freshShop);
       // Repeat at the last possible boundary. A future caller may refactor the
       // planner or bucket construction; this invariant stays beside the API call.
       for (const { write } of items) assertStorefrontPrice(write.priceCents, 'target price');
@@ -476,25 +485,48 @@ export async function rollbackRollout(
       continue;
     }
 
+    const managesCompareAt = variant.compare_at_action !== 'none';
     const baselinePairMatches =
       current.priceCents === variant.baseline_price_cents &&
-      current.compareAtCents === variant.baseline_compare_at_cents;
+      (!managesCompareAt || current.compareAtCents === variant.baseline_compare_at_cents);
     if (baselinePairMatches) {
       result.skipped_noop += 1;
       if (variant.reverted_at === null) reverted.push(variant.id);
       continue;
     }
 
-    const recoverBaselineCompareAt =
-      variant.reverted_at === null && current.priceCents === variant.baseline_price_cents;
+    const targetPairMatches =
+      current.priceCents === variant.target_price_cents &&
+      (!managesCompareAt || current.compareAtCents === variant.target_compare_at_cents);
+    // A bulk mutation can restore the price but fail before restoring compare-at.
+    // Retry only the exact intermediate pair Priceflag itself could have left;
+    // an arbitrary compare-at value is a merchant edit and stays untouched.
+    const recoverPartialRollback =
+      managesCompareAt &&
+      variant.reverted_at === null &&
+      current.priceCents === variant.baseline_price_cents &&
+      current.compareAtCents === variant.target_compare_at_cents;
 
     // A value other than our frozen target is a merchant/admin edit. Rollback is
     // not permission to overwrite it, even when our target had previously lived.
-    if (!recoverBaselineCompareAt && current.priceCents !== variant.target_price_cents) {
+    if (!recoverPartialRollback && !targetPairMatches) {
       result.external_changes.push({
         variant_gid: variant.variant_gid,
         expected_cents: variant.target_price_cents,
         found_cents: current.priceCents,
+      });
+      continue;
+    }
+
+    // Frozen state is still untrusted at the last rollback boundary. An old or
+    // corrupt included row must never turn an undo into a free storefront item.
+    try {
+      assertStorefrontPrice(variant.baseline_price_cents, 'rollback baseline price');
+    } catch (cause) {
+      result.failed += 1;
+      result.failures.push({
+        variant_gid: variant.variant_gid,
+        message: cause instanceof Error ? cause.message : String(cause),
       });
       continue;
     }
@@ -506,7 +538,7 @@ export async function rollbackRollout(
         variantGid: variant.variant_gid,
         priceCents: variant.baseline_price_cents,
         // Restore compare-at exactly as it was, including having been absent.
-        compareAtCents: variant.baseline_compare_at_cents,
+        compareAtCents: managesCompareAt ? variant.baseline_compare_at_cents : undefined,
       },
     });
     byProduct.set(variant.product_gid, bucket);
@@ -514,6 +546,17 @@ export async function rollbackRollout(
 
   for (const [productGid, items] of byProduct) {
     try {
+      if (source !== 'kill_switch') {
+        const freshShop = await context.adapter.getShop(context.shop.id);
+        if (freshShop === null) throw new Error('The connected shop disappeared before the rollback write.');
+        if (freshShop.uninstalled_at !== null) {
+          throw new Error('Priceflag was uninstalled before the rollback write. No price was changed.');
+        }
+        assertWritable(freshShop);
+      }
+      // Repeat beside the actual Shopify call, matching the forward writer's
+      // defense even if bucket construction is refactored later.
+      for (const { write } of items) assertStorefrontPrice(write.priceCents, 'rollback baseline price');
       await writeProductVariantPrices(
         context.client,
         productGid,
@@ -533,7 +576,9 @@ export async function rollbackRollout(
               before_price_cents: before.priceCents,
               after_price_cents: variant.baseline_price_cents,
               before_compare_at_cents: before.compareAtCents,
-              after_compare_at_cents: variant.baseline_compare_at_cents,
+              after_compare_at_cents: variant.compare_at_action !== 'none'
+                ? variant.baseline_compare_at_cents
+                : before.compareAtCents,
               currency: context.shop.currency,
             },
             {
@@ -604,7 +649,8 @@ export async function verifyRollback(
     }
     if (
       current.priceCents === variant.baseline_price_cents &&
-      current.compareAtCents === variant.baseline_compare_at_cents
+      (variant.compare_at_action === 'none' ||
+        current.compareAtCents === variant.baseline_compare_at_cents)
     ) verified += 1;
     else {
       mismatched.push({

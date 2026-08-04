@@ -50,18 +50,18 @@ export function readingSentence(
   const expected = formatUnits(reading.expected_units);
 
   if (reading.band_floored) {
-    return `${actual} sold — too few orders a day on these products to read anything into it either way.`;
+    return `${actual} units sold — too few unit sales a day on these products to read anything into it either way.`;
   }
 
   const caveat = reading.band_stale ? ' (our expectation is a little out of date, so the range is wider than usual)' : '';
 
   switch (verdict) {
     case 'below':
-      return `${actual} sold against ${expected} expected — below the range we expected${caveat}.`;
+      return `${actual} units sold against ${expected} expected — below the range we expected${caveat}.`;
     case 'above':
-      return `${actual} sold against ${expected} expected — better than the range we expected${caveat}.`;
+      return `${actual} units sold against ${expected} expected — better than the range we expected${caveat}.`;
     default:
-      return `${actual} sold against ${expected} expected — inside the range we expected${caveat}.`;
+      return `${actual} units sold against ${expected} expected — inside the range we expected${caveat}.`;
   }
 }
 
@@ -93,24 +93,24 @@ export function healthSentence(health: RolloutHealth, decision: EvaluationDecisi
   switch (health) {
     case 'breaching':
       if (decision === 'rollback') {
-        return 'Orders are below the range you set as acceptable. A rollback is being applied.';
+        return 'Unit sales are below the range you set as acceptable. A rollback is being applied.';
       }
       if (decision === 'pause') {
-        return 'Orders are below the range you set as acceptable. Priceflag paused the rollout for your decision; no prices were restored automatically.';
+        return 'Unit sales are below the range you set as acceptable. Priceflag paused the rollout for your decision; no prices were restored automatically.';
       }
       return streak >= 2
-        ? 'Orders are below the range you set as acceptable for a second day. Priceflag will pause before any additional prices change.'
-        : 'Orders are below the range you set as acceptable.';
+        ? 'Unit sales are below the range you set as acceptable for a second day. Priceflag will pause before any additional prices change.'
+        : 'Unit sales are below the range you set as acceptable.';
     case 'watching':
-      return 'Orders came in low yesterday. Nothing has changed yet — your guardrail needs more than one day before it acts.';
+      return 'Unit sales came in low yesterday. Nothing has changed yet — your guardrail needs more than one day before it acts.';
     case 'too_early':
-      return 'Too early to tell. We need a full day of orders at the new price before there is anything to compare.';
+      return 'Too early to tell. We need a full day of unit sales at the new price before there is anything to compare.';
     case 'not_live':
       return 'No prices are live from this rollout.';
     default:
       return decision === 'advance'
         ? 'Results held up, so the new price is going live on more of the selection.'
-        : 'Orders are inside the range we expected.';
+        : 'Unit sales are inside the range we expected.';
   }
 }
 

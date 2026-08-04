@@ -181,7 +181,7 @@ export default async function OverviewPage({
                       ? "Nothing is scheduled while this is paused."
                       : summary.next_decision_day
                         ? `We look at the numbers again on ${formatDay(summary.next_decision_day)}.`
-                        : "Waiting for a full day of orders."
+                        : "Waiting for a full day of unit sales."
                   }
                 />
                 {latest ? (
@@ -193,9 +193,9 @@ export default async function OverviewPage({
                   />
                 ) : (
                   <Stat
-                    label="Orders so far"
+                    label="Unit sales so far"
                     value="Not yet"
-                    note="We compare orders once a full day has passed."
+                    note="We compare units sold once a full day has passed."
                   />
                 )}
               </StatGroup>
@@ -319,7 +319,11 @@ export default async function OverviewPage({
 
       {/* Last on the page on purpose: findable, never competing with the
           screen's primary action (R21). */}
-      <KillSwitch affectedSkus={live.skus_holding_priceflag_price} demoMode={demoMode} />
+      <KillSwitch
+        affectedSkus={live.skus_holding_priceflag_price}
+        killSwitchEngaged={live.kill_switch_engaged}
+        demoMode={demoMode}
+      />
     </div>
   );
 }
@@ -362,6 +366,6 @@ function healthTitle(health: string): string {
     case "too_early":
       return "Nothing to compare yet";
     default:
-      return "Orders are holding up";
+      return "Unit sales are holding up";
   }
 }

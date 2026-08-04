@@ -64,7 +64,15 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
           409,
         );
       }
-      if (shop.kill_switch_engaged_at !== null) {
+      const currentShop = await adapter.getShop(shop.id);
+      if (currentShop === null || currentShop.uninstalled_at !== null) {
+        throw new MerchantApiError(
+          'shop_not_connected',
+          'Priceflag is no longer installed for this store. Reinstall before attempting another price write.',
+          409,
+        );
+      }
+      if (currentShop.kill_switch_engaged_at !== null) {
         throw new MerchantApiError(
           'kill_switch_engaged',
           'The store-wide kill switch is already engaged. Retry that store-wide undo instead.',
@@ -83,8 +91,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
       });
 
       try {
-        const client = new AdminGraphqlClient(credentialsFromShop(shop));
-        const writerContext = { adapter, client, shop };
+        const client = new AdminGraphqlClient(credentialsFromShop(currentShop));
+        const writerContext = { adapter, client, shop: currentShop };
         const undo = await rollbackRollout(writerContext, fresh, {
           reason,
           source: 'rollback',

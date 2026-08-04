@@ -28,7 +28,7 @@ import { IconClock, IconInbox } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
 import { ConfirmRolloutButton } from "@/components/domain/confirm-rollout-button";
 import { PauseRolloutButton } from "@/components/domain/pause-rollout-button";
-import { OrdersChart } from "@/components/rollout/orders-chart";
+import { UnitsChart } from "@/components/rollout/orders-chart";
 import { StageTimeline } from "@/components/domain/stage-timeline";
 import { ExpectedRangeMark, readingsDomainMax } from "@/components/domain/expected-range";
 import { PriceMove, SourceBadge } from "@/components/domain/journal";
@@ -249,23 +249,23 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0 space-y-6">
-          {/* Orders against expectation. */}
+          {/* Units sold against expectation. */}
           <Card>
             <CardHeader
-              title="Orders, day by day"
-              description="Each day we compare actual orders with the range predicted for this price and rollout stage. That range includes the forecast price effect; the table below shows the same numbers."
+              title="Unit sales, day by day"
+              description="Each day we compare units sold with the range predicted for this price and rollout stage. That range includes the forecast price effect; the table below shows the same numbers."
             />
             {readings.length > 0 ? (
               <CardBody>
-                <OrdersChart readings={readings} stageCount={rollout.stages.length} />
+                <UnitsChart readings={readings} stageCount={rollout.stages.length} />
               </CardBody>
             ) : null}
             <CardBody flush>
-              <Table caption="Daily orders against the expected range">
+              <Table caption="Daily units sold against the expected range">
                 <THead>
                   <TR>
                     <TH>Day</TH>
-                    <TH numeric>Orders</TH>
+                    <TH numeric>Units sold</TH>
                     <TH numeric>We expected</TH>
                     <TH className="w-[34%] min-w-[10rem]">How it landed</TH>
                     <TH>Verdict</TH>

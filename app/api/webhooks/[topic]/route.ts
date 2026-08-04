@@ -21,12 +21,14 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
 import { env } from '@/lib/config';
+import { safeEqual } from '@/lib/crypto';
 import { dayInTimeZone } from '@/lib/dates';
 import { buildExternalChangeEntry } from '@/lib/engine/journal';
 import { ROLLBACK_IN_PROGRESS_PREFIX } from '@/lib/engine/rollout';
 import { parseMoneyToCents, roundCents, type Cents } from '@/lib/money';
 import { verifyWebhookHmac } from '@/lib/shopify/hmac';
 import { stopRolloutsForUninstall } from '@/lib/shopify/uninstall';
+import { webhookTopicToken } from '@/lib/shopify/webhooks';
 import type { StoreAdapter } from '@/lib/adapters/types';
 import type { OrderDayUpsert, Shop, WebhookEventRecord } from '@/lib/types';
 
@@ -60,16 +62,52 @@ export async function POST(
   const shopDomain = (request.headers.get('x-shopify-shop-domain') ?? '').toLowerCase();
   const webhookId = request.headers.get('x-shopify-webhook-id');
   if (shopDomain === '' || webhookId === null || webhookId.trim() === '') {
-    // Dedupe is part of order-count correctness. Inventing an id here would
-    // turn a retry into a second order, so reject malformed deliveries before
-    // recording or processing anything.
     return NextResponse.json({ error: 'missing Shopify webhook identity headers' }, { status: 400 });
   }
+
+  // The body HMAC does not authenticate either the URL or X-Shopify-Topic. Each
+  // operational callback therefore carries a secret-derived topic *and shop*
+  // capability. Partner-configured privacy callbacks are global, but their
+  // destructive shop/redact payload is independently bound below.
+  const receivedTopicToken = new URL(request.url).searchParams.get('pf_topic_token') ?? '';
+  const tokenShop = GDPR_TOPICS.has(topic) ? undefined : shopDomain;
+  if (!safeEqual(receivedTopicToken, webhookTopicToken(secret, topic, tokenShop))) {
+    return NextResponse.json({ error: 'invalid webhook topic capability' }, { status: 401 });
+  }
+
+  // Keep the header binding as an independent configuration check. The token is
+  // the security boundary; this catches a subscription pointed at the wrong
+  // handler before it mutates anything.
+  const headerTopic = (request.headers.get('x-shopify-topic') ?? '').trim().toLowerCase();
+  if (headerTopic !== topic) {
+    return NextResponse.json({ error: 'Shopify webhook topic does not match this endpoint' }, { status: 400 });
+  }
+
   const adapter = getAdapter();
   const payload = safeParse(rawBody);
   const shop = await adapter.getShopByDomain(shopDomain);
 
+  if (topic === 'app/uninstalled') {
+    const signedShopDomain =
+      payload !== null && typeof payload.myshopify_domain === 'string'
+        ? payload.myshopify_domain.trim().toLowerCase()
+        : '';
+    if (signedShopDomain === '' || signedShopDomain !== shopDomain) {
+      return NextResponse.json({ error: 'signed uninstall domain does not match this shop' }, { status: 400 });
+    }
+  }
+
   if (topic === 'shop/redact') {
+    // The shop-domain header is not part of Shopify's body HMAC. Require the
+    // destructive payload's signed domain to match it, so a captured redact
+    // delivery for store A cannot be replayed with store B in the header.
+    const signedShopDomain =
+      payload !== null && typeof payload.shop_domain === 'string'
+        ? payload.shop_domain.trim().toLowerCase()
+        : '';
+    if (signedShopDomain === '' || signedShopDomain !== shopDomain) {
+      return NextResponse.json({ error: 'signed shop/redact domain does not match this shop' }, { status: 400 });
+    }
     try {
       const result = await adapter.purgeShopForCompliance({
         shopId: shop?.id ?? null,
@@ -90,7 +128,7 @@ export async function POST(
     return NextResponse.json({ ok: false, retryable: true, error: 'unknown Shopify shop' }, { status: 404 });
   }
 
-  if (topic === 'orders/create') {
+  if (topic === 'orders/create' || topic === 'refunds/create') {
     try {
       const result = await adapter.ingestOrderWebhook({
         event: {
@@ -102,7 +140,7 @@ export async function POST(
           triggered_at: request.headers.get('x-shopify-triggered-at'),
           payload: null,
         },
-        rows: orderRows(shop, payload),
+        rows: topic === 'orders/create' ? orderRows(shop, payload) : refundRows(shop, payload),
       });
       return NextResponse.json({ ok: true, deduplicated: result.duplicate, rows_written: result.rows_written });
     } catch {
@@ -292,6 +330,70 @@ function orderRows(shop: Shop, payload: Record<string, unknown> | null): OrderDa
   });
 }
 
+/** One refunds/create delivery → additive negative-revenue rows by variant/day. */
+function refundRows(shop: Shop, payload: Record<string, unknown> | null): OrderDayUpsert[] {
+  if (payload === null || payload.test === true) return [];
+  const createdAt = typeof payload.created_at === 'string' ? payload.created_at : new Date().toISOString();
+  const created = new Date(createdAt);
+  if (!Number.isFinite(created.getTime())) throw new Error('refund created_at is invalid');
+  const day = dayInTimeZone(created, shop.timezone);
+  const lines = Array.isArray(payload.refund_line_items)
+    ? (payload.refund_line_items as Record<string, unknown>[])
+    : [];
+  const grouped = new Map<string, { units: number; cents: Cents; product_gid: string | null }>();
+
+  for (const refundLine of lines) {
+    const lineItem = refundLine.line_item as Record<string, unknown> | null | undefined;
+    const variantId = lineItem?.variant_id;
+    if (variantId === null || variantId === undefined) continue;
+    const quantity = Number(refundLine.quantity ?? 0);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error('refund line quantity must be a positive integer');
+    }
+    const cents = refundLineCents(refundLine);
+    const variantGid = `gid://shopify/ProductVariant/${String(variantId)}`;
+    const current = grouped.get(variantGid) ?? {
+      units: 0,
+      cents: 0,
+      product_gid:
+        lineItem?.product_id === null || lineItem?.product_id === undefined
+          ? null
+          : `gid://shopify/Product/${String(lineItem.product_id)}`,
+    };
+    current.units += quantity;
+    current.cents += cents;
+    grouped.set(variantGid, current);
+  }
+
+  return [...grouped].map(([variant_gid, aggregate]) => ({
+    variant_gid,
+    product_gid: aggregate.product_gid,
+    day,
+    units: 0,
+    orders: 0,
+    gross_revenue_cents: 0,
+    discount_cents: 0,
+    refund_units: aggregate.units,
+    refund_cents: aggregate.cents,
+    net_revenue_cents: -aggregate.cents,
+    realized_unit_price_cents: null,
+    list_price_cents: null,
+    had_stockout: false,
+    on_promo: false,
+    source: 'webhook',
+  }));
+}
+
+function refundLineCents(line: Record<string, unknown>): Cents {
+  if (line.subtotal !== null && line.subtotal !== undefined) {
+    return parseMoneyToCents(String(line.subtotal));
+  }
+  const subtotalSet = (line.subtotal_set ?? line.subtotalSet) as Record<string, unknown> | undefined;
+  const shopMoney = (subtotalSet?.shop_money ?? subtotalSet?.shopMoney) as Record<string, unknown> | undefined;
+  const amount = shopMoney?.amount;
+  return amount === null || amount === undefined ? 0 : parseMoneyToCents(String(amount));
+}
+
 function discountAllocationCents(allocation: Record<string, unknown>): Cents {
   if (allocation.amount !== null && allocation.amount !== undefined) {
     return parseMoneyToCents(String(allocation.amount));
@@ -362,12 +464,67 @@ async function detectExternalPriceChange(
     );
     const ours = journalSaysOurs || rolloutSaysOurs;
 
+    if (ours) {
+      await adapter.upsertProducts(shop.id, [
+        { ...known, price_cents: livePrice, compare_at_cents: liveCompareAt } as never,
+      ]);
+      continue;
+    }
+
+    // Pause any rollout that touches this variant under the same lease used by
+    // evaluation and price writes. If the lease is busy, fail the delivery so
+    // Shopify retries after the in-flight evaluator finishes; acknowledging here
+    // would let a stale evaluator overwrite this pause.
+    //
+    // Product/journal persistence deliberately follows all pauses. A busy lease
+    // returns 5xx and the retry must still see the old stored price, otherwise it
+    // would mistake the already-upserted external value for a no-op and never
+    // finish pausing the remaining rollout.
+    for (const rollout of await adapter.listRollouts(shop.id, ['running', 'scheduled'])) {
+      // Variant membership is frozen at draft creation, so this read safely
+      // avoids contending on unrelated rollouts. Recheck it under the lease too.
+      const affectedSnapshot = (await adapter.getRolloutVariants(rollout.id)).some(
+        (row) => row.variant_gid === variantGid && !row.excluded,
+      );
+      if (!affectedSnapshot) continue;
+
+      const locked = await adapter.withRolloutLock(rollout.id, async () => {
+        const fresh = await adapter.getRollout(rollout.id);
+        if (
+          fresh === null ||
+          fresh.shop_id !== shop.id ||
+          (fresh.status !== 'running' && fresh.status !== 'scheduled')
+        ) {
+          return;
+        }
+        const affected = (await adapter.getRolloutVariants(fresh.id)).some(
+          (row) => row.variant_gid === variantGid && !row.excluded,
+        );
+        if (!affected) return;
+
+        await adapter.updateRollout(fresh.id, {
+          status: 'paused',
+          paused_reason: `The pricing of ${known.title} was changed outside Priceflag.`,
+        });
+        await adapter.appendRolloutEvent({
+          rollout_id: fresh.id,
+          shop_id: shop.id,
+          type: 'paused_external_change',
+          actor: 'shopify_admin',
+          message: `Paused: the price or compare-at price of ${known.title} was changed outside Priceflag, so results would no longer mean what we predicted.`,
+          data: {
+            variant_gid: variantGid,
+            found_price_cents: livePrice,
+            found_compare_at_cents: liveCompareAt,
+          },
+        });
+      });
+      if (!locked.acquired) throw new Error(`rollout ${rollout.id} is busy while pausing an external price edit`);
+    }
+
     await adapter.upsertProducts(shop.id, [
       { ...known, price_cents: livePrice, compare_at_cents: liveCompareAt } as never,
     ]);
-
-    if (ours) continue;
-
     await adapter.appendJournalEntries(shop.id, [
       buildExternalChangeEntry({
         variant_gid: variantGid,
@@ -381,31 +538,6 @@ async function detectExternalPriceChange(
         currency: shop.currency,
       }),
     ]);
-
-    // Pause any rollout that touches this variant.
-    for (const rollout of await adapter.listRollouts(shop.id, ['running', 'scheduled'])) {
-      const affected = (await adapter.getRolloutVariants(rollout.id)).some(
-        (row) => row.variant_gid === variantGid && !row.excluded,
-      );
-      if (!affected) continue;
-
-      await adapter.updateRollout(rollout.id, {
-        status: 'paused',
-        paused_reason: `The pricing of ${known.title} was changed outside Priceflag.`,
-      });
-      await adapter.appendRolloutEvent({
-        rollout_id: rollout.id,
-        shop_id: shop.id,
-        type: 'paused_external_change',
-        actor: 'shopify_admin',
-        message: `Paused: the price or compare-at price of ${known.title} was changed outside Priceflag, so results would no longer mean what we predicted.`,
-        data: {
-          variant_gid: variantGid,
-          found_price_cents: livePrice,
-          found_compare_at_cents: liveCompareAt,
-        },
-      });
-    }
   }
 }
 

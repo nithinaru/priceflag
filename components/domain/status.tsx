@@ -171,7 +171,7 @@ const CONFIDENCE: Record<Confidence, ConfidenceMeta> = {
     label: "Based on a general assumption",
     tone: "neutral",
     fallback:
-      "These products have not sold at a different price before, so there is nothing in your own history to predict from. The table below is exact arithmetic instead.",
+      "These products have not sold at a different price before, so this is a broad consumer-goods range rather than a prediction learned from your store.",
   },
 };
 
@@ -270,7 +270,7 @@ export function VerdictBadge({
 }: {
   verdict: ReadingVerdict;
   /**
-   * Too few orders for the day to mean anything. Rendered distinctly, because
+   * Too few unit sales for the day to mean anything. Rendered distinctly, because
    * "there isn't enough data to check" is not "we checked and it's fine".
    */
   floored?: boolean;

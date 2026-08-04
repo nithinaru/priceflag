@@ -9,9 +9,9 @@ import { Client } from 'pg';
 
 import type { StoreAdapter } from '../../lib/adapters/types';
 import { applyStage, reconcileRollout, rollbackRollout } from '../../lib/pricing/writer';
-import { evaluateRollout } from '../../lib/evaluator/index';
-import { nowIso, today, type DayString } from '../../lib/dates';
-import type { Product, Rollout, Shop } from '../../lib/types';
+import { evaluateRollout, startRollout } from '../../lib/evaluator/index';
+import { addDays, nowIso, today, type DayString } from '../../lib/dates';
+import type { OrderDayUpsert, Product, Rollout, Shop } from '../../lib/types';
 
 import { FakeShopify, assert, assertEqual, assertExactCents, makeProduct, section, skip, test } from './_harness';
 import { makeScenario, advanceTo } from './invariants.test';
@@ -54,6 +54,202 @@ export async function runConcurrencySuite(adapter: StoreAdapter, shop: Shop, lab
       `the lease must exclude: expected exactly one "locked", got ${locked} (ran=${ran}). ` +
         `If this is 0, two evaluators ran concurrently on one rollout.`,
     );
+  });
+
+  await test('money guardrails preserve the conditioned SKU mix end to end', async () => {
+    const cheap = makeProduct(801, { priceCents: 1_000, cogsCents: 500, productIndex: 801 }, shop.id);
+    const expensive = makeProduct(802, { priceCents: 10_000, cogsCents: 5_000, productIndex: 802 }, shop.id);
+    const scenario = await makeScenario(adapter, shop, [cheap, expensive], { type: 'percent', percent: 10 });
+    const finalStage = scenario.rollout.stages.length - 1;
+    await advanceTo(scenario, finalStage);
+    for (const variant of await adapter.getRolloutVariants(scenario.rollout.id)) {
+      await adapter.updateRolloutVariant(variant.id, { baseline_units_per_day: 100 });
+    }
+    const asOf = today(shop.timezone) as DayString;
+    const current = await adapter.updateRollout(scenario.rollout.id, {
+      guardrails: {
+        contract_version: '1.0.0',
+        auto_rollback: false,
+        rules: [
+          {
+            id: 'revenue-mix',
+            metric: 'revenue',
+            comparison: 'below_expected_pct',
+            threshold_pct: 1,
+            consecutive_days: 1,
+            scope: 'rollout',
+            action: 'pause',
+            sentence: 'Pause if revenue is more than 1% below expected.',
+          },
+        ],
+      },
+      forecast: {
+        products: [
+          {
+            variant_gid: cheap.variant_gid,
+            excluded: false,
+            current_price_cents: 1_000,
+            target_price_cents: 1_100,
+            baseline_units_per_day: 100,
+            demand_multiplier: 1,
+          },
+          {
+            variant_gid: expensive.variant_gid,
+            excluded: false,
+            current_price_cents: 10_000,
+            target_price_cents: 11_000,
+            baseline_units_per_day: 100,
+            demand_multiplier: 0.1,
+          },
+        ],
+      } as unknown as Rollout['forecast'],
+    });
+    const row = (product: Product, day: DayString, units: number, unitPrice: number): OrderDayUpsert => ({
+      variant_gid: product.variant_gid,
+      product_gid: product.product_gid,
+      day,
+      units,
+      orders: units,
+      gross_revenue_cents: units * unitPrice,
+      discount_cents: 0,
+      refund_units: 0,
+      refund_cents: 0,
+      net_revenue_cents: units * unitPrice,
+      realized_unit_price_cents: unitPrice,
+      list_price_cents: unitPrice,
+      had_stockout: false,
+      on_promo: false,
+      source: 'seed',
+    });
+    const history: OrderDayUpsert[] = [];
+    for (let offset = -60; offset < 0; offset += 1) {
+      const day = addDays(asOf, offset);
+      history.push(row(cheap, day, 100, 1_000), row(expensive, day, 100, 10_000));
+    }
+    history.push(row(cheap, asOf, 100, 1_100), row(expensive, asOf, 10, 11_000));
+    await adapter.upsertOrderDays(shop.id, history);
+
+    const result = await evaluateRollout(adapter, shop, current, {
+      asOfDay: asOf,
+      client: scenario.shopify.asClient(),
+      notifier: (async () => undefined) as never,
+    });
+    assert(result.reading !== null, 'the heterogeneous mix produced no reading');
+    assertEqual(result.reading.expected_revenue_cents, 220_000, 'expected revenue is summed per SKU');
+    assertEqual(result.reading.expected_profit_cents, 120_000, 'expected profit is summed per SKU');
+    assertEqual(result.reading.breach, false, 'a healthy exact-mix day falsely breached the money guardrail');
+  });
+
+  await test('an evaluator queued before a merchant pause re-reads status after taking the lease', async () => {
+    const products = [makeProduct(0, { priceCents: 1500, productIndex: 0 })];
+    const scenario = await makeScenario(adapter, shop, products, { type: 'percent', percent: 10 });
+    await advanceTo(scenario, 0);
+    const staleRunningSnapshot = scenario.rollout;
+
+    await adapter.updateRollout(scenario.rollout.id, {
+      status: 'paused',
+      paused_reason: 'Merchant paused before queued evaluation began.',
+    });
+    const writesBefore = scenario.shopify.writeLog.length;
+
+    const result = await evaluateRollout(adapter, shop, staleRunningSnapshot, {
+      asOfDay: today(shop.timezone) as DayString,
+      client: scenario.shopify.asClient(),
+      notifier: (async () => undefined) as never,
+    });
+
+    assertEqual(result.skipped, 'not_running', 'the lease-held evaluator honors the fresh paused status');
+    assertEqual(scenario.shopify.writeLog.length, writesBefore, 'the stale evaluator performs no Shopify write');
+    assertEqual((await adapter.listRolloutReadings(scenario.rollout.id)).length, 0, 'the stale evaluator records no reading');
+    assertEqual((await adapter.getRollout(scenario.rollout.id))?.status, 'paused', 'the merchant pause remains authoritative');
+  });
+
+  await test('scheduled start re-reads kill-switch and uninstall state under its lease', async () => {
+    const products = [makeProduct(0, { priceCents: 1750, productIndex: 0 })];
+    const scenario = await makeScenario(adapter, shop, products, { type: 'percent', percent: 10 });
+    const scheduled = await adapter.updateRollout(scenario.rollout.id, {
+      status: 'scheduled',
+      current_stage: -1,
+      started_at: null,
+      stage_entered_at: null,
+      scheduled_start_at: nowIso(),
+    });
+    const writesBefore = scenario.shopify.writeLog.length;
+
+    try {
+      await adapter.updateShop(shop.id, {
+        kill_switch_engaged_at: nowIso(),
+        kill_switch_reason: 'race regression',
+      });
+      let killStopped = false;
+      try {
+        await startRollout(adapter, shop, scheduled, { client: scenario.shopify.asClient() });
+      } catch {
+        killStopped = true;
+      }
+      assert(killStopped, 'a scheduled start did not abort after the kill switch won the race');
+      assertEqual(scenario.shopify.writeLog.length, writesBefore, 'kill-switch race reached no Shopify write');
+
+      await adapter.updateShop(shop.id, { kill_switch_engaged_at: null, kill_switch_reason: null });
+      await adapter.updateShop(shop.id, { uninstalled_at: nowIso() });
+      let uninstallStopped = false;
+      try {
+        await startRollout(adapter, shop, scheduled, { client: scenario.shopify.asClient() });
+      } catch {
+        uninstallStopped = true;
+      }
+      assert(uninstallStopped, 'a scheduled start did not abort after uninstall won the race');
+      assertEqual(scenario.shopify.writeLog.length, writesBefore, 'uninstall race reached no Shopify write');
+      assertEqual((await adapter.getRollout(scheduled.id))?.status, 'scheduled', 'stopped start changed rollout status');
+    } finally {
+      await adapter.updateShop(shop.id, {
+        kill_switch_engaged_at: null,
+        kill_switch_reason: null,
+        uninstalled_at: null,
+      });
+    }
+  });
+
+  await test('a persisted legacy auto-rollback is downgraded at evaluator execution', async () => {
+    const products = [makeProduct(0, { priceCents: 1900, productIndex: 0 })];
+    const scenario = await makeScenario(adapter, shop, products, { type: 'percent', percent: 10 });
+    await advanceTo(scenario, 0);
+    const rule = scenario.rollout.guardrails.rules[0];
+    assert(rule !== undefined, 'legacy rollback fixture has no guardrail');
+    scenario.rollout = await adapter.updateRollout(scenario.rollout.id, {
+      guardrails: {
+        ...scenario.rollout.guardrails,
+        auto_rollback: true,
+        rules: [
+          {
+            ...rule,
+            metric: 'revenue',
+            comparison: 'below_absolute',
+            absolute_floor: 1,
+            consecutive_days: 1,
+            action: 'rollback_all',
+            sentence: 'Rollback if daily revenue is below one cent.',
+          },
+        ],
+      },
+    });
+    const gid = products[0]!.variant_gid;
+    const target = scenario.shopify.priceOf(gid);
+    const writesBefore = scenario.shopify.writeLog.length;
+
+    const result = await evaluateRollout(adapter, shop, scenario.rollout, {
+      asOfDay: today(shop.timezone) as DayString,
+      client: scenario.shopify.asClient(),
+      notifier: (async () => undefined) as never,
+    });
+    const stored = await adapter.getRollout(scenario.rollout.id);
+    const events = await adapter.listRolloutEvents(scenario.rollout.id);
+
+    assertEqual(result.decision, 'pause', 'legacy rollback intent is downgraded to a beta pause');
+    assertEqual(stored?.status, 'paused', 'legacy rollback intent leaves the rollout paused');
+    assertEqual(scenario.shopify.priceOf(gid), target, 'the evaluator did not restore a Shopify price automatically');
+    assertEqual(scenario.shopify.writeLog.length, writesBefore, 'beta downgrade emitted no rollback write');
+    assert(!events.some((event) => event.type === 'auto_rollback'), 'beta downgrade emitted no auto-rollback event');
   });
 
   await test('a stage never half-applies: the advance gate holds when a write failed', async () => {

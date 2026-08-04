@@ -107,7 +107,9 @@ import {
   verifyRollback,
 } from '../lib/pricing/writer';
 import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
-import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
+import { buildReportFromBundle } from '../components/demo/report';
+import type { RolloutBundle } from '../components/demo/rollouts';
+import type { ElasticityFitRow, OrderDay, Product, Rollout, RolloutReading, RolloutVariant } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
 
 // ---------------------------------------------------------------------------
@@ -275,6 +277,10 @@ function observation(overrides: Partial<DailyObservation> & { day: string }): Da
     expected_high: 14,
     expected_revenue_cents: 32000,
     expected_profit_cents: 20500,
+    expected_revenue_low_cents: 19200,
+    expected_revenue_high_cents: 44800,
+    expected_profit_low_cents: 12300,
+    expected_profit_high_cents: 28700,
     ...overrides,
   };
 }
@@ -1850,7 +1856,7 @@ async function testContracts(): Promise<void> {
     validate('forecast_result.schema.json', forecast);
   });
 
-  await test('a bracket-only forecast validates too (fitted: null)', () => {
+  await test('a category-default forecast validates with an honest broad range', () => {
     const product = makeProduct({ cogs_cents: null, cogs_source: 'none' });
     const forecast = buildForecast({
       shop: { currency: 'USD', timezone: TZ },
@@ -1859,8 +1865,14 @@ async function testContracts(): Promise<void> {
       change: { type: 'absolute', absolute_cents: -300 },
       now: NOW,
     });
-    assertEqual(forecast.fitted, null, 'no fit means no fitted block');
-    assertEqual(forecast.confidence, 'assumption', 'and the tier says so');
+    assert(forecast.fitted !== null, 'recent demand gets a broad predicted range');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the range identifies its default source');
+    assertEqual(forecast.confidence, 'assumption', 'the tier says it was not learned from this store');
+    assert(
+      (forecast.fitted?.low.units_change_pct as number) < (forecast.fitted?.expected.units_change_pct as number) &&
+        (forecast.fitted?.expected.units_change_pct as number) < (forecast.fitted?.high.units_change_pct as number),
+      'the default range brackets its expected value',
+    );
     validate('forecast_result.schema.json', forecast);
   });
 
@@ -2085,7 +2097,7 @@ async function testContracts(): Promise<void> {
 async function testForecast(): Promise<void> {
   section('forecast');
 
-  await test('breakeven is exact margin arithmetic', () => {
+  await test('breakeven is transparent unit-margin arithmetic', () => {
     // price 32.00, cost 11.50, +10% -> 35.20. margin 20.50 -> 23.70.
     // breakeven multiplier = 20.50 / 23.70 = 0.86498 -> -13.50%
     const product = makeProduct();
@@ -2097,10 +2109,10 @@ async function testForecast(): Promise<void> {
       now: NOW,
     });
 
-    assertEqual(forecast.breakeven.direction, 'can_lose', 'a price rise means orders can be lost');
+    assertEqual(forecast.breakeven.direction, 'can_lose', 'a price rise means units can be lost');
     assertClose(forecast.breakeven.units_change_pct as number, -13.5021, 0.01, 'breakeven percent');
     assert(
-      forecast.breakeven.sentence.includes('lose up to 14%'),
+      forecast.breakeven.sentence.includes('14% fewer units'),
       `sentence should name the number, got: ${forecast.breakeven.sentence}`,
     );
   });
@@ -2114,7 +2126,7 @@ async function testForecast(): Promise<void> {
       change: { type: 'percent', percent: -10 },
       now: NOW,
     });
-    assertEqual(forecast.breakeven.direction, 'must_gain', 'a cut needs more orders');
+    assertEqual(forecast.breakeven.direction, 'must_gain', 'a cut needs more units');
     // margin 20.50 -> 17.30; 20.50/17.30 - 1 = +18.50%
     assertClose(forecast.breakeven.units_change_pct as number, 18.4971, 0.01, 'breakeven percent');
   });
@@ -2173,7 +2185,7 @@ async function testForecast(): Promise<void> {
       forecast.warnings.some((warning) => warning.code === 'missing_cogs'),
       'and it warns about the missing cost',
     );
-    // Revenue is still knowable, and still exact.
+    // Revenue is still knowable for every explicitly stated unit-demand scenario.
     assert(
       forecast.scenarios.some((scenario) => scenario.revenue_delta_cents !== 0),
       'revenue is still computed',
@@ -2194,6 +2206,12 @@ async function testForecast(): Promise<void> {
     assert(forecast.fitted !== null, 'fitted block present');
     assertEqual(forecast.confidence, 'fitted', 'tier is fitted');
     assertEqual(forecast.model_version, 'elasticity-v1.0.0', 'model version is traceable (R31)');
+    assertClose(
+      forecast.products[0]?.demand_multiplier as number,
+      Math.pow(1.1, -1.6),
+      1e-6,
+      'the frozen product response uses its expected fitted elasticity',
+    );
 
     const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
     // elasticity -1.6 on a +10% price move: 1.1^-1.6 - 1 = -14.0%
@@ -2265,6 +2283,74 @@ async function testForecast(): Promise<void> {
     assert(fitted.high.units_change_pct > fitted.expected.units_change_pct, 'on both sides');
   });
 
+  await test('per-SKU elasticity and margin are applied before money is aggregated', () => {
+    const highMargin = makeProduct({
+      id: 'high-margin',
+      product_gid: toGid('Product', 1101),
+      variant_gid: toGid('ProductVariant', 2101),
+      inventory_item_gid: toGid('InventoryItem', 3101),
+      price_cents: 10_000,
+      cogs_cents: 0,
+    });
+    const thinMargin = makeProduct({
+      id: 'thin-margin',
+      product_gid: toGid('Product', 1102),
+      variant_gid: toGid('ProductVariant', 2102),
+      inventory_item_gid: toGid('InventoryItem', 3102),
+      price_cents: 10_000,
+      cogs_cents: 9_000,
+    });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [highMargin, thinMargin],
+      orderDays: [...makeHistory(highMargin, 90, 10), ...makeHistory(thinMargin, 90, 10)],
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([
+        [highMargin.variant_gid, makeFit(highMargin.variant_gid, { id: 'fit-high', elasticity: -3 })],
+        [thinMargin.variant_gid, makeFit(thinMargin.variant_gid, { id: 'fit-thin', elasticity: -0.01 })],
+      ]),
+      now: NOW,
+    });
+
+    const expected = forecast.fitted?.expected;
+    assert(expected !== undefined, 'fitted outcome exists');
+    const expectedProfit =
+      (((11_000 - 0) * Math.pow(1.1, -3) - (10_000 - 0)) * 10 +
+        ((11_000 - 9_000) * Math.pow(1.1, -0.01) - (10_000 - 9_000)) * 10) *
+      90;
+    assertClose(
+      expected?.profit_delta_cents as number,
+      expectedProfit,
+      2,
+      'each SKU demand response is multiplied by its own margin before summing',
+    );
+    assert((expected?.profit_delta_cents as number) < 0, 'heterogeneous economics keep the correct loss sign');
+  });
+
+  await test('the frozen revenue realization rate includes ordinary returns', () => {
+    const product = makeProduct({ price_cents: 10_000, cogs_cents: 4_000 });
+    const history = makeHistory(product, 28, 1).map((row) => ({
+      ...row,
+      gross_revenue_cents: 10_000,
+      discount_cents: 0,
+      refund_cents: 1_000,
+      net_revenue_cents: 9_000,
+    }));
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: history,
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+    assertClose(
+      forecast.products[0]?.revenue_realization_rate as number,
+      0.9,
+      1e-6,
+      'expected money includes the pre-change return rate',
+    );
+  });
+
   await test('a stale fit is demoted, never served as fresh (R32)', () => {
     const product = makeProduct();
     const stale = makeFit(product.variant_gid, {
@@ -2278,12 +2364,28 @@ async function testForecast(): Promise<void> {
       fits: new Map([[product.variant_gid, stale]]),
       now: NOW,
     });
+    const freshForecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, makeFit(product.variant_gid)]]),
+      now: NOW,
+    });
 
-    assertEqual(forecast.confidence, 'partial', 'fitted demotes to partial when stale');
+    assertEqual(forecast.confidence, 'assumption', 'stale evidence is replaced rather than served as store-specific');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the replacement names its source');
     assert(
       forecast.warnings.some((warning) => warning.code === 'stale_model'),
       'and it says why',
     );
+    const staleWidth =
+      (forecast.fitted?.high.units_change_pct ?? 0) -
+      (forecast.fitted?.low.units_change_pct ?? 0);
+    const freshWidth =
+      (freshForecast.fitted?.high.units_change_pct ?? 0) -
+      (freshForecast.fitted?.low.units_change_pct ?? 0);
+    assert(staleWidth > freshWidth, 'the stale replacement is materially wider than the fresh fitted range');
   });
 
   await test('an assumption-tier fit is not leaned on', () => {
@@ -2297,8 +2399,16 @@ async function testForecast(): Promise<void> {
       fits: new Map([[product.variant_gid, weak]]),
       now: NOW,
     });
-    assertEqual(forecast.fitted, null, 'no fitted block');
-    assertEqual(forecast.confidence, 'assumption', 'and the tier is honest about it');
+    assert(forecast.fitted !== null, 'recent demand still gets a broad range');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the weak fit is replaced by the named default');
+    assertEqual(forecast.fitted?.elasticity, -1.5, 'the weak store estimate is not used');
+    assertClose(
+      forecast.products[0]?.demand_multiplier as number,
+      Math.pow(1.1, -1.5),
+      1e-6,
+      'the frozen response uses the default expected elasticity',
+    );
+    assertEqual(forecast.confidence, 'assumption', 'the tier is honest about the default');
   });
 
   await test('gift cards and subscriptions are excluded, with the reason (R22)', () => {
@@ -2328,6 +2438,7 @@ async function testForecast(): Promise<void> {
     assertEqual(forecast.products.length, 3, 'but all three are reported');
     const excluded = forecast.products.filter((line) => line.excluded);
     assertEqual(excluded.length, 2, 'two exclusions');
+    assert(excluded.every((line) => line.demand_multiplier === null), 'excluded lines freeze no demand response');
     assert(
       excluded.some((line) => line.exclusion_reason === 'gift_card') &&
         excluded.some((line) => line.exclusion_reason === 'subscription'),
@@ -2390,6 +2501,24 @@ async function testForecast(): Promise<void> {
     assertEqual(forecast.breakeven.direction, 'undefined', 'and breakeven is meaningless there');
   });
 
+  await test('a below-cost price cut still emits ascending ranges for every metric', () => {
+    const product = makeProduct({ price_cents: 1_000, cogs_cents: 900 });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: -50 },
+      now: NOW,
+    });
+    const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
+    assert(fitted.low.units_change_pct <= fitted.high.units_change_pct, 'unit range is ascending');
+    assert(fitted.low.revenue_delta_cents <= fitted.high.revenue_delta_cents, 'revenue range is ascending');
+    assert(
+      (fitted.low.profit_delta_cents as number) <= (fitted.high.profit_delta_cents as number),
+      'profit range is ascending even when more demand loses more money',
+    );
+  });
+
   await test('a zero change is rejected rather than forecast', () => {
     assertThrows(() => computeTargetPrice(3200, { type: 'percent', percent: 0 }), 'zero percent');
     assertThrows(() => computeTargetPrice(3200, { type: 'absolute', absolute_cents: 0 }), 'zero cents');
@@ -2432,6 +2561,7 @@ async function testForecast(): Promise<void> {
         targetPriceCents: 11000,
         targetCompareAtCents: null,
         compareAtAction: 'none',
+        revenueRealizationRate: 1,
         cogsCents: 2000,
         fit: null,
         fitConfidence: 'assumption',
@@ -2445,6 +2575,7 @@ async function testForecast(): Promise<void> {
         targetPriceCents: 11000,
         targetCompareAtCents: null,
         compareAtAction: 'none',
+        revenueRealizationRate: 1,
         cogsCents: 9000,
         fit: null,
         fitConfidence: 'assumption',
@@ -2455,6 +2586,129 @@ async function testForecast(): Promise<void> {
     // Margins: 8000 + 1000 = 9000 before, 9000 + 2000 = 11000 after.
     // 9000/11000 - 1 = -18.18%
     assertClose(breakeven.units_change_pct as number, -18.1818, 0.01, 'weighted breakeven');
+  });
+}
+
+async function testReports(): Promise<void> {
+  section('post-rollout reports');
+
+  await test('a perfectly predicted heterogeneous SKU mix lands at the stored forecast center', () => {
+    const rollout = makeRollout({
+      horizon_days: 1,
+      current_stage: 0,
+      forecast: {
+        model_version: 'report-regression-v1',
+        products: [
+          {
+            variant_gid: 'gid://shopify/ProductVariant/cheap',
+            excluded: false,
+            baseline_units_per_day: 100,
+            demand_multiplier: 1,
+          },
+          {
+            variant_gid: 'gid://shopify/ProductVariant/expensive',
+            excluded: false,
+            baseline_units_per_day: 100,
+            demand_multiplier: 0.1,
+          },
+        ],
+        fitted: {
+          expected: {
+            units_change_pct: -45,
+            revenue_delta_cents: -880_000,
+            profit_delta_cents: -430_000,
+          },
+          low: {
+            units_change_pct: -55,
+            revenue_delta_cents: -930_000,
+            profit_delta_cents: -480_000,
+          },
+          high: {
+            units_change_pct: -35,
+            revenue_delta_cents: -830_000,
+            profit_delta_cents: -380_000,
+          },
+        },
+      } as unknown as Rollout['forecast'],
+    });
+    const variant = (
+      id: string,
+      baseline: number,
+      target: number,
+      cogs: number,
+    ): RolloutVariant => ({
+      id,
+      rollout_id: rollout.id,
+      shop_id: rollout.shop_id,
+      variant_gid: `gid://shopify/ProductVariant/${id}`,
+      product_gid: `gid://shopify/Product/${id}`,
+      title: id,
+      sku: id,
+      baseline_price_cents: baseline,
+      baseline_compare_at_cents: null,
+      target_price_cents: target,
+      target_compare_at_cents: null,
+      compare_at_action: 'none',
+      baseline_units_per_day: 100,
+      cogs_cents_at_creation: cogs,
+      cohort_stage: 0,
+      applied_price_cents: target,
+      applied_at: NOW.toISOString(),
+      reverted_at: null,
+      excluded: false,
+      exclusion_reason: null,
+      created_at: NOW.toISOString(),
+      updated_at: NOW.toISOString(),
+    });
+    const variants = [variant('cheap', 1_000, 1_100, 500), variant('expensive', 10_000, 11_000, 5_000)];
+    const reading: RolloutReading = {
+      id: 'reading-report-regression',
+      rollout_id: rollout.id,
+      shop_id: rollout.shop_id,
+      day: TODAY,
+      stage_index: 0,
+      actual_units: 110,
+      actual_orders: 100,
+      actual_revenue_cents: 220_000,
+      actual_profit_cents: 120_000,
+      expected_units: 110,
+      expected_low: 90,
+      expected_high: 130,
+      counterfactual_units: 200,
+      counterfactual_revenue_cents: 1_100_000,
+      counterfactual_profit_cents: 550_000,
+      expected_revenue_cents: 220_000,
+      expected_profit_cents: 120_000,
+      expected_source: 'model',
+      interval_nominal: 0.8,
+      model_version: 'report-regression-v1',
+      band_stale: false,
+      band_floored: false,
+      breach_probability: null,
+      breach: false,
+      breach_rule_id: null,
+      breach_reason: null,
+      breach_streak: 0,
+      decision: 'hold',
+      evaluated_at: NOW.toISOString(),
+    };
+    const report = buildReportFromBundle({
+      rollout,
+      variants,
+      readings: [reading],
+      events: [],
+      health: 'healthy',
+      health_sentence: 'Healthy.',
+      live: { stage_index: 0, variants_live: 2, variants_total: 2, fraction: 1 },
+      can: { confirm: false, rollback: true, pause: true, cancel: false, resume: false },
+    } satisfies RolloutBundle);
+
+    if (report === null) throw new Error('the report was not built');
+    assertEqual(report.realized.units_change_pct, -45, 'realized units use the no-change baseline');
+    assertEqual(report.realized.revenue_delta_cents, -880_000, 'realized revenue is per-SKU baseline money');
+    assertEqual(report.realized.profit_delta_cents, -430_000, 'realized profit is per-SKU baseline money');
+    assertEqual(report.predicted.expected.units_change_pct, -45, 'report center matches the approved price effect');
+    assert(report.in_range, 'a perfectly predicted result was scored outside its own range');
   });
 }
 
@@ -2931,7 +3185,7 @@ async function testReadings(): Promise<void> {
 
   await test('a floored band refuses to claim anything either way', () => {
     const sentence = readingSentence({ ...reading, band_floored: true });
-    assert(sentence.includes('too few orders'), `says why it cannot judge: ${sentence}`);
+    assert(sentence.includes('too few unit sales'), `says why it cannot judge: ${sentence}`);
     assert(!sentence.includes('inside the range'), 'and does not overclaim');
   });
 
@@ -3725,18 +3979,26 @@ async function testAdapters(): Promise<void> {
       }
     });
 
-    await test('the server role can operate the app but cannot rewrite the journal', async () => {
+    await test('the server role can operate the app but cannot rewrite audit evidence', async () => {
       const { rows } = await postgres.query<{
         shops_readable: boolean;
         journal_insertable: boolean;
         journal_updatable: boolean;
         journal_deletable: boolean;
+        compliance_insertable: boolean;
+        compliance_updatable: boolean;
+        compliance_deletable: boolean;
+        compliance_truncatable: boolean;
       }>(
         `select
            has_table_privilege('service_role', 'public.shops', 'SELECT') as shops_readable,
            has_table_privilege('service_role', 'public.journal_entries', 'INSERT') as journal_insertable,
            has_table_privilege('service_role', 'public.journal_entries', 'UPDATE') as journal_updatable,
-           has_table_privilege('service_role', 'public.journal_entries', 'DELETE') as journal_deletable`,
+           has_table_privilege('service_role', 'public.journal_entries', 'DELETE') as journal_deletable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'INSERT') as compliance_insertable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'UPDATE') as compliance_updatable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'DELETE') as compliance_deletable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'TRUNCATE') as compliance_truncatable`,
       );
       const permission = rows[0];
       if (permission === undefined) throw new Error('Postgres did not return the service-role privileges');
@@ -3744,6 +4006,65 @@ async function testAdapters(): Promise<void> {
       assert(permission.journal_insertable, 'service_role cannot append to the price journal');
       assert(!permission.journal_updatable, 'service_role can rewrite price-journal history');
       assert(!permission.journal_deletable, 'service_role can delete price-journal history outside compliance purge');
+      assert(permission.compliance_insertable, 'service_role cannot append the verified compliance tombstone');
+      assert(!permission.compliance_updatable, 'service_role can rewrite compliance audit evidence');
+      assert(!permission.compliance_deletable, 'service_role can delete compliance audit evidence');
+      assert(!permission.compliance_truncatable, 'service_role can truncate compliance audit evidence');
+    });
+
+    await test('the compliance audit remains append-only even for the database owner', async () => {
+      const auditId = '00000000-0000-4000-8000-000000000099';
+      const webhookId = `smoke-compliance-${Date.now()}`;
+      await postgres.query('begin');
+      try {
+        await postgres.query(
+          `insert into public.compliance_audit
+             (id, webhook_id, shop_id, shop_domain, topic, action)
+           values ($1, $2, $3, 'append-only-smoke.myshopify.com', 'shop/redact', 'shop_data_purged')`,
+          [auditId, webhookId, shopId],
+        );
+
+        for (const [operation, sql] of [
+          ['UPDATE', `update public.compliance_audit set details = '{}'::jsonb where id = $1`],
+          ['DELETE', 'delete from public.compliance_audit where id = $1'],
+          ['TRUNCATE', 'truncate table public.compliance_audit'],
+        ] as const) {
+          await postgres.query('savepoint compliance_mutation');
+          let rejected = false;
+          try {
+            await postgres.query(sql, operation === 'TRUNCATE' ? [] : [auditId]);
+          } catch (cause) {
+            rejected = /append-only/i.test(cause instanceof Error ? cause.message : String(cause));
+          }
+          await postgres.query('rollback to savepoint compliance_mutation');
+          assert(rejected, `${operation} bypassed the compliance-audit trigger`);
+        }
+      } finally {
+        await postgres.query('rollback');
+      }
+    });
+
+    await test('Postgres refuses zero-dollar included rollout baselines and targets', async () => {
+      const { rows } = await postgres.query<{ id: string }>(
+        `select id from public.rollout_variants where not excluded order by created_at limit 1`,
+      );
+      const variant = rows[0];
+      if (variant === undefined) {
+        throw new Error('the adapter fixture did not create an included rollout variant');
+      }
+
+      for (const column of ['baseline_price_cents', 'target_price_cents'] as const) {
+        await postgres.query('begin');
+        let rejected = false;
+        try {
+          await postgres.query(`update public.rollout_variants set ${column} = 0 where id = $1`, [variant.id]);
+        } catch (cause) {
+          rejected = /check constraint/i.test(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          await postgres.query('rollback');
+        }
+        assert(rejected, `${column} accepted a zero-dollar included write intent`);
+      }
     });
 
     await test('the ML reader cannot select the encrypted Shopify token', async () => {
@@ -3783,6 +4104,7 @@ async function main(): Promise<void> {
   await testGoldenData();
   await testContracts();
   await testForecast();
+  await testReports();
   await testGuardrails();
   await testRollout();
   await testBands();

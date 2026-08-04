@@ -10,9 +10,9 @@ Cross-cutting rules:
 - Request and response bodies are JSON, `Content-Type: application/json`.
 - Money is integer cents; percentages are plain numbers (`12.5` = 12.5%). See
   `contracts/README.md`.
-- The shop is resolved server-side from the embedded session token (Sprint B2).
-  Until then routes accept `?shop=<domain>` in development only. **No route ever
-  takes a shop id from the client as authorisation.**
+- Merchant routes require a short-lived Shopify App Bridge session token and
+  resolve the shop only from its verified `dest` claim. Query parameters and
+  static fallback shop domains are never tenant authorization.
 - Errors always use the shape below. `message` is safe to show a merchant; `code`
   is what the UI branches on.
 
@@ -44,7 +44,7 @@ Cross-cutting rules:
 | GET | `/api/health` | Config and reachability | ✅ B1 |
 | GET | `/api/auth` | Start Shopify OAuth (redirects) | B2 |
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
-| POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
+| POST | `/api/webhooks/[topic]` | HMAC-verified, topic-bound, deduped webhook sink | ✅ beta |
 | POST | `/api/webhook-subscriptions` | Bearer-authenticated repair of required Shopify webhook subscriptions | ✅ beta |
 | GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | ✅ beta |
 | GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | ✅ beta |
@@ -109,7 +109,7 @@ Requested by Lane A as REQ-A-003.
       "variants_live": 21,
       "variants_total": 42,
       "health": "healthy",
-      "health_sentence": "Orders are inside the range we expected.",
+      "health_sentence": "Unit sales are inside the range we expected.",
       "next_decision_day": "2026-07-31",
       "can": { "rollback": true, "cancel": false, "resume": false }
     }
@@ -173,18 +173,35 @@ right now, and how do I undo it?" at a glance (R16).
                   "target_price_cents": 3520, "applied_at": "…", "excluded": false } ],
   "readings": [ { "day": "2026-07-28", "actual_units": 12, "expected_units": 13.4,
                   "expected_low": 8.1, "expected_high": 18.9, "expected_source": "model",
+                  "counterfactual_units": 15.0,
+                  "counterfactual_revenue_cents": 48000,
+                  "counterfactual_profit_cents": 21000,
+                  "expected_revenue_cents": 47168,
+                  "expected_profit_cents": 22340,
+                  "expected_revenue_low_cents": 35210,
+                  "expected_revenue_high_cents": 60140,
+                  "expected_profit_low_cents": 15102,
+                  "expected_profit_high_cents": 29620,
                   "band_stale": false, "band_floored": false, "breach": false,
                   "breach_streak": 0, "decision": "hold",
                   "verdict": "within",
                   "sentence": "12 units sold against 13.4 expected — inside the range we expected." } ],
   "events": [ { "type": "stage_advanced", "message": "…", "at": "…" } ],
   "health": "healthy",
-  "health_sentence": "Orders are inside the range we expected.",
+  "health_sentence": "Unit sales are inside the range we expected.",
   "can": { "confirm": false, "rollback": true, "pause": true, "cancel": false, "resume": false }
 }
 ```
 
 `readings[]` is the actual-vs-expected chart series *and* its uncertainty band.
+The `counterfactual_*` fields freeze what the exact live SKU mix would have done
+at old prices; `expected_*` freezes the price-conditioned expectation at target
+prices. Money is summed per SKU, never reconstructed from an average product
+price. Profit remains `null` whenever any live SKU lacks a frozen cost.
+Forecast products also freeze `revenue_realization_rate` from pre-change
+discount and return behavior, so expected, counterfactual, and realized net revenue use the
+same basis. Percentage money guardrails skip legacy readings that lack their own
+revenue/profit interval rather than scaling an aggregate units interval.
 
 `verdict` (`within` | `below` | `above`) is computed server-side, as Lane A asked
 in REQ-A-003. A day is `below` only when it falls outside the interval, not merely

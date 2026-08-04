@@ -12,6 +12,7 @@ import {
   reconcileWebhooks,
   REQUIRED_WEBHOOK_TOPICS,
   webhookCallbackUrl,
+  webhookTopicToken,
 } from '../lib/shopify/webhooks';
 import { makeRolloutCreate } from './integration/_harness';
 
@@ -25,10 +26,18 @@ function delivery(
   topic: string,
   payload: unknown,
   webhookId: string,
-  options: { shop?: string; hmac?: string | null; includeIdentity?: boolean } = {},
+  options: {
+    shop?: string;
+    hmac?: string | null;
+    includeIdentity?: boolean;
+    topicHeader?: string;
+    tokenTopic?: string;
+    tokenShop?: string;
+  } = {},
 ): Promise<Response> {
   const raw = JSON.stringify(payload);
   const headers = new Headers({ 'content-type': 'application/json' });
+  headers.set('x-shopify-topic', options.topicHeader ?? topic);
   const includeIdentity = options.includeIdentity ?? true;
   if (includeIdentity) {
     headers.set('x-shopify-shop-domain', options.shop ?? DEMO_SHOP_DOMAIN);
@@ -36,11 +45,22 @@ function delivery(
   }
   if (options.hmac !== null) headers.set('x-shopify-hmac-sha256', options.hmac ?? signWebhookBody(raw, SECRET));
   return POST(
-    new NextRequest(`http://localhost/api/webhooks/${topic.replace(/\//g, '--')}`, {
+    new NextRequest(
+      `http://localhost/api/webhooks/${topic.replace(/\//g, '--')}?pf_topic_token=${encodeURIComponent(
+        webhookTopicToken(
+          SECRET,
+          options.tokenTopic ?? topic,
+          ['customers/data_request', 'customers/redact', 'shop/redact'].includes(topic)
+            ? undefined
+            : (options.tokenShop ?? options.shop ?? DEMO_SHOP_DOMAIN),
+        ),
+      )}`,
+      {
       method: 'POST',
       headers,
       body: raw,
-    }),
+      },
+    ),
     { params: Promise.resolve({ topic: topic.replace(/\//g, '--') }) },
   );
 }
@@ -63,15 +83,44 @@ function order(variantId: string, productId: string, lines = 1): Record<string, 
   };
 }
 
+function refund(
+  variantId: string,
+  productId: string,
+  amount = '8.75',
+  createdAt = '2099-01-02T12:00:00Z',
+): Record<string, unknown> {
+  return {
+    id: 9001,
+    created_at: createdAt,
+    refund_line_items: [
+      {
+        quantity: 1,
+        subtotal_set: { shop_money: { amount } },
+        line_item: { variant_id: variantId, product_id: productId },
+      },
+    ],
+  };
+}
+
 async function main(): Promise<void> {
   assert.deepEqual(
     REQUIRED_WEBHOOK_TOPICS.map((topic) => topic.topicPath),
-    ['orders/create', 'products/update', 'app/uninstalled'],
+    ['orders/create', 'refunds/create', 'products/update', 'app/uninstalled'],
     'the install registrar covers the required operational topics exactly',
   );
+  const callback = new URL(
+    webhookCallbackUrl(
+      'https://priceflag-app.vercel.app/',
+      'orders--create',
+      'orders/create',
+      SECRET,
+      DEMO_SHOP_DOMAIN,
+    ),
+  );
+  assert.equal(callback.origin + callback.pathname, 'https://priceflag-app.vercel.app/api/webhooks/orders--create');
   assert.equal(
-    webhookCallbackUrl('https://priceflag-app.vercel.app/', 'orders--create'),
-    'https://priceflag-app.vercel.app/api/webhooks/orders--create',
+    callback.searchParams.get('pf_topic_token'),
+    webhookTopicToken(SECRET, 'orders/create', DEMO_SHOP_DOMAIN),
   );
 
   const calls: { query: string; variables: Record<string, unknown> }[] = [];
@@ -87,7 +136,13 @@ async function main(): Promise<void> {
                 topic: 'ORDERS_CREATE',
                 endpoint: {
                   __typename: 'WebhookHttpEndpoint',
-                  callbackUrl: 'https://app.test/api/webhooks/orders--create',
+                callbackUrl: webhookCallbackUrl(
+                  'https://app.test',
+                  'orders--create',
+                  'orders/create',
+                  SECRET,
+                  DEMO_SHOP_DOMAIN,
+                ),
                 },
               },
               {
@@ -148,9 +203,12 @@ async function main(): Promise<void> {
     apiVersion: '2026-07',
     source: 'oauth_stored',
   } satisfies ShopCredentials;
-  const reconciled = await reconcileWebhooks(credentials, 'https://app.test/', { client: fakeClient });
+  const reconciled = await reconcileWebhooks(credentials, 'https://app.test/', {
+    client: fakeClient,
+    webhookSecret: SECRET,
+  });
   assert.deepEqual(reconciled, {
-    created: ['APP_UNINSTALLED'],
+    created: ['REFUNDS_CREATE', 'APP_UNINSTALLED'],
     updated: ['PRODUCTS_UPDATE'],
     ok: ['ORDERS_CREATE'],
     deleted: [
@@ -158,17 +216,44 @@ async function main(): Promise<void> {
       'gid://shopify/WebhookSubscription/2-duplicate',
     ],
   });
-  assert.equal(calls.length, 5, 'one read, two duplicate deletes, one repoint, and one create');
+  assert.equal(calls.length, 6, 'one read, two duplicate deletes, one repoint, and two creates');
   assert.deepEqual(calls[1]?.variables, { id: 'gid://shopify/WebhookSubscription/1-duplicate' });
   assert.deepEqual(calls[2]?.variables, {
-    id: 'gid://shopify/WebhookSubscription/2',
-    webhookSubscription: { callbackUrl: 'https://app.test/api/webhooks/products--update' },
+    topic: 'REFUNDS_CREATE',
+    webhookSubscription: {
+      callbackUrl: webhookCallbackUrl(
+        'https://app.test',
+        'refunds--create',
+        'refunds/create',
+        SECRET,
+        DEMO_SHOP_DOMAIN,
+      ),
+      format: 'JSON',
+    },
   });
-  assert.deepEqual(calls[3]?.variables, { id: 'gid://shopify/WebhookSubscription/2-duplicate' });
-  assert.deepEqual(calls[4]?.variables, {
+  assert.deepEqual(calls[3]?.variables, {
+    id: 'gid://shopify/WebhookSubscription/2',
+    webhookSubscription: {
+      callbackUrl: webhookCallbackUrl(
+        'https://app.test',
+        'products--update',
+        'products/update',
+        SECRET,
+        DEMO_SHOP_DOMAIN,
+      ),
+    },
+  });
+  assert.deepEqual(calls[4]?.variables, { id: 'gid://shopify/WebhookSubscription/2-duplicate' });
+  assert.deepEqual(calls[5]?.variables, {
     topic: 'APP_UNINSTALLED',
     webhookSubscription: {
-      callbackUrl: 'https://app.test/api/webhooks/app--uninstalled',
+      callbackUrl: webhookCallbackUrl(
+        'https://app.test',
+        'app--uninstalled',
+        'app/uninstalled',
+        SECRET,
+        DEMO_SHOP_DOMAIN,
+      ),
       format: 'JSON',
     },
   });
@@ -183,6 +268,35 @@ async function main(): Promise<void> {
 
   assert.equal((await delivery('orders/create', order(variantId, productId), 'bad-hmac', { hmac: 'wrong' })).status, 401);
   assert.equal(
+    (
+      await delivery('shop/redact', order(variantId, productId), 'topic-replay', {
+        topicHeader: 'orders/create',
+      })
+    ).status,
+    400,
+    'a valid body signature for one topic cannot be replayed at a destructive endpoint',
+  );
+  assert.equal(
+    (
+      await delivery(
+        'shop/redact',
+        {
+          shop_id: 1,
+          shop_domain: DEMO_SHOP_DOMAIN,
+          customer: { id: 99 },
+          orders_to_redact: [1],
+        },
+        'relabel-customer-redact',
+        {
+          topicHeader: 'shop/redact',
+          tokenTopic: 'customers/redact',
+        },
+      )
+    ).status,
+    401,
+    'changing both the route and header cannot reuse another topic capability',
+  );
+  assert.equal(
     (await delivery('orders/create', order(variantId, productId), 'missing-id', { includeIdentity: false })).status,
     400,
   );
@@ -195,6 +309,37 @@ async function main(): Promise<void> {
   assert.equal(firstRow.orders, 1, 'same variant twice in one order counts as one distinct order');
   assert.equal(firstRow.gross_revenue_cents, 3000);
   assert.equal(firstRow.discount_cents, 200, 'amount_set and legacy amount discounts are both parsed');
+
+  const refunded = await delivery('refunds/create', refund(variantId, productId), 'refund-1');
+  assert.equal(refunded.status, 200);
+  const refundRow = (await adapter.getOrderDays(shop.id, { from_day: '2099-01-02', to_day: '2099-01-02' }))[0];
+  assert(refundRow);
+  assert.equal(refundRow.units, 0);
+  assert.equal(refundRow.orders, 0);
+  assert.equal(refundRow.refund_units, 1);
+  assert.equal(refundRow.refund_cents, 875);
+  assert.equal(refundRow.net_revenue_cents, -875, 'post-order refund did not reduce live net revenue');
+  const refundRetry = await delivery('refunds/create', refund(variantId, productId), 'refund-1');
+  assert.equal(refundRetry.status, 200);
+  assert.equal((await refundRetry.json()).deduplicated, true);
+  const dedupedRefundRow = (await adapter.getOrderDays(shop.id, { from_day: '2099-01-02', to_day: '2099-01-02' }))[0];
+  assert.equal(dedupedRefundRow?.refund_cents, 875, 'a retried refund was counted twice');
+
+  const highValueRefund = await delivery(
+    'refunds/create',
+    refund(variantId, productId, '50.00', '2099-01-01T18:00:00Z'),
+    'refund-high-value',
+  );
+  assert.equal(highValueRefund.status, 200);
+  const mixedRow = (await adapter.getOrderDays(shop.id, { from_day: '2099-01-01', to_day: '2099-01-01' }))[0];
+  assert(mixedRow);
+  assert.equal(mixedRow.units - mixedRow.refund_units, 2);
+  assert(mixedRow.net_revenue_cents < 0, 'the regression fixture did not create negative mixed-day revenue');
+  assert.equal(
+    mixedRow.realized_unit_price_cents,
+    null,
+    'negative mixed-day revenue was represented as an invalid negative realized price',
+  );
 
   const retry = await delivery('orders/create', order(variantId, productId, 2), 'order-1');
   assert.equal(retry.status, 200);
@@ -311,18 +456,31 @@ async function main(): Promise<void> {
       exclusion_reason: null,
     },
   ]);
+  const compareOnlyPayload = {
+    id: compareProductId,
+    variants: [
+      {
+        id: compareVariantId,
+        price: (compareProduct.price_cents / 100).toFixed(2),
+        compare_at_price: ((compareProduct.price_cents + 500) / 100).toFixed(2),
+      },
+    ],
+  };
+  const busyDelivery = await adapter.withRolloutLock(compareRollout.id, async () =>
+    delivery('products/update', compareOnlyPayload, 'product-edit-compare-at'),
+  );
+  assert(busyDelivery.acquired);
+  assert.equal(busyDelivery.result?.status, 500, 'a busy evaluator lease must make Shopify retry the external edit');
+  assert.equal((await adapter.getRollout(compareRollout.id))?.status, 'running');
+  assert.equal(
+    (await adapter.getProductsByVariantGids(shop.id, [compareProduct.variant_gid]))[0]?.compare_at_cents,
+    compareProduct.compare_at_cents,
+    'a failed pause must not upsert away the external difference needed by the retry',
+  );
+
   const compareOnlyEdit = await delivery(
     'products/update',
-    {
-      id: compareProductId,
-      variants: [
-        {
-          id: compareVariantId,
-          price: (compareProduct.price_cents / 100).toFixed(2),
-          compare_at_price: ((compareProduct.price_cents + 500) / 100).toFixed(2),
-        },
-      ],
-    },
+    compareOnlyPayload,
     'product-edit-compare-at',
   );
   assert.equal(compareOnlyEdit.status, 200);
@@ -357,7 +515,21 @@ async function main(): Promise<void> {
       guardrails: { contract_version: '1.0.0', auto_rollback: false, rules: [] },
     }),
   );
-  const uninstall = await delivery('app/uninstalled', {}, 'uninstall-1');
+  const uninstallPayload = { myshopify_domain: DEMO_SHOP_DOMAIN };
+  const reboundUninstall = await delivery('app/uninstalled', uninstallPayload, 'uninstall-rebound-token', {
+    shop: other.shop_domain,
+    tokenShop: DEMO_SHOP_DOMAIN,
+  });
+  assert.equal(reboundUninstall.status, 401, 'an uninstall callback capability cannot cross shops');
+  const mismatchedUninstallBody = await delivery(
+    'app/uninstalled',
+    uninstallPayload,
+    'uninstall-rebound-body',
+    { shop: other.shop_domain },
+  );
+  assert.equal(mismatchedUninstallBody.status, 400, 'the signed uninstall shop must match its header');
+
+  const uninstall = await delivery('app/uninstalled', uninstallPayload, 'uninstall-1');
   assert.equal(uninstall.status, 200);
   assert.equal((await adapter.getRollout(uninstallRunning.id))?.status, 'paused');
   assert.equal((await adapter.getRollout(uninstallScheduled.id))?.status, 'paused');
@@ -377,14 +549,24 @@ async function main(): Promise<void> {
   assert.equal(privacy.status, 200);
   assert.equal(privacyBody.no_customer_identity_stored, true);
 
-  const purge = await delivery('shop/redact', { shop_id: 1 }, 'purge-1');
+  const redactPayload = { shop_id: 1, shop_domain: DEMO_SHOP_DOMAIN };
+  assert.equal(
+    (
+      await delivery('shop/redact', redactPayload, 'cross-shop-redact-replay', {
+        shop: other.shop_domain,
+      })
+    ).status,
+    400,
+    'a signed redact payload cannot be rebound to another shop through an unsigned header',
+  );
+  const purge = await delivery('shop/redact', redactPayload, 'purge-1');
   assert.equal(purge.status, 200);
   assert.equal((await purge.json()).audited, true);
   assert.equal(await adapter.getShopByDomain(DEMO_SHOP_DOMAIN), null);
   assert(await adapter.getShopByDomain(other.shop_domain), 'purge must not cross shop scope');
   assert.equal((await adapter.listJournalEntries(shop.id)).total, 0);
   assert.equal((await adapter.getOrderDays(shop.id)).length, 0);
-  assert.equal((await delivery('shop/redact', { shop_id: 1 }, 'purge-1')).status, 200, 'purge retries dedupe');
+  assert.equal((await delivery('shop/redact', redactPayload, 'purge-1')).status, 200, 'purge retries dedupe');
 
   setAdapter(null);
   console.log('Webhook integrity: HMAC, identity, dedupe, merchant edits, uninstall pause and purge passed.');
