@@ -45,8 +45,13 @@ begin
   if exists (
     select 1
       from pg_auth_members link
-      join pg_roles role on role.oid in (link.roleid, link.member)
-     where role.rolname = 'priceflag_ml_readonly'
+      join pg_roles parent on parent.oid = link.roleid
+      join pg_roles member on member.oid = link.member
+     where (parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly')
+       and not (
+         parent.rolname = 'priceflag_ml_readonly'
+         and member.rolname = 'postgres'
+       )
   ) then
     raise exception using
       errcode = '42501',
@@ -124,8 +129,13 @@ begin
 
   select count(*)::integer into memberships
     from pg_auth_members link
-    join pg_roles role on role.oid in (link.roleid, link.member)
-   where role.rolname = 'priceflag_ml_readonly';
+    join pg_roles parent on parent.oid = link.roleid
+    join pg_roles member on member.oid = link.member
+   where (parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly')
+     and not (
+       parent.rolname = 'priceflag_ml_readonly'
+       and member.rolname = 'postgres'
+     );
   if memberships <> 0 then
     raise exception using errcode = '42501', message = 'legacy ML database role retains role memberships';
   end if;

@@ -99,7 +99,8 @@ comment on role priceflag_ml_readonly is
   'Retired identity: committed NOLOGIN boundary. Real ML reads use authenticated POST /api/ml/export.';
 
 -- PostgreSQL 16+ automatically gives the CREATEROLE identity ADMIN OPTION on a
--- role it creates. Hosted `postgres` is not a superuser and needs that exact
--- edge for every ALTER/SET/COMMENT above. Revoke it only as the final role
--- administration action; the following migration proves zero memberships.
-revoke priceflag_ml_readonly from postgres;
+-- role it creates. Hosted Supabase may record that exact postgres -> retired
+-- role edge under a platform grantor that tenant `postgres` cannot revoke. It
+-- lets the database administrator shed privileges by SET ROLE; it gives the
+-- retired identity no authority to assume `postgres`. Later attestations allow
+-- only this one direction and reject every other membership.

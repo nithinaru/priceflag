@@ -42,7 +42,11 @@ begin
     from pg_auth_members link
     join pg_roles parent on parent.oid = link.roleid
     join pg_roles member on member.oid = link.member
-   where parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly';
+   where (parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly')
+     and not (
+       parent.rolname = 'priceflag_ml_readonly'
+       and member.rolname = 'postgres'
+     );
   if membership_edges is not null then
     raise exception using
       errcode = '42501',

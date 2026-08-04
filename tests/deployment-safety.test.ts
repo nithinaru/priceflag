@@ -280,16 +280,13 @@ assert.match(mlRoleLockout, /alter role priceflag_ml_readonly[\s\S]*nologin[\s\S
 assert.match(mlRoleLockout, /shobj_description[\s\S]*Priceflag ML membership precheck v1 passed/);
 assert.match(mlRoleLockout, /from pg_auth_members[\s\S]*memberships_exist/);
 assert.match(mlRoleLockout, /not fresh_membership_precheck or memberships_exist/);
-assert.match(mlRoleLockout, /comment on role priceflag_ml_readonly[\s\S]*revoke priceflag_ml_readonly from postgres/);
-assert.ok(
-  mlRoleLockout.lastIndexOf('revoke priceflag_ml_readonly from postgres') >
-    mlRoleLockout.lastIndexOf('comment on role priceflag_ml_readonly'),
-  'the creator ADMIN edge must be revoked only after the final hosted role-administration statement',
-);
+assert.match(mlRoleLockout, /member\.rolname = 'postgres'[\s\S]*gives the[\s\S]*retired identity no authority/);
+assert.doesNotMatch(mlRoleLockout, /revoke priceflag_ml_readonly from postgres/);
 assert.doesNotMatch(mlRoleLockout, /pg_terminate_backend/);
 assert.match(mlRoleMemberships, /version = '20260804193400'/);
 assert.match(mlRoleMemberships, /from pg_auth_members[\s\S]*restart to drain member sessions/);
 assert.match(mlRoleMemberships, /string_agg[\s\S]*member\.rolname[\s\S]*parent\.rolname/);
+assert.match(mlRoleMemberships, /parent\.rolname = 'priceflag_ml_readonly'[\s\S]*member\.rolname = 'postgres'/);
 assert.doesNotMatch(mlRoleMemberships, /alter role priceflag_ml_readonly[\s\S]*login/);
 assert.match(mlRoleDrain, /version = '20260804193500'/);
 assert.match(mlRoleDrain, /requires_restart[\s\S]*pg_postmaster_start_time\(\) <= retirement_state\.lockout_recorded_at/);
@@ -298,6 +295,7 @@ assert.match(mlRoleDrain, /from pg_stat_activity[\s\S]*legacy ML database role s
 assert.match(mlRoleDrain, /pf_attest_ml_database_role_retired\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
 assert.match(mlRoleDrain, /role_state\.rolcanlogin[\s\S]*role_state\.rolinherit[\s\S]*role_state\.rolconnlimit <> 0/);
 assert.match(mlRoleDrain, /from pg_auth_members[\s\S]*legacy ML database role retains role memberships/);
+assert.match(mlRoleDrain, /parent\.rolname = 'priceflag_ml_readonly'[\s\S]*member\.rolname = 'postgres'/);
 assert.match(mlRoleDrain, /from pg_policy[\s\S]*legacy ML database role remains referenced by an RLS policy/);
 assert.match(mlRoleDrain, /from information_schema\.table_privileges[\s\S]*legacy ML database role retains direct privileges/);
 assert.match(mlRoleDrain, /select priceflag_internal\.pf_attest_ml_database_role_retired\(\)/);

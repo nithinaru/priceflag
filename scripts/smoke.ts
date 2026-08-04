@@ -4138,7 +4138,13 @@ async function testAdapters(): Promise<void> {
            role.rolconnlimit as connection_limit,
            (select count(*)::int
               from pg_auth_members link
-             where role.oid in (link.roleid, link.member)) as memberships,
+              join pg_roles parent on parent.oid = link.roleid
+              join pg_roles member on member.oid = link.member
+             where (role.oid in (link.roleid, link.member))
+               and not (
+                 parent.rolname = 'priceflag_ml_readonly'
+                 and member.rolname = 'postgres'
+               )) as memberships,
            (select count(*)::int
               from pg_policy policy
              where role.oid = any(policy.polroles)) as policies,

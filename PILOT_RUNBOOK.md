@@ -373,13 +373,15 @@ both match.
 The external ML worker never receives a PostgreSQL login, Supabase API key, or
 service-role key. The `20260804180000`, `20260804193400`, `20260804193500`, and `20260804193600`
 migration chain retires the former `priceflag_ml_readonly` identity. It refuses
-to continue if that role participates in any membership, commits NOLOGIN,
+to continue if that role participates in any membership except PostgreSQL's
+platform-created `postgres` administrator edge (which points toward the retired
+role and grants the retired identity nothing), commits NOLOGIN,
 NOINHERIT, a zero connection limit and a null password in phase one, then drains
 already-authenticated sessions and attests the result in a separate transaction.
 It also drops the old RLS policies and revokes direct application-schema grants.
 The hosted staging gate calls
 `priceflag_internal.pf_attest_ml_database_role_retired()` after every migration
-run. Any login, membership, policy, or direct grant keeps merchant invite access
+run. Any login, unapproved membership, policy, or direct grant keeps merchant invite access
 closed. Do not restore that role or create another external database credential;
 real reads go through authenticated `POST /api/ml/export`.
 
