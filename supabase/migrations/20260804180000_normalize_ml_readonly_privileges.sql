@@ -183,53 +183,71 @@ grant execute on function public.pf_shop_day(timestamptz, text)
 -- could not revoke, including write privileges scoped to individual columns.
 do $$
 declare
-  unexpected_column_privileges integer;
+  unexpected_column_privileges text[];
 begin
-  select count(*)::integer
+  select array_agg(description order by description)
     into strict unexpected_column_privileges
-    from pg_class relation
-    join pg_namespace namespace on namespace.oid = relation.relnamespace
-    join pg_attribute attribute on attribute.attrelid = relation.oid
-   where namespace.nspname <> 'information_schema'
-     and namespace.nspname !~ '^pg_'
-     and relation.relkind in ('r', 'p', 'v', 'm', 'f')
-     and attribute.attnum > 0
-     and not attribute.attisdropped
-     and (
-       has_column_privilege(
-         'priceflag_ml_readonly', relation.oid, attribute.attnum,
-         'INSERT,UPDATE,REFERENCES'
-       )
-       or (
-         has_column_privilege(
-           'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
-         )
-         and not (
-           namespace.nspname = 'public'
-           and (
-             relation.relname = any(array[
-               'ml_product_days', 'ml_products', 'ml_price_history',
-               'ml_rollout_windows', 'order_days', 'products',
-               'journal_entries', 'rollouts', 'rollout_variants',
-               'elasticity_fits', 'expected_bands', 'model_runs',
-               'rollout_reports'
-             ])
-             or (
-               relation.relname = 'shops'
-               and attribute.attname = any(array[
-                 'id', 'shop_domain', 'name', 'currency',
-                 'timezone', 'mode', 'created_at'
-               ])
+    from (
+      select format(
+               '%I.%I.%I:%s%s',
+               namespace.nspname,
+               relation.relname,
+               attribute.attname,
+               case when has_column_privilege(
+                 'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
+               ) then 'SELECT' else '' end,
+               case when has_column_privilege(
+                 'priceflag_ml_readonly', relation.oid, attribute.attnum,
+                 'INSERT,UPDATE,REFERENCES'
+               ) then '+WRITE' else '' end
+             ) as description
+        from pg_class relation
+        join pg_namespace namespace on namespace.oid = relation.relnamespace
+        join pg_attribute attribute on attribute.attrelid = relation.oid
+       where namespace.nspname <> 'information_schema'
+         and namespace.nspname !~ '^pg_'
+         and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+         and attribute.attnum > 0
+         and not attribute.attisdropped
+         and (
+           has_column_privilege(
+             'priceflag_ml_readonly', relation.oid, attribute.attnum,
+             'INSERT,UPDATE,REFERENCES'
+           )
+           or (
+             has_column_privilege(
+               'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
+             )
+             and not (
+               namespace.nspname = 'public'
+               and (
+                 relation.relname = any(array[
+                   'ml_product_days', 'ml_products', 'ml_price_history',
+                   'ml_rollout_windows', 'order_days', 'products',
+                   'journal_entries', 'rollouts', 'rollout_variants',
+                   'elasticity_fits', 'expected_bands', 'model_runs',
+                   'rollout_reports'
+                 ])
+                 or (
+                   relation.relname = 'shops'
+                   and attribute.attname = any(array[
+                     'id', 'shop_domain', 'name', 'currency',
+                     'timezone', 'mode', 'created_at'
+                   ])
+                 )
+               )
              )
            )
          )
-       )
-     );
+       order by namespace.nspname, relation.relname, attribute.attnum
+       limit 30
+    ) unexpected;
 
-  if unexpected_column_privileges <> 0 then
+  if coalesce(cardinality(unexpected_column_privileges), 0) <> 0 then
     raise exception using
       errcode = '42501',
-      message = 'priceflag_ml_readonly retains column privileges outside the approved read surface';
+      message = 'priceflag_ml_readonly retains column privileges outside the approved read surface: '
+        || array_to_string(unexpected_column_privileges, ', ');
   end if;
 end
 $$;

@@ -18,7 +18,7 @@ export function sanitizeSupabaseStartLog(input) {
   const sqlFailureIndex = rawLines.findIndex((line) => SQL_FAILURE.test(line));
   const selectedLines = sqlFailureIndex === -1
     ? rawLines.filter((line) => DIAGNOSTIC_LINE.test(line))
-    : rawLines.slice(sqlFailureIndex);
+    : rawLines.slice(Math.max(0, sqlFailureIndex - 40));
   const lines = selectedLines
     .map((line) => line
       .replace(POSTGRES_CREDENTIALS, '$1[REDACTED]@')
