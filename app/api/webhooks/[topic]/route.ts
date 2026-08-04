@@ -18,6 +18,8 @@
  * terms.
  */
 
+import { createHash } from 'node:crypto';
+
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
@@ -57,7 +59,12 @@ export async function POST(
   }
 
   const shopDomain = (request.headers.get('x-shopify-shop-domain') ?? '').toLowerCase();
-  const webhookId = request.headers.get('x-shopify-webhook-id') ?? `${topic}:${Date.now()}`;
+  // Without the id header, fall back to a *deterministic* key over what makes a
+  // delivery unique — topic, shop and exact raw body — so a redelivery of the
+  // same event still dedupes. (A timestamp here would make every retry "new".)
+  const webhookId =
+    request.headers.get('x-shopify-webhook-id') ??
+    `derived:${createHash('sha256').update(`${topic}\n${shopDomain}\n`).update(rawBody).digest('hex').slice(0, 40)}`;
   const adapter = getAdapter();
 
   const { duplicate } = await adapter.recordWebhook({
