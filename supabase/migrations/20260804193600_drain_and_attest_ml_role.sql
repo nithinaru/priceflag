@@ -75,6 +75,11 @@ begin
     end if;
   end loop;
 
+  -- pg_stat_activity is cached for the current transaction after the loop's
+  -- first read. Discard that snapshot so verification observes the result of
+  -- pg_terminate_backend instead of the pre-termination session list.
+  perform pg_stat_clear_snapshot();
+
   if exists (
     select 1
       from pg_stat_activity

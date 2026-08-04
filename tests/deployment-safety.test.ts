@@ -291,6 +291,7 @@ assert.doesNotMatch(mlRoleMemberships, /alter role priceflag_ml_readonly[\s\S]*l
 assert.match(mlRoleDrain, /version = '20260804193500'/);
 assert.match(mlRoleDrain, /requires_restart[\s\S]*pg_postmaster_start_time\(\) <= retirement_state\.lockout_recorded_at/);
 assert.match(mlRoleDrain, /pg_terminate_backend\(session_row\.pid, 5000\)/);
+assert.match(mlRoleDrain, /pg_terminate_backend[\s\S]*pg_stat_clear_snapshot\(\)[\s\S]*sessions remain after the committed lockout/);
 assert.match(mlRoleDrain, /from pg_stat_activity[\s\S]*legacy ML database role still has active sessions/);
 assert.match(mlRoleDrain, /pf_attest_ml_database_role_retired\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
 assert.match(mlRoleDrain, /role_state\.rolcanlogin[\s\S]*role_state\.rolinherit[\s\S]*role_state\.rolconnlimit <> 0/);
