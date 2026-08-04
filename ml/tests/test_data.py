@@ -274,6 +274,7 @@ def test_source_attestation_requires_exact_role_project_environment_and_sentinel
         "role_memberships": 0,
         "can_create_public_objects": False,
         "creatable_schemas": 0,
+        "creatable_databases": 0,
         "can_read_shop_token": False,
         "writable_relations": 0,
         "accessible_sequences": 0,
@@ -288,6 +289,7 @@ def test_source_attestation_requires_exact_role_project_environment_and_sentinel
     ) == SourceIdentity("abcdefghijklmnopqrst", "production", "priceflag_ml_readonly")
     assert "current_user" in seen[0][0]
     assert "pg_auth_members" in seen[0][0]
+    assert "has_database_privilege" in seen[0][0]
     assert "has_column_privilege" in seen[0][0]
     assert "has_function_privilege" in seen[0][0]
 
@@ -322,6 +324,7 @@ def test_source_attestation_requires_exact_role_project_environment_and_sentinel
     for field in (
         "role_memberships",
         "creatable_schemas",
+        "creatable_databases",
         "writable_relations",
         "accessible_sequences",
         "executable_security_definers",

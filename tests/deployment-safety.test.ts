@@ -250,11 +250,14 @@ assert.match(mlRoleHardening, /else[\s\S]*raise exception[\s\S]*alter role price
 assert.match(mlRoleHardening, /errcode = '42501'/);
 assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*revoke %I from priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /revoke all privileges on all tables in schema public from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /attribute\.attacl[\s\S]*grantee\.rolname = 'priceflag_ml_readonly'/);
+assert.match(mlRoleHardening, /revoke create on database %I from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /from pg_database database[\s\S]*has_database_privilege/);
+assert.match(mlRoleHardening, /database\.datdba = reader\.oid/);
+assert.doesNotMatch(mlRoleHardening, /aclexplode/);
 assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
 assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
 assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
-passed += 10;
+passed += 13;
 
 async function verifyAttestation(): Promise<void> {
   const sanitizerUrl = pathToFileURL(

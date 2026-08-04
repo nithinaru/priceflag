@@ -83,36 +83,36 @@ revoke all privileges on all sequences in schema public from priceflag_ml_readon
 revoke all privileges on all routines in schema public from priceflag_ml_readonly;
 revoke all privileges on schema public from priceflag_ml_readonly;
 
--- Table-level REVOKE does not necessarily remove grants recorded on individual
--- columns. Clear every column privilege explicitly before restoring the seven
--- approved shops columns below.
+-- A database-level CREATE grant would let this role manufacture a new schema
+-- even after every existing schema has been locked down. Remove a direct grant
+-- on the application database, then inventory every connectable database. An
+-- ownership grant, PUBLIC grant or grant in another database cannot be made
+-- safe here without broader authority, so fail closed and require owner repair.
 do $$
 declare
-  column_grant record;
+  unsafe_databases integer;
 begin
-  for column_grant in
-    select namespace.nspname,
-           class.relname,
-           attribute.attname,
-           privilege.privilege_type
-      from pg_class class
-      join pg_namespace namespace on namespace.oid = class.relnamespace
-      join pg_attribute attribute on attribute.attrelid = class.oid
-      cross join lateral aclexplode(coalesce(attribute.attacl, '{}'::aclitem[])) privilege
-      join pg_roles grantee on grantee.oid = privilege.grantee
-     where namespace.nspname = 'public'
-       and attribute.attnum > 0
-       and not attribute.attisdropped
-       and grantee.rolname = 'priceflag_ml_readonly'
-  loop
-    execute format(
-      'revoke %s (%I) on table %I.%I from priceflag_ml_readonly',
-      column_grant.privilege_type,
-      column_grant.attname,
-      column_grant.nspname,
-      column_grant.relname
-    );
-  end loop;
+  execute format(
+    'revoke create on database %I from priceflag_ml_readonly',
+    current_database()
+  );
+
+  select count(*)::integer
+    into strict unsafe_databases
+    from pg_database database
+    join pg_roles reader on reader.rolname = 'priceflag_ml_readonly'
+   where database.datallowconn
+     and not database.datistemplate
+     and (
+       database.datdba = reader.oid
+       or has_database_privilege(reader.oid, database.oid, 'CREATE')
+     );
+
+  if unsafe_databases <> 0 then
+    raise exception using
+      errcode = '42501',
+      message = 'priceflag_ml_readonly owns or can create objects in a connectable database; an authorized database administrator must remove that authority before this migration can continue';
+  end if;
 end
 $$;
 

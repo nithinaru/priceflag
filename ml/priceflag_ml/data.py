@@ -224,6 +224,16 @@ class SupabaseSource:
                        and has_schema_privilege(
                          current_user, namespace.oid, 'CREATE'
                        )) as creatable_schemas,
+                   (select count(*)::int
+                      from pg_database database
+                     where database.datallowconn
+                       and not database.datistemplate
+                       and (
+                         database.datdba = role.oid
+                         or has_database_privilege(
+                           current_user, database.oid, 'CREATE'
+                         )
+                       )) as creatable_databases,
                    has_column_privilege(
                      current_user, 'public.shops', 'access_token_enc', 'SELECT'
                    ) as can_read_shop_token,
@@ -321,6 +331,7 @@ class SupabaseSource:
             for field in (
                 "role_memberships",
                 "creatable_schemas",
+                "creatable_databases",
                 "writable_relations",
                 "accessible_sequences",
                 "executable_security_definers",

@@ -4098,6 +4098,7 @@ async function testAdapters(): Promise<void> {
         role_memberships: number;
         can_create_public_objects: boolean;
         creatable_schemas: number;
+        creatable_databases: number;
         writable_relations: number;
         accessible_sequences: number;
         executable_security_definers: number;
@@ -4123,6 +4124,16 @@ async function testAdapters(): Promise<void> {
                     and has_schema_privilege(
                       'priceflag_ml_readonly', namespace.oid, 'CREATE'
                     )) as creatable_schemas,
+                (select count(*)::int
+                   from pg_database database
+                  where database.datallowconn
+                    and not database.datistemplate
+                    and (
+                      database.datdba = role.oid
+                      or has_database_privilege(
+                        'priceflag_ml_readonly', database.oid, 'CREATE'
+                      )
+                    )) as creatable_databases,
                 (select count(*)::int
                    from pg_class relation
                    join pg_namespace namespace on namespace.oid = relation.relnamespace
@@ -4197,6 +4208,7 @@ async function testAdapters(): Promise<void> {
       assertEqual(authority.role_memberships, 0, 'the ML role membership count');
       assert(!authority.can_create_public_objects, 'the ML role can create public-schema objects');
       assertEqual(authority.creatable_schemas, 0, 'ML-creatable non-system schemas');
+      assertEqual(authority.creatable_databases, 0, 'ML-creatable connectable databases');
       assertEqual(authority.writable_relations, 0, 'ML-writable non-system relations');
       assertEqual(authority.accessible_sequences, 0, 'ML-accessible non-system sequences');
       assertEqual(authority.executable_security_definers, 0, 'ML-executable SECURITY DEFINER routines');
