@@ -23,27 +23,27 @@ export function formatPrivilegeDiagnostics(rows) {
       row.can_update && 'UPDATE',
       row.can_reference && 'REFERENCES',
     ].filter(Boolean);
-    return `${row.schema_name}.${row.relation_name}.${row.column_name} [${privileges.join(',')}]`;
+    return `${row.schema_name}.${row.relation_name} (${row.column_count} columns) [${privileges.join(',')}]`;
   });
-  return `Unexpected ML column privileges (${rows.length}, maximum 30 shown):\n${descriptions.join('\n')}`;
+  return `Unexpected ML privilege-bearing relations (${rows.length}, maximum 50 shown):\n${descriptions.join('\n')}`;
 }
 
 const UNEXPECTED_COLUMN_PRIVILEGES = `
   select namespace.nspname as schema_name,
          relation.relname as relation_name,
-         attribute.attname as column_name,
-         has_column_privilege(
+         count(*)::int as column_count,
+         bool_or(has_column_privilege(
            'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
-         ) as can_select,
-         has_column_privilege(
+         )) as can_select,
+         bool_or(has_column_privilege(
            'priceflag_ml_readonly', relation.oid, attribute.attnum, 'INSERT'
-         ) as can_insert,
-         has_column_privilege(
+         )) as can_insert,
+         bool_or(has_column_privilege(
            'priceflag_ml_readonly', relation.oid, attribute.attnum, 'UPDATE'
-         ) as can_update,
-         has_column_privilege(
+         )) as can_update,
+         bool_or(has_column_privilege(
            'priceflag_ml_readonly', relation.oid, attribute.attnum, 'REFERENCES'
-         ) as can_reference
+         )) as can_reference
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     join pg_attribute attribute on attribute.attrelid = relation.oid
@@ -82,8 +82,9 @@ const UNEXPECTED_COLUMN_PRIVILEGES = `
          )
        )
      )
-   order by namespace.nspname, relation.relname, attribute.attnum
-   limit 30
+   group by namespace.nspname, relation.relname
+   order by namespace.nspname, relation.relname
+   limit 50
 `;
 
 async function inspect() {

@@ -300,7 +300,7 @@ async function verifyAttestation(): Promise<void> {
   const privilegeDescription = privilegeDiagnostic.formatPrivilegeDiagnostics([{
     schema_name: 'public',
     relation_name: 'example',
-    column_name: 'secret',
+    column_count: 2,
     can_select: true,
     can_insert: false,
     can_update: true,
@@ -308,7 +308,7 @@ async function verifyAttestation(): Promise<void> {
   }]);
   assert.equal(
     privilegeDescription,
-    'Unexpected ML column privileges (1, maximum 30 shown):\npublic.example.secret [SELECT,UPDATE]',
+    'Unexpected ML privilege-bearing relations (1, maximum 50 shown):\npublic.example (2 columns) [SELECT,UPDATE]',
   );
 
   const productionWorkflow = readFileSync(
