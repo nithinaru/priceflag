@@ -125,13 +125,15 @@ jobs:
           source "$RUNNER_TEMP/supabase.env"
           set +a
 
+          PRICEFLAG_SUPABASE_SERVER_KEY="${SERVICE_ROLE_KEY:-${SECRET_KEY:-}}"
+
           : "${API_URL:?Supabase status did not provide API_URL}"
-          : "${SERVICE_ROLE_KEY:?Supabase status did not provide SERVICE_ROLE_KEY}"
+          : "${PRICEFLAG_SUPABASE_SERVER_KEY:?Supabase status did not provide a server API key}"
           : "${DB_URL:?Supabase status did not provide DB_URL}"
 
           {
             echo "SUPABASE_URL=$API_URL"
-            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$PRICEFLAG_SUPABASE_SERVER_KEY"
             echo "SUPABASE_DB_URL=$DB_URL"
           } >>"$GITHUB_ENV"
 
