@@ -7,6 +7,10 @@ import {
   isVerifiedRollback,
   requireLiveWriteTarget,
 } from '../scripts/live-write-guard';
+import {
+  assertStagingIdentity,
+  requireStagingGateConfig,
+} from '../scripts/supabase-staging-guard';
 
 let passed = 0;
 
@@ -80,6 +84,97 @@ assert.match(demoAccess, /_DEMO_ACCESS:\$COMMIT/);
 assert.doesNotMatch(demoAccess, /deploy --prod|alias set|"\$\{VC\[@\]\}" promote/);
 assert.ok(demoAccess.indexOf('api.vercel.com/v9/projects') < demoAccess.indexOf('env rm'));
 passed += 6;
+
+const stagingEnv = {
+  STAGING_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
+  SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+  SUPABASE_SERVICE_ROLE_KEY: 'test-only-service-key',
+  SUPABASE_DB_URL: 'postgresql://postgres.test:password@staging.pooler.supabase.com:5432/postgres?sslmode=require',
+  SUPABASE_STAGING_SENTINEL: 'test-only-staging-sentinel',
+  SUPABASE_CONFIRM_ACTION: 'APPLY_STAGING_MIGRATIONS',
+  SUPABASE_CONFIRM_COMMIT: 'a'.repeat(40),
+  GITHUB_SHA: 'a'.repeat(40),
+};
+assert.deepEqual(requireStagingGateConfig(stagingEnv), {
+  projectRef: stagingEnv.STAGING_SUPABASE_PROJECT_REF,
+  supabaseUrl: stagingEnv.SUPABASE_URL,
+  databaseUrl: stagingEnv.SUPABASE_DB_URL,
+  sentinel: stagingEnv.SUPABASE_STAGING_SENTINEL,
+});
+assert.throws(
+  () => requireStagingGateConfig({
+    ...stagingEnv,
+    STAGING_SUPABASE_PROJECT_REF: 'vnyqevrdvfjsfhdnbfsz',
+    SUPABASE_URL: 'https://vnyqevrdvfjsfhdnbfsz.supabase.co',
+  }),
+  /production project/,
+);
+assert.throws(
+  () => requireStagingGateConfig({ ...stagingEnv, SUPABASE_URL: 'https://other.supabase.co' }),
+  /exact HTTPS API origin/,
+);
+assert.throws(
+  () => requireStagingGateConfig({ ...stagingEnv, SUPABASE_CONFIRM_COMMIT: 'b'.repeat(40) }),
+  /does not match GITHUB_SHA/,
+);
+assert.throws(
+  () => requireStagingGateConfig({ ...stagingEnv, SUPABASE_DB_URL: '' }),
+  /SUPABASE_DB_URL is required/,
+);
+assert.throws(
+  () => requireStagingGateConfig({
+    ...stagingEnv,
+    SUPABASE_DB_URL: 'postgresql://postgres:vnyqevrdvfjsfhdnbfsz@db.example/postgres',
+  }),
+  /production project/,
+);
+const stagingConfig = requireStagingGateConfig(stagingEnv);
+assert.doesNotThrow(() => assertStagingIdentity({
+  environment: 'staging',
+  projectRef: stagingConfig.projectRef,
+  sentinel: stagingConfig.sentinel,
+}, stagingConfig));
+assert.throws(
+  () => assertStagingIdentity({
+    environment: 'production',
+    projectRef: stagingConfig.projectRef,
+    sentinel: stagingConfig.sentinel,
+  }, stagingConfig),
+  /not explicitly marked as staging/,
+);
+assert.throws(
+  () => assertStagingIdentity({
+    environment: 'staging',
+    projectRef: stagingConfig.projectRef,
+    sentinel: 'wrong',
+  }, stagingConfig),
+  /protected staging sentinel/,
+);
+passed += 9;
+
+const stagingWorkflow = readFileSync(
+  resolve(process.cwd(), '.github/workflows/staging-launch-gates.yml'),
+  'utf8',
+);
+assert.match(stagingWorkflow, /environment: priceflag-staging/);
+assert.match(stagingWorkflow, /workflow_dispatch:/);
+assert.doesNotMatch(stagingWorkflow, /pull_request:/);
+assert.match(stagingWorkflow, /supabase-staging-gate\.ts attest/);
+assert.match(stagingWorkflow, /db push --db-url "\$SUPABASE_DB_URL" --dry-run/);
+assert.match(stagingWorkflow, /--type security[\s\S]*--fail-on warn --output-format json/);
+assert.match(stagingWorkflow, /--type performance[\s\S]*--fail-on error --output-format json/);
+assert.match(stagingWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
+assert.match(stagingWorkflow, /SUPABASE_STAGING_SENTINEL: \$\{\{ secrets\.SUPABASE_STAGING_SENTINEL \}\}/);
+assert.match(stagingWorkflow, /SUPABASE_DB_URL: \$\{\{ secrets\.SUPABASE_DB_URL \}\}/);
+assert.doesNotMatch(stagingWorkflow, /SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD|supabase link|--linked/);
+assert.doesNotMatch(stagingWorkflow, /ref: \$\{\{ inputs\.confirm_commit \}\}/);
+assert.match(stagingWorkflow, /refs\/heads\/main\|refs\/heads\/codex\/prod-integration/);
+assert.match(stagingWorkflow, /npm ci --ignore-scripts/);
+assert.doesNotMatch(
+  stagingWorkflow.slice(stagingWorkflow.indexOf('env:'), stagingWorkflow.indexOf('steps:')),
+  /secrets\./,
+);
+passed += 15;
 
 async function verifyAttestation(): Promise<void> {
   let requested = '';

@@ -112,6 +112,34 @@ must run the suite against the dedicated staging Supabase project and record a
 green result. Never point this gate at production or expose its credentials to
 forked pull requests.
 
+The manual `staging-launch-gates` workflow provides that evidence. Create a
+protected GitHub Environment named `priceflag-staging` with a required human
+reviewer and restrict deployment branches to `main` and
+`codex/prod-integration`. Set its non-secret `SUPABASE_PROJECT_REF` variable,
+and store `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, and
+`SUPABASE_STAGING_SENTINEL` as environment secrets. Do not provide a Supabase
+Management API access token. Before the first run, an owner must mark the
+dedicated staging database with these database settings (substituting the real
+staging ref and a newly generated random secret):
+
+```sql
+alter database postgres set app.priceflag_environment = 'staging';
+alter database postgres set app.priceflag_project_ref = '<staging-project-ref>';
+alter database postgres set app.priceflag_staging_sentinel = '<random-secret>';
+```
+
+Store the same random secret only as the protected Environment's
+`SUPABASE_STAGING_SENTINEL`; never reuse or print it. Dispatch the workflow from
+`codex/prod-integration` (or `main` after approval), entering
+`APPLY_STAGING_MIGRATIONS` and the exact full candidate SHA. It refuses the
+known Production project and positively verifies the staging ref, environment,
+and secret database sentinel before any mutation. It performs a migration dry
+run, applies migrations, proves a second dry run is clean, runs the real adapter
+and adversarial suites, lints the hosted database, blocks security advisor
+warnings/errors and performance advisor errors, and retains the complete JSON
+advisor evidence for 30 days. Never put these values in a repository secret,
+workflow input, file committed to Git, issue, or chat.
+
 ## Repo layout
 
 ```

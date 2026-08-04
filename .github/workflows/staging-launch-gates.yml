@@ -1,0 +1,146 @@
+name: staging-launch-gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_action:
+        description: Type APPLY_STAGING_MIGRATIONS
+        required: true
+        type: string
+      confirm_commit:
+        description: Exact full commit SHA to test and migrate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: priceflag-hosted-staging
+  cancel-in-progress: false
+
+jobs:
+  hosted-staging:
+    name: Hosted staging migration, adapter, adversarial, and advisor safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: priceflag-staging
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      REQUIRE_SUPABASE_TESTS: "true"
+      STAGING_SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_CONFIRM_ACTION: ${{ inputs.confirm_action }}
+      SUPABASE_CONFIRM_COMMIT: ${{ inputs.confirm_commit }}
+
+    steps:
+      - name: Check out the workflow's candidate commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reject an untrusted branch or SHA before package code runs
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/heads/codex/prod-integration) ;;
+            *) echo "error: hosted staging runs only from main or codex/prod-integration" >&2; exit 1 ;;
+          esac
+          test "$GITHUB_SHA" = "$SUPABASE_CONFIRM_COMMIT"
+          test "$SUPABASE_CONFIRM_ACTION" = "APPLY_STAGING_MIGRATIONS"
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Install the pinned Supabase CLI
+        uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+        with:
+          version: 2.110.0
+
+      - name: Positively attest the staging database before any mutation
+        run: npx --no-install tsx scripts/supabase-staging-gate.ts attest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_STAGING_SENTINEL: ${{ secrets.SUPABASE_STAGING_SENTINEL }}
+
+      - name: Preview migrations without applying them
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Apply migrations to positively attested staging
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Prove hosted staging has no pending migration
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Lint hosted staging functions and schemas
+        run: supabase db lint --db-url "$SUPABASE_DB_URL" --level warning --fail-on error
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Run the full real Supabase adapter and privilege suite
+        run: npm run smoke
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Run the adversarial suite against hosted staging
+        run: npx --no-install tsx tests/integration/run.ts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Run hosted security advisors and block warnings or errors
+        run: >-
+          supabase db advisors --db-url "$SUPABASE_DB_URL" --type security
+          --level info --fail-on warn --output-format json
+          > "$RUNNER_TEMP/supabase-security-advisors.json"
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Run hosted performance advisors and block errors
+        run: >-
+          supabase db advisors --db-url "$SUPABASE_DB_URL" --type performance
+          --level info --fail-on error --output-format json
+          > "$RUNNER_TEMP/supabase-performance-advisors.json"
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Preserve complete advisor evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supabase-advisor-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/supabase-security-advisors.json
+            ${{ runner.temp }}/supabase-performance-advisors.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Record the evidence location
+        if: ${{ success() }}
+        run: |
+          {
+            echo "## Hosted staging gate passed"
+            echo
+            echo "- Candidate: $GITHUB_SHA"
+            echo "- Project: $STAGING_SUPABASE_PROJECT_REF (positive DB sentinel verified)"
+            echo "- Migrations: applied; follow-up dry run clean"
+            echo "- Adapter and adversarial suites: passed"
+            echo "- Database lint and Supabase advisors: passed"
+            echo "- Advisor JSON: attached as a 30-day workflow artifact"
+          } >> "$GITHUB_STEP_SUMMARY"

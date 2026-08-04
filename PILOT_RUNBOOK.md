@@ -345,6 +345,31 @@ Worth knowing before "fixing" them:
 
 ## Escalation facts
 
+### Hosted Supabase staging gate
+
+Before testing a Preview, configure the protected GitHub Environment
+`priceflag-staging` exactly as described in `README.md`, including required
+reviewers, deployment-branch restrictions, the staging-only connection URL,
+and the matching secret database sentinel. The workflow deliberately does not
+accept a Supabase Management API token. From the candidate branch, an owner can
+dispatch the approval-gated run without exposing a secret:
+
+```bash
+gh workflow run staging-launch-gates.yml \
+  --ref codex/prod-integration \
+  -f confirm_action=APPLY_STAGING_MIGRATIONS \
+  -f confirm_commit="$(git rev-parse HEAD)"
+```
+
+The job must finish green. Its Actions summary is the launch evidence for the
+hosted migration, real adapter/adversarial, database lint, and Supabase advisor
+gates. A skipped job, missing environment approval, failed advisor request, or
+any security warning/error or performance error leaves invite access closed.
+Download and retain the `supabase-advisor-evidence-<sha>` artifact with the
+release record. The workflow hard-refuses the current Production project ID and
+will not mutate a database unless its protected staging identity and sentinel
+both match.
+
 ### Exact-artifact Vercel release
 
 Create `.env.preview.local` from `.env.example` using only staging Supabase and

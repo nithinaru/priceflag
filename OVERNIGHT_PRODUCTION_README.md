@@ -327,6 +327,29 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   authenticated preview/log, Partner configuration, and test-store gates remain
   open; invite access remains closed and automatic rollback remains disabled.
 
+- `2026-08-04T16:51:30Z` — the hosted Supabase gate is now an explicit,
+  approval-gated GitHub workflow instead of an operator command list. The new
+  `staging-launch-gates` workflow runs only from `main` or
+  `codex/prod-integration`, requires the exact event commit and the literal
+  migration acknowledgement, and obtains credentials only from a protected
+  `priceflag-staging` GitHub Environment. It refuses the known Production
+  project, requires the API URL to match the pinned 20-letter staging ref, and
+  positively attests database settings for environment, project ref, and a
+  protected random staging sentinel before any mutation. It uses only
+  staging-scoped API/database credentials: candidate code never receives an
+  account-wide Supabase Management API token. It previews migrations, applies
+  them, proves a second dry run is clean, runs direct database lint plus the real
+  adapter and adversarial suites, blocks security advisor warnings/errors and
+  performance advisor errors, and retains complete advisor JSON as a 30-day
+  artifact. Checkout, Node, Supabase, and artifact actions are commit-pinned;
+  dependency lifecycle scripts are disabled; environment secrets are scoped
+  only to the steps that need them. The deployment-safety regression suite now
+  has 65 assertions. This workflow has
+  not been dispatched because the protected environment variable/secrets and
+  owner approval are not available to this account; hosted staging remains an
+  open launch gate rather than a claimed pass. No hosted database or production
+  system was changed.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
