@@ -370,6 +370,17 @@ release record. The workflow hard-refuses the current Production project ID and
 will not mutate a database unless its protected staging identity and sentinel
 both match.
 
+Never enable or update `pg_net` ad hoc from the dashboard. Its install and older
+upgrade scripts can restore broad `PUBLIC` privileges. Every `pg_net` enablement
+or update must be represented by a reviewed migration that immediately calls
+`priceflag_internal.pf_normalize_extension_privileges()`, then passes the full
+hosted staging gate. The staging workflow also calls this control on every run,
+even when no migration is pending. A rejected extension version or failed ACL
+attestation keeps both the ML credential and merchant invite access closed.
+Apply the same reviewed migration and post-update control to Production before
+enabling the candidate; never use Production to discover whether an extension
+enablement or upgrade is compatible.
+
 ### Exact-artifact Vercel release
 
 Create `.env.preview.local` from `.env.example` using only staging Supabase and

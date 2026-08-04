@@ -140,6 +140,275 @@ begin
 end
 $$;
 
+-- Supabase installs pg_stat_statements and pg_net before application
+-- migrations. Their extension defaults include privileges for PUBLIC, which
+-- every role inherits and which cannot be removed from only the ML reader.
+-- Replace those broad grants with the platform roles Supabase documents for
+-- database webhooks and administration. This preserves those integrations
+-- while preventing the ML credential from reading statement metadata or
+-- writing to pg_net's request/response tables.
+create schema if not exists priceflag_internal authorization postgres;
+alter schema priceflag_internal owner to postgres;
+revoke all on schema priceflag_internal from public;
+
+create or replace function priceflag_internal.pf_normalize_extension_privileges()
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $function$
+declare
+  platform_role text;
+  request_routine text;
+  pg_net_version text;
+  pg_net_major integer;
+  pg_net_minor integer;
+  unsafe_extension_privileges integer;
+begin
+  if to_regclass('extensions.pg_stat_statements') is not null then
+    revoke select on extensions.pg_stat_statements from public;
+    foreach platform_role in array array['postgres', 'dashboard_user']
+    loop
+      if exists (select 1 from pg_roles where rolname = platform_role) then
+        execute format(
+          'grant select on extensions.pg_stat_statements to %I',
+          platform_role
+        );
+      end if;
+    end loop;
+  end if;
+
+  if to_regclass('extensions.pg_stat_statements_info') is not null then
+    revoke select on extensions.pg_stat_statements_info from public;
+    foreach platform_role in array array['postgres', 'dashboard_user']
+    loop
+      if exists (select 1 from pg_roles where rolname = platform_role) then
+        execute format(
+          'grant select on extensions.pg_stat_statements_info to %I',
+          platform_role
+        );
+      end if;
+    end loop;
+  end if;
+
+  if exists (select 1 from pg_namespace where nspname = 'net') then
+    select extension.extversion
+      into strict pg_net_version
+      from pg_extension extension
+     where extension.extname = 'pg_net';
+
+    -- pg_net 0.11 -> 0.12 re-applies PUBLIC grants during the upgrade. Force
+    -- that upgrade to happen before normalization so an old project cannot
+    -- become unsafe immediately after this migration runs.
+    if pg_net_version !~ '^[0-9]+\.[0-9]+(\.[0-9]+)?$' then
+      raise exception using
+        errcode = '42501',
+        message = 'unsupported pg_net version format; upgrade pg_net to 0.12.0 or newer before applying Priceflag ML privileges';
+    end if;
+
+    pg_net_major := split_part(pg_net_version, '.', 1)::integer;
+    pg_net_minor := split_part(pg_net_version, '.', 2)::integer;
+
+    if pg_net_major = 0 and pg_net_minor < 12 then
+      raise exception using
+        errcode = '42501',
+        message = 'pg_net 0.12.0 or newer is required before Priceflag can normalize extension privileges';
+    end if;
+
+    revoke all privileges on all tables in schema net from public;
+    revoke all privileges on all sequences in schema net from public;
+    revoke all privileges on all routines in schema net from public;
+    revoke all privileges on schema net from public;
+
+    foreach platform_role in array array[
+      'supabase_functions_admin', 'postgres', 'anon',
+      'authenticated', 'service_role'
+    ]
+    loop
+      if exists (select 1 from pg_roles where rolname = platform_role) then
+        execute format('grant usage on schema net to %I', platform_role);
+
+        -- Keep pg_net's documented request and response APIs working without
+        -- exposing administrative helpers such as worker_restart. Discover
+        -- the installed signatures from the catalog because pg_net is beta
+        -- and its argument lists differ between supported Supabase images.
+        for request_routine in
+          select format(
+            '%I.%I(%s)',
+            namespace.nspname,
+            routine.proname,
+            pg_get_function_identity_arguments(routine.oid)
+          )
+          from pg_proc routine
+          join pg_namespace namespace on namespace.oid = routine.pronamespace
+          where namespace.nspname = 'net'
+            and routine.prokind = 'f'
+            and routine.proname = any (array[
+              'http_get',
+              'http_post',
+              'http_delete',
+              'http_collect_response',
+              '_http_collect_response',
+              '_await_response',
+              '_urlencode_string',
+              '_encode_url_with_params_array',
+              'wake'
+            ])
+        loop
+          execute format(
+            'grant execute on function %s to %I',
+            request_routine,
+            platform_role
+          );
+        end loop;
+
+        if platform_role = 'postgres' then
+          execute format(
+            'grant select, insert, update, delete on all tables in schema net to %I',
+            platform_role
+          );
+          execute format(
+            'grant usage, select, update on all sequences in schema net to %I',
+            platform_role
+          );
+
+          -- These are operator-only diagnostics/configuration entry points.
+          for request_routine in
+            select format(
+              '%I.%I(%s)',
+              namespace.nspname,
+              routine.proname,
+              pg_get_function_identity_arguments(routine.oid)
+            )
+            from pg_proc routine
+            join pg_namespace namespace on namespace.oid = routine.pronamespace
+            where namespace.nspname = 'net'
+              and routine.prokind = 'f'
+              and routine.proname = any (array[
+                'worker_restart',
+                'wait_until_running',
+                'check_worker_is_up'
+              ])
+          loop
+            execute format(
+              'grant execute on function %s to %I',
+              request_routine,
+              platform_role
+            );
+          end loop;
+        else
+          -- SECURITY INVOKER request functions insert into the queue and use
+          -- its sequence; callers only need to observe responses. Do not
+          -- restore PUBLIC's TRIGGER/TRUNCATE/REFERENCES authority.
+          if to_regclass('net.http_request_queue') is not null then
+            execute format(
+              'grant select, insert on net.http_request_queue to %I',
+              platform_role
+            );
+          end if;
+          if to_regclass('net._http_response') is not null then
+            execute format(
+              'grant select on net._http_response to %I',
+              platform_role
+            );
+          end if;
+          if to_regclass('net.http_request_queue_id_seq') is not null then
+            execute format(
+              'grant usage, select on sequence net.http_request_queue_id_seq to %I',
+              platform_role
+            );
+          end if;
+        end if;
+      end if;
+    end loop;
+
+    if has_schema_privilege('priceflag_ml_readonly', 'net', 'USAGE') then
+      raise exception using
+        errcode = '42501',
+        message = 'priceflag_ml_readonly retains effective USAGE on the net schema after normalization';
+    end if;
+
+    select count(*)::integer
+      into strict unsafe_extension_privileges
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+     where (
+       namespace.nspname = 'net'
+       or (
+         namespace.nspname = 'extensions'
+         and relation.relname = any(array[
+           'pg_stat_statements', 'pg_stat_statements_info'
+         ])
+       )
+     )
+       and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+       and (
+         has_table_privilege(
+           'priceflag_ml_readonly', relation.oid,
+           'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+         )
+         or has_any_column_privilege(
+           'priceflag_ml_readonly', relation.oid,
+           'SELECT,INSERT,UPDATE,REFERENCES'
+         )
+       );
+
+    if unsafe_extension_privileges <> 0 then
+      raise exception using
+        errcode = '42501',
+        message = 'priceflag_ml_readonly retains effective relation privileges on protected Supabase extension objects';
+    end if;
+
+    select count(*)::integer
+      into strict unsafe_extension_privileges
+      from pg_class sequence
+      join pg_namespace namespace on namespace.oid = sequence.relnamespace
+     where namespace.nspname = 'net'
+       and sequence.relkind = 'S'
+       and has_sequence_privilege(
+         'priceflag_ml_readonly', sequence.oid, 'USAGE,SELECT,UPDATE'
+       );
+
+    if unsafe_extension_privileges <> 0 then
+      raise exception using
+        errcode = '42501',
+        message = 'priceflag_ml_readonly retains effective sequence privileges in the net schema';
+    end if;
+
+    select count(*)::integer
+      into strict unsafe_extension_privileges
+      from pg_proc routine
+      join pg_namespace namespace on namespace.oid = routine.pronamespace
+     where namespace.nspname = 'net'
+       and has_function_privilege(
+         'priceflag_ml_readonly', routine.oid, 'EXECUTE'
+       );
+
+    if unsafe_extension_privileges <> 0 then
+      raise exception using
+        errcode = '42501',
+        message = 'priceflag_ml_readonly retains effective routine execution in the net schema';
+    end if;
+  end if;
+end
+$function$;
+
+revoke all on function priceflag_internal.pf_normalize_extension_privileges()
+  from public, anon, authenticated, service_role, priceflag_ml_readonly;
+revoke all on schema priceflag_internal
+  from public, anon, authenticated, service_role, priceflag_ml_readonly;
+grant usage on schema priceflag_internal to postgres;
+grant execute on function priceflag_internal.pf_normalize_extension_privileges()
+  to postgres;
+
+-- This function is the mandatory post-enable/update control for pg_net. It both
+-- restores the least-privilege ACL and proves the ML credential still has no
+-- effective access before returning successfully.
+select priceflag_internal.pf_normalize_extension_privileges();
+
+comment on function priceflag_internal.pf_normalize_extension_privileges() is
+  'Run as postgres immediately after every pg_net enablement or update; normalizes extension ACLs and fails unless the ML role remains isolated.';
+
 -- Trigger helpers are not RPC endpoints. Remove the default PUBLIC execute
 -- grant so the ML credential cannot invoke them directly through that role.
 revoke execute on function public.pf_touch_updated_at()

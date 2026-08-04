@@ -80,6 +80,13 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
+      - name: Re-normalize and attest Supabase extension privileges
+        run: >-
+          psql "$SUPABASE_DB_URL" --no-psqlrc --set ON_ERROR_STOP=1
+          --command 'select priceflag_internal.pf_normalize_extension_privileges();'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
       - name: Prove hosted staging has no pending migration
         run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
         env:

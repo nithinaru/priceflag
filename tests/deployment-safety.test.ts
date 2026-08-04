@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -75,7 +75,9 @@ assert.doesNotMatch(runbook, /^vercel env (?:rm|add)/m);
 assert.match(runbook, /-d '\{"confirm":true,"reason":"Support request"\}'/);
 assert.match(runbook, /-d '\{"confirm":true\}'/);
 assert.match(runbook, /scripts\/vercel-demo-access\.sh revoke/);
-passed += 5;
+assert.match(runbook, /Never enable or update `pg_net` ad hoc/);
+assert.match(runbook, /pf_normalize_extension_privileges\(\)[\s\S]*hosted staging gate/);
+passed += 7;
 
 const demoAccess = readFileSync(resolve(process.cwd(), 'scripts/vercel-demo-access.sh'), 'utf8');
 assert.match(demoAccess, /PROJECT_ID="prj_RU8NlBDoR7t89BNqn5BagOpmpnmm"/);
@@ -171,11 +173,12 @@ assert.doesNotMatch(stagingWorkflow, /SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD
 assert.doesNotMatch(stagingWorkflow, /ref: \$\{\{ inputs\.confirm_commit \}\}/);
 assert.match(stagingWorkflow, /refs\/heads\/main\|refs\/heads\/codex\/prod-integration/);
 assert.match(stagingWorkflow, /npm ci --ignore-scripts/);
+assert.match(stagingWorkflow, /psql "\$SUPABASE_DB_URL"[\s\S]*pf_normalize_extension_privileges\(\)/);
 assert.doesNotMatch(
   stagingWorkflow.slice(stagingWorkflow.indexOf('env:'), stagingWorkflow.indexOf('steps:')),
   /secrets\./,
 );
-passed += 15;
+passed += 16;
 
 const workflowDirectory = resolve(process.cwd(), '.github/workflows');
 for (const workflow of [
@@ -256,11 +259,52 @@ assert.match(mlRoleHardening, /from pg_database database[\s\S]*has_database_priv
 assert.match(mlRoleHardening, /database\.datdba = reader\.oid/);
 assert.doesNotMatch(mlRoleHardening, /aclexplode/);
 assert.doesNotMatch(mlRoleHardening, /not database\.datistemplate/);
+assert.match(mlRoleHardening, /create schema if not exists priceflag_internal authorization postgres/);
+assert.match(mlRoleHardening, /pf_normalize_extension_privileges\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
+assert.match(mlRoleHardening, /pg_net 0\.12\.0 or newer is required/);
+assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements from public/);
+assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements_info from public/);
+assert.match(mlRoleHardening, /revoke all privileges on all tables in schema net from public/);
+assert.match(mlRoleHardening, /revoke all privileges on all routines in schema net from public/);
+assert.match(mlRoleHardening, /supabase_functions_admin[\s\S]*authenticated[\s\S]*service_role/);
+assert.match(mlRoleHardening, /platform_role = 'postgres'[\s\S]*grant select, insert, update, delete on all tables/);
+assert.match(mlRoleHardening, /grant select, insert on net\.http_request_queue/);
+assert.match(mlRoleHardening, /grant select on net\._http_response/);
+assert.match(mlRoleHardening, /routine\.proname = any \(array\[[\s\S]*'http_get'[\s\S]*'http_post'[\s\S]*'http_delete'[\s\S]*'_urlencode_string'[\s\S]*'wake'/);
+assert.match(mlRoleHardening, /routine\.proname = any \(array\[[\s\S]*'worker_restart'[\s\S]*'wait_until_running'[\s\S]*'check_worker_is_up'/);
+assert.doesNotMatch(mlRoleHardening, /grant execute on all routines in schema net/);
+assert.doesNotMatch(mlRoleHardening, /grant all privileges on all tables in schema net/);
+assert.match(mlRoleHardening, /has_schema_privilege\('priceflag_ml_readonly', 'net', 'USAGE'\)/);
+assert.match(mlRoleHardening, /has_table_privilege\([\s\S]*SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER/);
+assert.match(mlRoleHardening, /has_sequence_privilege\([\s\S]*USAGE,SELECT,UPDATE/);
+assert.match(mlRoleHardening, /has_function_privilege\([\s\S]*priceflag_ml_readonly[\s\S]*EXECUTE/);
+assert.match(mlRoleHardening, /select priceflag_internal\.pf_normalize_extension_privileges\(\)/);
+assert.match(mlRoleHardening, /Run as postgres immediately after every pg_net enablement or update/);
 assert.match(mlRoleHardening, /unexpected_column_privileges[\s\S]*INSERT,UPDATE,REFERENCES/);
 assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
 assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
 assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
-passed += 16;
+passed += 37;
+
+const migrationDirectory = resolve(process.cwd(), 'supabase/migrations');
+const unsafePgNetChanges = readdirSync(migrationDirectory)
+  .filter((migration) => migration.endsWith('.sql'))
+  .flatMap((migration) => {
+    const source = readFileSync(resolve(migrationDirectory, migration), 'utf8');
+    const extensionChange = /\b(?:create\s+extension\s+(?:if\s+not\s+exists\s+)?pg_net|alter\s+extension\s+pg_net\s+update)\b/gi;
+    return [...source.matchAll(extensionChange)]
+      .filter((match) => source.indexOf(
+        'select priceflag_internal.pf_normalize_extension_privileges()',
+        match.index,
+      ) < 0)
+      .map(() => migration);
+  });
+assert.deepEqual(
+  unsafePgNetChanges,
+  [],
+  'every pg_net enablement/update migration must re-normalize and attest extension privileges',
+);
+passed += 1;
 
 async function verifyAttestation(): Promise<void> {
   const sanitizerUrl = pathToFileURL(
