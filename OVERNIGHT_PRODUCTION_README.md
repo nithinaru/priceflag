@@ -162,6 +162,13 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   PR #1. The Supabase connector available to Codex exposes only an unrelated
   inactive project, so no Priceflag database was touched and staging migration,
   advisor and integration gates remain unverified. Invite access remains closed.
+- `2026-08-04T05:12:30Z` — `codex/prod-backend-safety` added the documented
+  bearer-only `GET/PATCH /api/shop` and
+  `PATCH /api/products/[variantId]/cogs` interfaces so Claude can replace
+  cookie-authorized settings and cost Server Actions. Cross-shop requests return
+  no tenant data, Shopify credentials are stripped, unsupported fields are
+  rejected, and notification/cost validation is covered. Local typecheck,
+  production build, 138/138 smoke and 28/28 merchant API checks pass.
 
 ## Current launch checklist
 
@@ -188,5 +195,10 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   `middleware.ts`, `lib/shopify/**`, authenticated sync/journal/webhook/health
   routes, Shopify-write tests, and production workflows. Claude must rebase onto
   the backend PR and preserve these contracts; do not overwrite them silently.
+- `2026-08-04T05:12:30Z` — Codex added the pre-existing contract routes
+  `GET/PATCH /api/shop` and `PATCH /api/products/[variantId]/cogs`. Claude should
+  call the PATCH routes with `authenticatedFetch` from the client and remove the
+  cookie-authorized write path from `app/settings/actions.ts` and
+  `app/products/actions.ts` after rebasing.
   Claude still owns App Bridge token attachment, real-mode page data, Partner
   app webhook registration/config, browser UX, and preview infrastructure.

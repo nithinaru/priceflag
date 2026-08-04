@@ -46,12 +46,12 @@ Cross-cutting rules:
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
 | POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
 | GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | B4 |
-| GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | B2 |
-| PATCH | `/api/shop` | Update notification addresses / engage the kill switch | B5 |
+| GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | ✅ beta |
+| PATCH | `/api/shop` | Update notification addresses | ✅ beta |
 | POST | `/api/sync` | Start (or resume) a sync | B3 |
 | GET | `/api/sync/status` | `sync_progress.schema.json` | B3 |
 | GET | `/api/products` | Paged catalog with search and filters | B3 |
-| PATCH | `/api/products/[variantId]/cogs` | Set or clear a unit cost | B3 |
+| PATCH | `/api/products/[variantId]/cogs` | Set or clear a unit cost | ✅ beta |
 | POST | `/api/forecast` | Dry-run forecast; writes nothing | B3 |
 | POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | B4 |
 | GET | `/api/rollouts` | List rollouts | B4 |

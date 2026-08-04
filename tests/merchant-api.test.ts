@@ -15,6 +15,8 @@ import { GET as journal } from '../app/api/journal/route';
 import { POST as killSwitch, DELETE as releaseKillSwitch } from '../app/api/kill-switch/route';
 import { POST as sync } from '../app/api/sync/route';
 import { GET as syncStatus } from '../app/api/sync/status/route';
+import { PATCH as setCogs } from '../app/api/products/[variantId]/cogs/route';
+import { GET as getShopSettings, PATCH as updateShopSettings } from '../app/api/shop/route';
 
 const API_KEY = 'merchant-api-test-key';
 const API_SECRET = 'merchant-api-test-secret';
@@ -68,6 +70,16 @@ function request(path: string, body: unknown, bearer?: string): Request {
 function authGet(path: string, bearer?: string): Request {
   return new Request(`https://priceflag.test${path}`, {
     headers: bearer ? { Authorization: `Bearer ${bearer}` } : undefined,
+  });
+}
+
+function patchRequest(path: string, body: unknown, bearer?: string): Request {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  return new Request(`https://priceflag.test${path}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
   });
 }
 
@@ -244,6 +256,14 @@ test('every legacy merchant route rejects missing and forged session tokens', as
     (bearer?: string) => pauseRollout(request('/api/rollouts/unknown/pause', { confirm: true }, bearer), {
       params: Promise.resolve({ id: 'unknown' }),
     }),
+    (bearer?: string) => getShopSettings(authGet('/api/shop?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => updateShopSettings(
+      patchRequest('/api/shop?shop=' + DEMO_SHOP_DOMAIN, { notify_emails: [] }, bearer),
+    ),
+    (bearer?: string) => setCogs(
+      patchRequest('/api/products/unknown/cogs?shop=' + DEMO_SHOP_DOMAIN, { cogs_cents: 100 }, bearer),
+      { params: Promise.resolve({ variantId: 'unknown' }) },
+    ),
   ];
   for (const call of calls) {
     const missing = await call();
@@ -251,6 +271,85 @@ test('every legacy merchant route rejects missing and forged session tokens', as
     assert(missing.status === 401, `missing token returned ${missing.status}`);
     assert(invalid.status === 401, `forged token returned ${invalid.status}`);
   }
+});
+
+test('shop settings are token-scoped and never expose Shopify credentials', async () => {
+  const primary = await json(await getShopSettings(authGet('/api/shop', token(DEMO_SHOP_DOMAIN))));
+  const other = await json(
+    await getShopSettings(authGet(`/api/shop?shop=${DEMO_SHOP_DOMAIN}`, token(OTHER_SHOP))),
+  );
+  assert(primary.shop?.shop_domain === DEMO_SHOP_DOMAIN, 'primary token returned the wrong shop');
+  assert(other.shop?.shop_domain === OTHER_SHOP, 'query parameter overrode the token tenant');
+  assert(!Object.hasOwn(primary.shop, 'access_token_enc'), 'shop response exposed the encrypted Admin token');
+});
+
+test('notification settings update only the token tenant and reject unknown fields', async () => {
+  const response = await updateShopSettings(
+    patchRequest(
+      `/api/shop?shop=${OTHER_SHOP}`,
+      { notify_emails: [' OWNER@EXAMPLE.COM ', 'owner@example.com'] },
+      token(DEMO_SHOP_DOMAIN),
+    ),
+  );
+  const body = await json(response);
+  assert(response.status === 200, `settings update returned ${response.status}: ${JSON.stringify(body)}`);
+  assert(body.shop.notify_emails.length === 1, 'settings did not normalize duplicate email addresses');
+  assert(body.shop.notify_emails[0] === 'owner@example.com', 'settings did not normalize the email address');
+  assert((await adapter.getShop(otherShopId))?.notify_emails.length === 0, 'settings changed another tenant');
+
+  const unsupported = await updateShopSettings(
+    patchRequest('/api/shop', { notify_emails: [], kill_switch_engaged_at: new Date().toISOString() }, token(DEMO_SHOP_DOMAIN)),
+  );
+  assert(unsupported.status === 400, 'settings accepted an unsupported field');
+  assert((await adapter.getShop(shopId))?.notify_emails[0] === 'owner@example.com', 'rejected settings changed state');
+
+  const tooMany = await updateShopSettings(
+    patchRequest(
+      '/api/shop',
+      { notify_emails: Array.from({ length: 6 }, (_, index) => `owner${index}@example.com`) },
+      token(DEMO_SHOP_DOMAIN),
+    ),
+  );
+  assert(tooMany.status === 400, 'settings accepted more than five notification addresses');
+});
+
+test('unit-cost updates are token-scoped, validated, and allow loss leaders', async () => {
+  const productBefore = (await adapter.getProductsByVariantGids(shopId, [variantGid]))[0];
+  assert(productBefore !== undefined, 'cost fixture product disappeared');
+  const lossLeaderCost = productBefore.price_cents + 500;
+  const updatedResponse = await setCogs(
+    patchRequest(`/api/products/${encodeURIComponent(variantGid)}/cogs`, { cogs_cents: lossLeaderCost }, token(DEMO_SHOP_DOMAIN)),
+    { params: Promise.resolve({ variantId: variantGid }) },
+  );
+  const updated = await json(updatedResponse);
+  assert(updatedResponse.status === 200, `cost update returned ${updatedResponse.status}: ${JSON.stringify(updated)}`);
+  assert(updated.product.cogs_cents === lossLeaderCost, 'loss-leader unit cost was not saved');
+  assert(updated.product.cogs_source === 'manual', 'manual unit cost was not labelled manual');
+
+  const crossShop = await setCogs(
+    patchRequest(`/api/products/${encodeURIComponent(variantGid)}/cogs`, { cogs_cents: 1 }, token(OTHER_SHOP)),
+    { params: Promise.resolve({ variantId: variantGid }) },
+  );
+  assert(crossShop.status === 404, 'cross-shop cost update did not return 404');
+  assert(
+    (await adapter.getProductsByVariantGids(shopId, [variantGid]))[0]?.cogs_cents === lossLeaderCost,
+    'cross-shop cost update changed the primary tenant',
+  );
+
+  for (const invalid of [-1, 1.5, '100']) {
+    const invalidResponse = await setCogs(
+      patchRequest(`/api/products/${encodeURIComponent(variantGid)}/cogs`, { cogs_cents: invalid }, token(DEMO_SHOP_DOMAIN)),
+      { params: Promise.resolve({ variantId: variantGid }) },
+    );
+    assert(invalidResponse.status === 400, `invalid cost ${String(invalid)} returned ${invalidResponse.status}`);
+  }
+
+  const cleared = await setCogs(
+    patchRequest(`/api/products/${encodeURIComponent(variantGid)}/cogs`, { cogs_cents: null }, token(DEMO_SHOP_DOMAIN)),
+    { params: Promise.resolve({ variantId: variantGid }) },
+  );
+  const clearedBody = await json(cleared);
+  assert(cleared.status === 200 && clearedBody.product.cogs_cents === null, 'unit cost was not cleared');
 });
 
 test('journal and sync status ignore a cross-shop ?shop parameter', async () => {
