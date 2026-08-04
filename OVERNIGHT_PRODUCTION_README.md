@@ -278,6 +278,29 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   closed; automatic rollback remains disabled; no hosted database, evaluator,
   Shopify price, merge, or deployment was touched.
 
+- `2026-08-04T10:59:01Z` — final external-gate audit on integration commit
+  `267623b` confirms draft PR #3 is merge-clean and every repository-controlled
+  check is green: Node application safety, an isolated full migration replay
+  with schema lint and the real Supabase adapter/adversarial suites, locked
+  Python ML safety, the normal ML test job, and the Vercel build. The isolated
+  database job passed all 97 real-Postgres assertions after the deterministic
+  journal-sequence and stale-snapshot fixes. The exact preview artifact is
+  `https://priceflag-7uuc28zfa-nithin-arus-projects.vercel.app`, but both its UI
+  and health route redirect this machine to Vercel SSO; the authenticated
+  preview browser and runtime-log gates therefore remain open. The available
+  Vercel account cannot access the owner team, and the available Supabase
+  account cannot access Priceflag project `vnyqevrdvfjsfhdnbfsz`, so no hosted
+  deployment or database was changed. A manual hardened nightly run
+  (`30902729033`) failed closed exactly as designed because GitHub still lacks
+  `SUPABASE_URL`, `SUPABASE_ML_READONLY_KEY`, and `ML_INGEST_SECRET`; it did not
+  fall back to golden data. The current public production boundary returns 401
+  for missing or forged merchant, ML-ingest, cron, and Shopify-webhook
+  credentials, while public health remains non-sensitive. Shopify Partner
+  configuration and a confirmed test-store write/pause/rollback exercise still
+  require the authorized owner account. Invite access remains closed,
+  automatic rollback remains disabled, and no merge, promotion, hosted database
+  mutation, evaluator run, or Shopify price write occurred.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
