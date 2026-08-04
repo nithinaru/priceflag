@@ -1,0 +1,131 @@
+# Priceflag public-beta production handoff
+
+This file is the shared coordination surface for the production-readiness push. Read it completely before editing the repository.
+
+## Objective
+
+Ship an invite-only Shopify public beta with real-store data and manually approved price changes. Automatic rollback stays disabled by default until every safety gate is green and has been verified against a test store.
+
+Safety beats the deadline. Do not weaken, skip, delete, or rewrite a failing safety test to make a branch green.
+
+## Starting point
+
+- Baseline commit: `716e762e8b383bc39a122323f9236d443b1a820f`
+- `npm run typecheck`: pass
+- `npm run build`: pass
+- `npm run smoke`: 135 passed, 1 failed, 1 skipped
+- `npx tsx tests/integration/run.ts --demo`: 36 passed, 8 failed, 1 skipped
+- Production health: real mode, Supabase reachable
+- ML nightly: green in golden-data mode only; real Supabase credentials are not configured in GitHub Actions
+- Production application: access-gated and not approved for merchant beta access
+
+Known safety failures at the baseline:
+
+1. Demo order-history date filtering
+2. Units breach probability incorrectly firing non-units guardrails
+3. High false-positive guardrail rate on healthy low-volume rollouts
+4. Correctly forecast demand changes scored against a no-change baseline
+5. Expected bands becoming blind after day 28
+6. Chained kill-switch rollback restoring an intermediate price
+7. External Shopify price edits being overwritten after activation
+8. A zero-dollar price reaching the storefront
+9. Rollback missing a write that Shopify accepted but Priceflag did not acknowledge
+
+## Branches and ownership
+
+### Codex: `codex/prod-backend-safety`
+
+Owns:
+
+- `lib/engine/**`
+- `lib/pricing/**`
+- `lib/evaluator/**`
+- `lib/adapters/**`
+- `lib/money.ts`
+- merchant forecast/rollout/kill-switch/cron API routes
+- `contracts/**`
+- `supabase/**`
+- `tests/**`
+- backend smoke coverage
+
+Goal: fix every safety failure, implement tenant-scoped authenticated forecast and rollout APIs, and deliver a green backend PR.
+
+### Claude Max: `claude/prod-ui-auth-infra`
+
+Owns:
+
+- merchant-facing `app/**` pages and actions, except Codex-owned API routes
+- `components/**`
+- `middleware.ts`
+- `lib/shopify/**`
+- `lib/sync/**`
+- auth, webhook, sync, journal, and health API routes
+- browser smoke coverage
+- Vercel, Supabase, Shopify, and GitHub Actions configuration
+
+Goal: replace real-mode demo data with authenticated store data, complete App Bridge/session-token authentication, register webhooks, and prepare a verified preview deployment.
+
+If a change is required in the other lane's files, record the requested interface below before editing it. Do not silently cross ownership.
+
+## Frozen integration interfaces
+
+- Every merchant API request uses `Authorization: Bearer <Shopify session token>`.
+- `resolveShopFromRequest(request)` is the only authority for the shop in production. No static shop or query-parameter fallback is allowed in production merchant routes.
+- `POST /api/forecast` validates `proposal_request.schema.json` without guardrails and performs no writes.
+- `POST /api/rollouts` requires explicit guardrails, creates a draft, freezes baselines/targets/cohorts, and does not start without merchant confirmation.
+- `GET /api/rollouts/[id]` must return 404 for a rollout outside the authenticated shop.
+- `POST /api/rollouts/[id]/rollback` succeeds only after live Shopify prices are verified against captured baselines.
+- Webhooks authenticate with Shopify HMAC over the raw request body.
+- Cron, ML ingest, and webhooks keep their dedicated machine authentication.
+- The beta default is `auto_rollback: false`; a breach pauses and alerts.
+- Supabase elevated keys remain server-only and must never use a `NEXT_PUBLIC_` name.
+
+## Required checks before merging
+
+```bash
+npm ci
+npm run typecheck
+npm run build
+npm run smoke
+npx tsx tests/integration/run.ts --demo
+cd ml && uv sync --frozen && uv run pytest -q
+```
+
+Before production promotion, also require:
+
+- Supabase integration suite green against staging
+- real-store ML nightly run, not golden-only mode
+- cross-shop and forged-token requests rejected
+- invalid webhook HMAC rejected and retries deduplicated
+- authenticated install -> sync -> forecast -> draft -> manual start -> monitor -> pause -> verified rollback -> journal flow completed on a test product
+- timeout-after-write and partial-rollback recovery verified
+- external admin edit pauses instead of being overwritten
+- zero-dollar price rejected at planning and write time
+- chained kill switch restores the original pre-Priceflag price
+- preview browser smoke and production error-log scan clean
+
+## Merge and deployment policy
+
+1. Each lane opens a draft PR targeting `main`.
+2. Neither lane pushes feature work directly to `main`.
+3. Codex creates `codex/prod-integration` after both owned suites are green.
+4. Merge backend first; rebase the UI/auth branch; then integrate it.
+5. Promote the exact preview artifact that passed the complete gate.
+6. If any mandatory gate is red or unverified, keep merchant access closed.
+
+## Secrets policy
+
+- Never commit, paste, echo, log, screenshot, or include secret values in PR text.
+- Agents may verify only that required variables exist.
+- Use the existing authenticated CLIs and local environment on the authorized machine.
+- Do not copy production credentials between computers or into chat.
+
+## Status log
+
+Agents append short entries here when a milestone changes. Include UTC timestamp, branch, commit, checks, and blockers. Never include credential values.
+
+- Coordination baseline: prepared from `716e762`; both implementation lanes pending.
+
+## Cross-lane interface requests
+
+- None at coordination start.
