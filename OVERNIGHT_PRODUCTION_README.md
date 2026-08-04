@@ -239,6 +239,18 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   endpoint reports real mode with Supabase reachable, while unauthenticated and
   forged merchant-route requests both return 401. Invite access remains closed;
   no merge, database change, evaluator run, price write, or promotion occurred.
+- `2026-08-04T09:21:53Z` — `codex/prod-integration` commit `e0c90bc` added a
+  credential-free, isolated Supabase CI gate that replays the complete migration
+  chain on a fresh Postgres project, runs schema lint, and exercises the real
+  Supabase adapter plus adversarial integration suite. The new gate exposed and
+  fixed missing service-role grants for rollout locks and fresh-project table
+  privileges while preserving append-only journal enforcement, browser-role
+  denials, tenant RLS, protected RPC boundaries, and the ML read-only token
+  boundary. GitHub CI now reports 159/159 real-Supabase smoke assertions and
+  80/80 real-Postgres adversarial integration assertions, alongside the green
+  application and Python jobs. Hosted staging is still unverified and Supabase
+  Preview remains skipped; invite access remains closed. No hosted database,
+  production deployment, evaluator, or Shopify price was touched.
 
 ## Current launch checklist
 
@@ -250,7 +262,10 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
 - [x] Zero-price, acknowledgement-loss, partial rollback, compare-at restore,
   chained kill switch and external-edit regressions
 - [x] Automatic rollback disabled by default; scheduled evaluator disabled
-- [ ] Staging Supabase migration apply, advisors and Supabase integration suite
+- [x] Fresh isolated Supabase migration replay, schema lint, real adapter and
+  adversarial Postgres suites
+- [ ] Hosted staging migration apply, security/performance advisors and staging
+  integration suite
 - [ ] GitHub ML secrets and a proven real-store nightly ingest
 - [x] Claude UI/App Bridge/onboarding work integrated locally with bearer-only writes
 - [ ] Shopify webhook subscriptions deployed from the real Partner app config
