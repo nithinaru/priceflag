@@ -749,6 +749,9 @@ export async function evaluateAll(
   for (const rollout of await adapter.listActiveRollouts()) {
     const shop = await adapter.getShop(rollout.shop_id);
     if (shop === null) continue;
+    // Defense in depth: an uninstall webhook pauses every active rollout, but
+    // even a legacy or partially processed row can never regain write authority.
+    if (shop.uninstalled_at !== null) continue;
     if (!evaluatorAllowsShop(shop, allowlist)) continue;
 
     // A shop with the kill switch engaged is not evaluated at all: nothing should

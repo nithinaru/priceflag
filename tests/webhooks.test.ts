@@ -6,6 +6,13 @@ import { POST } from '../app/api/webhooks/[topic]/route';
 import { DemoAdapter, setAdapter } from '../lib/adapters';
 import { DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
 import { signWebhookBody } from '../lib/shopify/hmac';
+import type { AdminGraphqlClient } from '../lib/shopify/client';
+import type { ShopCredentials } from '../lib/shopify/credentials';
+import {
+  reconcileWebhooks,
+  REQUIRED_WEBHOOK_TOPICS,
+  webhookCallbackUrl,
+} from '../lib/shopify/webhooks';
 import { makeRolloutCreate } from './integration/_harness';
 
 const SECRET = 'webhook-test-secret';
@@ -57,6 +64,115 @@ function order(variantId: string, productId: string, lines = 1): Record<string, 
 }
 
 async function main(): Promise<void> {
+  assert.deepEqual(
+    REQUIRED_WEBHOOK_TOPICS.map((topic) => topic.topicPath),
+    ['orders/create', 'products/update', 'app/uninstalled'],
+    'the install registrar covers the required operational topics exactly',
+  );
+  assert.equal(
+    webhookCallbackUrl('https://priceflag-app.vercel.app/', 'orders--create'),
+    'https://priceflag-app.vercel.app/api/webhooks/orders--create',
+  );
+
+  const calls: { query: string; variables: Record<string, unknown> }[] = [];
+  const fakeClient = {
+    async request<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+      calls.push({ query, variables });
+      if (query.includes('PriceflagWebhookSubscriptions')) {
+        return {
+          webhookSubscriptions: {
+            nodes: [
+              {
+                id: 'gid://shopify/WebhookSubscription/1',
+                topic: 'ORDERS_CREATE',
+                endpoint: {
+                  __typename: 'WebhookHttpEndpoint',
+                  callbackUrl: 'https://app.test/api/webhooks/orders--create',
+                },
+              },
+              {
+                id: 'gid://shopify/WebhookSubscription/1-duplicate',
+                topic: 'ORDERS_CREATE',
+                endpoint: {
+                  __typename: 'WebhookHttpEndpoint',
+                  callbackUrl: 'https://old.test/api/webhooks/orders--create',
+                },
+              },
+              {
+                id: 'gid://shopify/WebhookSubscription/2',
+                topic: 'PRODUCTS_UPDATE',
+                endpoint: {
+                  __typename: 'WebhookHttpEndpoint',
+                  callbackUrl: 'https://old.test/api/webhooks/products--update',
+                },
+              },
+              {
+                id: 'gid://shopify/WebhookSubscription/2-duplicate',
+                topic: 'PRODUCTS_UPDATE',
+                endpoint: {
+                  __typename: 'WebhookHttpEndpoint',
+                  callbackUrl: 'https://older.test/api/webhooks/products--update',
+                },
+              },
+            ],
+          },
+        } as T;
+      }
+      if (query.includes('PriceflagWebhookSubscriptionDelete')) {
+        return {
+          webhookSubscriptionDelete: {
+            deletedWebhookSubscriptionId: String(variables.id),
+            userErrors: [],
+          },
+        } as T;
+      }
+      if (query.includes('PriceflagWebhookSubscriptionUpdate')) {
+        return {
+          webhookSubscriptionUpdate: {
+            webhookSubscription: { id: String(variables.id) },
+            userErrors: [],
+          },
+        } as T;
+      }
+      return {
+        webhookSubscriptionCreate: {
+          webhookSubscription: { id: 'gid://shopify/WebhookSubscription/3' },
+          userErrors: [],
+        },
+      } as T;
+    },
+  } as unknown as AdminGraphqlClient;
+  const credentials = {
+    shopDomain: DEMO_SHOP_DOMAIN,
+    accessToken: 'not-used-by-injected-client',
+    apiVersion: '2026-07',
+    source: 'oauth_stored',
+  } satisfies ShopCredentials;
+  const reconciled = await reconcileWebhooks(credentials, 'https://app.test/', { client: fakeClient });
+  assert.deepEqual(reconciled, {
+    created: ['APP_UNINSTALLED'],
+    updated: ['PRODUCTS_UPDATE'],
+    ok: ['ORDERS_CREATE'],
+    deleted: [
+      'gid://shopify/WebhookSubscription/1-duplicate',
+      'gid://shopify/WebhookSubscription/2-duplicate',
+    ],
+  });
+  assert.equal(calls.length, 5, 'one read, two duplicate deletes, one repoint, and one create');
+  assert.deepEqual(calls[1]?.variables, { id: 'gid://shopify/WebhookSubscription/1-duplicate' });
+  assert.deepEqual(calls[2]?.variables, {
+    id: 'gid://shopify/WebhookSubscription/2',
+    webhookSubscription: { callbackUrl: 'https://app.test/api/webhooks/products--update' },
+  });
+  assert.deepEqual(calls[3]?.variables, { id: 'gid://shopify/WebhookSubscription/2-duplicate' });
+  assert.deepEqual(calls[4]?.variables, {
+    topic: 'APP_UNINSTALLED',
+    webhookSubscription: {
+      callbackUrl: 'https://app.test/api/webhooks/app--uninstalled',
+      format: 'JSON',
+    },
+  });
+
   const shop = await adapter.getShopByDomain(DEMO_SHOP_DOMAIN);
   assert(shop);
   const product = (await adapter.listProducts(shop.id, { limit: 1 })).items[0];
@@ -216,6 +332,46 @@ async function main(): Promise<void> {
     'a compare-at-only merchant edit must pause the rollout',
   );
 
+  const uninstallRunning = await adapter.createRollout(
+    makeRolloutCreate({
+      shop_id: shop.id,
+      status: 'running',
+      current_stage: 0,
+      started_at: now,
+      stage_entered_at: now,
+      guardrails: { contract_version: '1.0.0', auto_rollback: false, rules: [] },
+    }),
+  );
+  const uninstallScheduled = await adapter.createRollout(
+    makeRolloutCreate({
+      shop_id: shop.id,
+      status: 'scheduled',
+      scheduled_start_at: '2099-01-02T12:00:00.000Z',
+      guardrails: { contract_version: '1.0.0', auto_rollback: false, rules: [] },
+    }),
+  );
+  const uninstallDraft = await adapter.createRollout(
+    makeRolloutCreate({
+      shop_id: shop.id,
+      status: 'draft',
+      guardrails: { contract_version: '1.0.0', auto_rollback: false, rules: [] },
+    }),
+  );
+  const uninstall = await delivery('app/uninstalled', {}, 'uninstall-1');
+  assert.equal(uninstall.status, 200);
+  assert.equal((await adapter.getRollout(uninstallRunning.id))?.status, 'paused');
+  assert.equal((await adapter.getRollout(uninstallScheduled.id))?.status, 'paused');
+  assert.equal((await adapter.getRollout(uninstallDraft.id))?.status, 'cancelled');
+  assert(
+    (await adapter.listRolloutEvents(uninstallRunning.id)).some(
+      (event) => event.type === 'note' && event.data.action === 'app_uninstalled',
+    ),
+    'uninstall pause was not journalled on the rollout',
+  );
+  const uninstalledShop = await adapter.getShop(shop.id);
+  assert.equal(uninstalledShop?.access_token_enc, null);
+  assert(uninstalledShop?.uninstalled_at !== null, 'uninstall did not revoke shop state');
+
   const privacy = await delivery('customers/data_request', { customer: { email: 'never-store@example.com' } }, 'privacy-1');
   const privacyBody = await privacy.json();
   assert.equal(privacy.status, 200);
@@ -231,7 +387,7 @@ async function main(): Promise<void> {
   assert.equal((await delivery('shop/redact', { shop_id: 1 }, 'purge-1')).status, 200, 'purge retries dedupe');
 
   setAdapter(null);
-  console.log('Webhook integrity: HMAC, identity, atomic counts, retries, ownership, merchant edits and purge passed.');
+  console.log('Webhook integrity: HMAC, identity, dedupe, merchant edits, uninstall pause and purge passed.');
 }
 
 void main();

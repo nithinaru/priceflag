@@ -9,12 +9,17 @@
  * route (R1, R23).
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { after, NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
+import { getAppUrl, getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
 import { encryptSecret } from '@/lib/crypto';
+import { credentialsFromShop } from '@/lib/shopify/credentials';
 import { verifyOAuthHmac } from '@/lib/shopify/hmac';
+import { reconcileWebhooks } from '@/lib/shopify/webhooks';
+import { stopRolloutsForUninstall, UninstallCleanupBusyError } from '@/lib/shopify/uninstall';
+import { runSync } from '@/lib/sync';
+import type { SyncRun } from '@/lib/types';
 import {
   exchangeCodeForToken,
   missingScopes,
@@ -26,6 +31,26 @@ import {
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// The `after()` work below (webhook registration + initial sync) shares this
+// budget with the redirect itself.
+export const maxDuration = 60;
+
+/**
+ * Does the latest run make an automatic post-install sync redundant?
+ *
+ * A reinstall with fresh data should not re-download the catalog: skip when a
+ * run is already going, or completed within the last ten minutes. An errored
+ * run never counts as fresh — a reinstall is exactly when a retry should happen.
+ */
+const RECENT_SYNC_MS = 10 * 60 * 1000;
+
+function hasFreshSync(run: SyncRun | null, now: Date): boolean {
+  if (run === null) return false;
+  if (run.stage === 'error') return false;
+  if (run.stage !== 'done') return true; // queued/catalog/history/aggregating — already running
+  const finishedAt = run.finished_at ?? run.updated_at;
+  return now.getTime() - new Date(finishedAt).getTime() < RECENT_SYNC_MS;
+}
 
 function fail(code: string, message: string, status: number): NextResponse {
   return NextResponse.json({ error: { code, message, retryable: false, details: null } }, { status });
@@ -90,7 +115,29 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const adapter = getAdapter();
   const existing = await adapter.getShopByDomain(shop);
 
-  await adapter.upsertShop({
+  // A reinstall must never clear the uninstall stop flag while an earlier
+  // webhook is still waiting for a rollout lease. Finish the same idempotent
+  // cleanup first; on contention, fail closed and ask for a fresh install flow.
+  if (existing?.uninstalled_at !== null && existing?.uninstalled_at !== undefined) {
+    try {
+      await stopRolloutsForUninstall(adapter, existing, existing.uninstalled_at);
+    } catch (cause) {
+      if (cause instanceof UninstallCleanupBusyError) {
+        return fail(
+          'uninstall_cleanup_pending',
+          'Priceflag is still stopping an earlier price change. Wait a moment, then start the install again.',
+          409,
+        );
+      }
+      return fail(
+        'uninstall_cleanup_failed',
+        'Priceflag could not safely finish the previous uninstall. Try the install again.',
+        503,
+      );
+    }
+  }
+
+  const installedShop = await adapter.upsertShop({
     shop_domain: shop,
     access_token_enc: encryptSecret(token.access_token),
     scopes: token.scope,
@@ -101,6 +148,44 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // the price journal — a merchant who reinstalls keeps their history.
     uninstalled_at: null,
     ...(existing === null ? {} : { name: existing.name ?? undefined }),
+  });
+
+  // Post-install work runs via `after()` — once the redirect below has been
+  // sent — so a slow or failing Shopify call can never strand the merchant on
+  // the callback URL. The install itself is already durable at this point.
+  //
+  // Vercel constraint: `after()` shares this function's `maxDuration` (60s). A
+  // big store's history sync may not finish inside that budget, which is fine:
+  // the connect panel re-triggers `POST /api/sync`, and re-running converges
+  // (every sync write is an upsert).
+  after(async () => {
+    // (a) Webhook subscriptions. Non-fatal: a shop without webhooks degrades to
+    // sync-time freshness, which the merchant can live with; a failed install
+    // is the thing they cannot.
+    try {
+      await reconcileWebhooks(credentialsFromShop(installedShop), getAppUrl());
+    } catch (cause) {
+      console.error(
+        `[install] webhook registration failed for ${shop}: ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+      );
+    }
+
+    // (b) Initial sync, unless fresh data already exists (reinstall case). A
+    // failure inside runSync is recorded on the sync_runs row itself, so the
+    // connect panel can show it; this catch is only for failures before the
+    // run row exists.
+    try {
+      const latest = await adapter.getLatestSyncRun(installedShop.id);
+      if (!hasFreshSync(latest, new Date())) {
+        await runSync(adapter, installedShop);
+      }
+    } catch (cause) {
+      console.error(
+        `[install] initial sync kickoff failed for ${shop}: ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+      );
+    }
   });
 
   const response = NextResponse.redirect(postInstallUrl(shop));

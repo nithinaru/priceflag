@@ -113,6 +113,65 @@ export function verifySessionToken(
   return { shopDomain, claims: claims as SessionTokenClaims };
 }
 
+/**
+ * The `pf_shop` session cookie: `{shop_domain}.{expiry}.{sig}`.
+ *
+ * Session tokens live ~1 minute, which is fine for fetches App Bridge can attach
+ * a header to — but a server-rendered navigation and a CSV download link cannot
+ * carry an Authorization header. The cookie is the signed, longer-lived form of
+ * the same assertion, minted only after a session token has been verified
+ * (`POST /api/auth/session`). SameSite=None because it must arrive inside the
+ * Shopify admin iframe. It is intentionally short-lived and refreshed by App
+ * Bridge on each embedded page load; it is page-render identity, not authority
+ * for merchant API writes.
+ */
+export const SHOP_COOKIE = 'pf_shop';
+export const SHOP_COOKIE_MAX_AGE_SECONDS = 10 * 60;
+
+export function signShopCookie(
+  shopDomain: string,
+  options: { clientSecret?: string; now?: Date } = {},
+): string {
+  const clientSecret = options.clientSecret ?? requireEnv('SHOPIFY_API_SECRET');
+  const expiry =
+    Math.floor((options.now ?? new Date()).getTime() / 1000) + SHOP_COOKIE_MAX_AGE_SECONDS;
+  const payload = `${shopDomain}.${expiry}`;
+  const sig = createHmac('sha256', clientSecret).update(payload, 'utf8').digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+/** The shop domain a cookie value authorises, or `null`. Never throws. */
+export function verifyShopCookie(
+  value: string,
+  options: { clientSecret?: string; now?: Date } = {},
+): string | null {
+  const clientSecret = options.clientSecret ?? env('SHOPIFY_API_SECRET');
+  if (clientSecret === undefined) return null;
+
+  // Parse from the right: the shop domain contains dots, the expiry and the
+  // base64url signature never do.
+  const sigIndex = value.lastIndexOf('.');
+  if (sigIndex === -1) return null;
+  const sig = value.slice(sigIndex + 1);
+  const payload = value.slice(0, sigIndex);
+  const expIndex = payload.lastIndexOf('.');
+  if (expIndex === -1) return null;
+  const expiryRaw = payload.slice(expIndex + 1);
+  if (!/^\d+$/.test(expiryRaw)) return null;
+
+  const expected = createHmac('sha256', clientSecret).update(payload, 'utf8').digest('base64url');
+  if (!safeEqual(expected, sig)) return null;
+
+  const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
+  if (Number(expiryRaw) < nowSeconds) return null;
+
+  try {
+    return normalizeShopDomain(payload.slice(0, expIndex));
+  } catch {
+    return null;
+  }
+}
+
 /** `Authorization: Bearer <token>` on requests from the embedded admin. */
 export function sessionTokenFromRequest(request: Request): string | null {
   const header = request.headers.get('authorization');

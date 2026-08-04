@@ -12,8 +12,9 @@ import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
 import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
-import { getMode } from '@/lib/config';
+import { getAppUrl, getMode } from '@/lib/config';
 import { resolveShopCredentials } from '@/lib/shopify/credentials';
+import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +42,13 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // Resolve credentials before starting, so a bad token fails immediately
     // rather than halfway through writing a catalog.
-    await resolveShopCredentials(adapter, shop.shop_domain);
+    const credentials = await resolveShopCredentials(adapter, shop.shop_domain);
+
+    // Reconcile on every merchant-triggered sync, not just the OAuth callback.
+    // That gives an installed shop a visible retry path after a transient
+    // registration failure or an app-domain move, and removes duplicate HTTP
+    // subscriptions before they can double-count orders.
+    await reconcileWebhooks(credentials, getAppUrl());
 
     const url = new URL(request.url);
     const outcome = await runSync(adapter, shop, {

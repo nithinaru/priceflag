@@ -121,8 +121,8 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                     •
                   </span>
                   <span className="max-w-prose">
-                    You can still make this change safely: set the limit that undoes it, roll it out
-                    a few products at a time, and undo everything in one click.
+                    You can still plan this carefully: set a limit that pauses the rollout, move a
+                    few products at a time, and keep manual rollback one click away.
                   </span>
                 </li>
                 <li className="flex gap-2 text-base text-ink-muted">

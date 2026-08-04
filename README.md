@@ -76,7 +76,8 @@ npm run dev
 
 | Variable | Purpose |
 |---|---|
-| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Custom app credentials |
+| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Partner app credentials |
+| `SHOPIFY_APP_HANDLE` | App-home slug from Shopify Dev Dashboard |
 | `SHOPIFY_SCOPES` | `read_products,write_products,read_orders,read_all_orders` |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Database |
 | `SUPABASE_ML_READONLY_KEY` | Read-only role for the ML lane |

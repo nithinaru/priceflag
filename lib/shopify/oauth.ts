@@ -160,9 +160,21 @@ export function missingScopes(granted: string, required: readonly string[] = get
   return required.filter((scope) => !have.has(scope));
 }
 
-/** Where to send the merchant after a successful install. */
-export function postInstallUrl(shop: string): string {
-  return `${getAppUrl()}/?shop=${encodeURIComponent(shop)}&installed=1`;
+/**
+ * Where to send the merchant after a successful install.
+ *
+ * Every successful install lands on the app's Shopify Admin home. Redirecting
+ * to our own origin would leave the merchant on a bare top-level page with no
+ * App Bridge and no session. Shopify's admin URL uses the configured app
+ * handle, not the public client id.
+ */
+export function postInstallUrl(shop: string, appHandle = requireEnv('SHOPIFY_APP_HANDLE')): string {
+  const domain = normalizeShopDomain(shop);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(appHandle)) {
+    throw new Error('SHOPIFY_APP_HANDLE must be the app-home slug from Shopify Dev Dashboard.');
+  }
+  const shopHandle = domain.replace(/\.myshopify\.com$/, '');
+  return `https://admin.shopify.com/store/${shopHandle}/apps/${appHandle}`;
 }
 
 /** The Admin GraphQL endpoint for a shop, at the pinned API version. */

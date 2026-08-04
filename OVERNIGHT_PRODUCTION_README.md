@@ -179,6 +179,48 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   139/139 smoke, 31/31 merchant API, 51/51 demo integration, price-write,
   webhook and ML-ingest suites all pass. Claude PR #1 remains unrevised and
   unrebased, so integration and invite access remain closed.
+- `2026-08-04T08:03:32Z` — Kabir explicitly handed the sleeping Claude lane to
+  Codex. `codex/prod-integration` was created from green backend head `e63be92`;
+  Claude head `1d8aa5f` is being merged only on the integration branch. Claude's
+  original branch and draft PR remain preserved. Codex now owns conflict
+  resolution and the unfinished merchant UI/auth wiring, while all frozen
+  bearer-only, webhook, rollback and beta safety contracts remain authoritative.
+  This handoff does not authorize production promotion or bypass any external
+  staging, real-data, preview or Shopify test-store gate.
+- `2026-08-04T08:17:53Z` — `codex/prod-integration` completed the local UI/auth
+  handoff. Real forecast, draft creation, cost edits, notification settings,
+  confirmation, pause, rollback, kill switch and sync requests now carry fresh
+  App Bridge bearer tokens; the cookie is read-only page identity and no longer
+  authorizes a Server Action write. Draft creation changes no Shopify price.
+  The separate confirmation dialog lists every affected variant, frozen old
+  price, target price and pause rule before the first write. Automatic rollback
+  is unavailable in the beta UI and rejected by both create and confirm APIs.
+  OAuth now returns to the Shopify Admin app-home handle rather than incorrectly
+  treating the client id as a URL slug; production therefore also requires
+  `SHOPIFY_APP_HANDLE`. Local gates after a clean `npm ci`: typecheck; 140/140
+  smoke; 31/31 merchant API; 10/10 pricing safety; ML-ingest; webhook integrity;
+  51/51 adversarial demo integration; production build; dependency audit;
+  Python ML suite; and 10/10 compiled-browser assertions including the proposal
+  and explicit-confirmation flows. Invite access remains closed: staging,
+  real-data ML, Partner configuration, a real Shopify test-store exercise,
+  verified Vercel preview and production logs remain external gates.
+- `2026-08-04T08:35:53Z` — final local integration hardening added explicit
+  confirmation to the store-wide kill switch; kept completed-but-unreverted
+  prices visible to emergency controls; paged large Supabase reads; reconciled
+  and deduplicated operational webhooks on install, sync, App Bridge boot and a
+  five-minute retry; refreshed short-lived page identity before expiry; and
+  lock-paused running/scheduled rollouts on uninstall so reinstall cannot revive
+  a write without a new merchant decision. The demo forecast now uses a normal
+  read-only endpoint, removing an aborted Server Action request from the browser
+  gate. Confirmation, emergency stop, uninstall and reinstall now share
+  lease-serialized shutdown semantics, so a concurrent draft cannot revive or
+  write behind a completed stop. Final local checks: typecheck; 140/140 smoke; 34/34 merchant API; 10/10
+  pricing safety; ML-ingest; webhook integrity including uninstall pause; 51/51
+  adversarial demo integration; 117/117 Python; production build; zero npm audit
+  vulnerabilities; and 10/10 compiled-browser assertions with no console,
+  request, rendering or framework-overlay failures. Automatic rollback remains
+  disabled. External staging, real Shopify, Partner, preview and production-log
+  gates remain closed and no production promotion has occurred.
 
 ## Current launch checklist
 
@@ -192,11 +234,13 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
 - [x] Automatic rollback disabled by default; scheduled evaluator disabled
 - [ ] Staging Supabase migration apply, advisors and Supabase integration suite
 - [ ] GitHub ML secrets and a proven real-store nightly ingest
-- [ ] Claude UI/App Bridge/onboarding branch and PR
+- [x] Claude UI/App Bridge/onboarding work integrated locally with bearer-only writes
 - [ ] Shopify webhook subscriptions deployed from the real Partner app config
+- [ ] `SHOPIFY_APP_HANDLE`, canonical app URL, redirect URL, custom distribution,
+  protected-data approval and compliance topics verified in Shopify configuration
 - [ ] Test-store end-to-end write, pause, rollback and journal exercise
 - [ ] Verified Vercel preview and production log scan
-- [ ] Zero open P0/P1 findings across the integrated candidate
+- [x] Zero open P0/P1 findings across the integrated candidate (local review)
 
 ## Cross-lane interface requests
 
@@ -215,5 +259,8 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   `POST /api/rollouts/[id]/cancel`. Claude may use these instead of duplicating
   rollout/readiness view logic, but must keep `resume: false` and must not create
   a beta resume control for external-change pauses.
+- `2026-08-04T08:03:32Z` — ownership handoff accepted: Codex may edit the former
+  Claude-owned UI/auth paths on `codex/prod-integration`. No edits will be pushed
+  to `claude/prod-ui-auth-infra`; its history remains an auditable input.
   Claude still owns App Bridge token attachment, real-mode page data, Partner
   app webhook registration/config, browser UX, and preview infrastructure.

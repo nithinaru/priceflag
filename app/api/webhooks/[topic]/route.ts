@@ -26,6 +26,7 @@ import { buildExternalChangeEntry } from '@/lib/engine/journal';
 import { ROLLBACK_IN_PROGRESS_PREFIX } from '@/lib/engine/rollout';
 import { parseMoneyToCents, roundCents, type Cents } from '@/lib/money';
 import { verifyWebhookHmac } from '@/lib/shopify/hmac';
+import { stopRolloutsForUninstall } from '@/lib/shopify/uninstall';
 import type { StoreAdapter } from '@/lib/adapters/types';
 import type { OrderDayUpsert, Shop, WebhookEventRecord } from '@/lib/types';
 
@@ -197,9 +198,23 @@ async function handle(
       await detectExternalPriceChange(adapter, shop, payload);
       return 'processed';
     case 'app/uninstalled':
-      // Clear the token, keep the shop and its journal: a merchant who reinstalls
-      // keeps their price history, and the journal is the recovery path.
-      await adapter.updateShop(shop.id, { access_token_enc: null, uninstalled_at: new Date().toISOString() });
+      // Stop every evaluator-capable rollout before revoking our credentials.
+      // If a writer currently owns the lease, fail the webhook so Shopify
+      // retries; acknowledging uninstall while a scheduled write remains armed
+      // could make a later reinstall revive it without fresh confirmation.
+      const uninstalledAt = new Date().toISOString();
+      // Stamp the shop first. Confirmation re-reads this flag while holding its
+      // rollout lease, and the evaluator also fails closed on it. Keep the
+      // encrypted token only until every rollout is durably stopped below.
+      await adapter.updateShop(shop.id, { uninstalled_at: uninstalledAt });
+      await stopRolloutsForUninstall(adapter, shop, uninstalledAt);
+
+      // Keep the shop and journal so a reinstall retains its audit trail, but
+      // remove all write authority only after active work is durably paused.
+      await adapter.updateShop(shop.id, {
+        access_token_enc: null,
+        uninstalled_at: uninstalledAt,
+      });
       return 'processed';
     default:
       // orders/updated is deliberately ignored: without storing order IDs, an

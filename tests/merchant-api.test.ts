@@ -21,6 +21,7 @@ import { PATCH as setCogs } from '../app/api/products/[variantId]/cogs/route';
 import { GET as listProducts } from '../app/api/products/route';
 import { GET as getShopSettings, PATCH as updateShopSettings } from '../app/api/shop/route';
 import { GET as getLive } from '../app/api/live/route';
+import { POST as reconcileWebhookSubscriptions } from '../app/api/webhook-subscriptions/route';
 
 const API_KEY = 'merchant-api-test-key';
 const API_SECRET = 'merchant-api-test-secret';
@@ -228,6 +229,24 @@ test('the store-wide kill switch also rejects the legacy static/query fallback',
   assert(response.status === 401, `expected 401, got ${response.status}`);
 });
 
+test('the store-wide kill switch requires explicit merchant confirmation', async () => {
+  const before = await adapter.getShop(shopId);
+  const response = await killSwitch(
+    request(
+      '/api/kill-switch',
+      { reason: 'a checkbox in the UI is not API confirmation' },
+      token(DEMO_SHOP_DOMAIN),
+    ),
+  );
+  const body = await json(response);
+  assert(response.status === 400, `unconfirmed kill switch returned ${response.status}`);
+  assert(body.error?.code === 'confirmation_required', 'confirmation failure used the wrong code');
+  assert(
+    (await adapter.getShop(shopId))?.kill_switch_engaged_at === before?.kill_switch_engaged_at,
+    'unconfirmed kill switch changed the store',
+  );
+});
+
 test('forecast accepts a verified session, stays tenant-scoped, and writes nothing', async () => {
   const before = await adapter.listRollouts(shopId);
   const response = await forecast(
@@ -270,6 +289,9 @@ test('every legacy merchant route rejects missing and forged session tokens', as
     ),
     (bearer?: string) => listProducts(authGet('/api/products?shop=' + DEMO_SHOP_DOMAIN, bearer)),
     (bearer?: string) => getLive(authGet('/api/live?shop=' + DEMO_SHOP_DOMAIN, bearer)),
+    (bearer?: string) => reconcileWebhookSubscriptions(
+      request('/api/webhook-subscriptions?shop=' + DEMO_SHOP_DOMAIN, {}, bearer),
+    ),
     (bearer?: string) => listRollouts(authGet('/api/rollouts?shop=' + DEMO_SHOP_DOMAIN, bearer)),
     (bearer?: string) => cancelRollout(
       request('/api/rollouts/unknown/cancel?shop=' + DEMO_SHOP_DOMAIN, { confirm: true }, bearer),
@@ -314,6 +336,38 @@ test('catalog and live views ignore cross-shop query parameters', async () => {
     authGet('/api/products?only_repriceable=yes', token(DEMO_SHOP_DOMAIN)),
   );
   assert(invalidQuery.status === 400, 'catalog accepted an invalid boolean query');
+});
+
+test('completed rollouts remain operationally live until their Shopify writes are reverted', async () => {
+  const fixture = await createTestDraft([secondVariantGid]);
+  const now = new Date().toISOString();
+  await adapter.updateRollout(fixture.rollout.id, {
+    status: 'completed',
+    current_stage: 0,
+    started_at: now,
+    stage_entered_at: now,
+    ended_at: now,
+    ended_reason: 'completed',
+  });
+  await adapter.updateRolloutVariant(fixture.variants[0]!.id, { applied_at: now, reverted_at: null });
+
+  const response = await getLive(authGet('/api/live', token(DEMO_SHOP_DOMAIN)));
+  const body = await json(response);
+  assert(response.status === 200, `live view returned ${response.status}`);
+  assert(body.anything_live === true, 'completed live price was hidden from the operational state');
+  assert(
+    body.rollouts.some(
+      (item: { id: string; variants_live: number }) =>
+        item.id === fixture.rollout.id && item.variants_live === 1,
+    ),
+    'completed rollout with an unreverted write was missing from the live list',
+  );
+
+  await adapter.updateRolloutVariant(fixture.variants[0]!.id, { reverted_at: now });
+  await adapter.updateRollout(fixture.rollout.id, {
+    status: 'rolled_back',
+    ended_reason: 'manual_rollback',
+  });
 });
 
 test('rollout listing and reports remain tenant-scoped', async () => {
@@ -669,6 +723,41 @@ test('confirm requires explicit merchant approval', async () => {
   const body = await json(response);
   assert(response.status === 400, `expected 400, got ${response.status}`);
   assert(body.error?.code === 'rollout_confirmation_required', 'confirm approval error code drifted');
+});
+
+test('confirm rechecks a store-wide stop after taking the rollout lease', async () => {
+  const fixture = await createTestDraft();
+  const shopify = installShopifyPriceMock(fixture.variants);
+  const originalGetRollout = adapter.getRollout.bind(adapter);
+  let fixtureReads = 0;
+  adapter.getRollout = async (rolloutId: string) => {
+    const rollout = await originalGetRollout(rolloutId);
+    if (rolloutId === fixture.rollout.id) {
+      fixtureReads += 1;
+      if (fixtureReads === 2) {
+        await adapter.updateShop(shopId, {
+          kill_switch_engaged_at: new Date().toISOString(),
+          kill_switch_reason: 'confirmation race regression',
+        });
+      }
+    }
+    return rollout;
+  };
+
+  try {
+    const response = await confirmRollout(
+      request(`/api/rollouts/${fixture.rollout.id}/confirm`, { confirm: true }, token(DEMO_SHOP_DOMAIN)),
+      { params: Promise.resolve({ id: fixture.rollout.id }) },
+    );
+    const body = await json(response);
+    assert(response.status === 409, `racing stop returned ${response.status}`);
+    assert(body.error?.code === 'kill_switch_engaged', 'racing stop used the wrong error');
+    assert(shopify.writes.count === 0, 'confirmation wrote after the kill switch engaged');
+    assert((await originalGetRollout(fixture.rollout.id))?.status === 'draft', 'stopped draft transitioned');
+  } finally {
+    adapter.getRollout = originalGetRollout;
+    await adapter.updateShop(shopId, { kill_switch_engaged_at: null, kill_switch_reason: null });
+  }
 });
 
 test('future confirmation verifies the baseline and schedules without a Shopify write', async () => {
@@ -1054,6 +1143,7 @@ test('rollback restores every live variant when all write acknowledgements were 
 
 test('kill switch fails honestly when an evaluator still holds a rollout lease', async () => {
   const fixture = await createTestDraft();
+  const busyDraft = await createTestDraft([secondVariantGid]);
   await adapter.updateRollout(fixture.rollout.id, {
     status: 'running',
     current_stage: 0,
@@ -1067,17 +1157,31 @@ test('kill switch fails honestly when an evaluator still holds a rollout lease',
   installShopifyPriceMock(allVariants);
 
   const locked = await adapter.withRolloutLock(fixture.rollout.id, async () =>
-    killSwitch(request('/api/kill-switch', { reason: 'lease race regression' }, token(DEMO_SHOP_DOMAIN))),
+    adapter.withRolloutLock(busyDraft.rollout.id, async () =>
+      killSwitch(
+        request(
+          '/api/kill-switch',
+          { confirm: true, reason: 'lease race regression' },
+          token(DEMO_SHOP_DOMAIN),
+        ),
+      ),
+    ),
   );
   assert(locked.acquired, 'test could not acquire the contested lease');
-  const response = locked.result as Response;
+  const nested = locked.result;
+  assert(nested?.acquired, 'test could not acquire the contested draft lease');
+  const response = nested.result as Response;
   const body = await json(response);
   assert(response.status === 207 && body.ok === false, 'busy kill switch reported complete success');
-  assert(
-    body.failures?.some((failure: { rollout_id: string; code: string }) =>
-      failure.rollout_id === fixture.rollout.id && failure.code === 'rollout_busy'),
-    'busy rollout was not named in the kill-switch result',
-  );
+  for (const rolloutId of [fixture.rollout.id, busyDraft.rollout.id]) {
+    assert(
+      body.failures?.some(
+        (failure: { rollout_id: string; code: string }) =>
+          failure.rollout_id === rolloutId && failure.code === 'rollout_busy',
+      ),
+      `busy rollout ${rolloutId} was not named in the kill-switch result`,
+    );
+  }
   assert((await adapter.getShop(shopId))?.kill_switch_engaged_at !== null, 'partial kill switch was released');
   await releaseKillSwitch(authGet('/api/kill-switch', token(DEMO_SHOP_DOMAIN)));
 });

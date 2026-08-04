@@ -18,19 +18,32 @@ import { RangeBar } from "@/components/propose/range-bar";
 import { changeWords, countOf, rolloutStatusMeta, RolloutStatusBadge } from "@/components/domain/status";
 import { formatDay, formatMoneyDelta, formatPctDelta, formatUnits } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
-import { getRolloutBundle, getRollouts } from "@/components/demo/rollouts";
-import { buildDemoReport, hadPredictedRange } from "@/components/demo/report";
+import { getRolloutBundle } from "@/components/demo/rollouts";
+import {
+  buildDemoReport,
+  buildReportFromBundle,
+  bundleHadPredictedRange,
+  hadPredictedRange,
+} from "@/components/demo/report";
+import { NotConnected } from "@/components/shell/not-connected";
+import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { getRealRolloutBundle } from "@/app/lib/store-data";
+import { getMode } from "@/lib/config";
 
-type PageProps = { params: Promise<{ id: string }> };
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<PageSearchParams>;
+};
+
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
+  // Real mode stays generic: naming another shop's rollout in a tab title would
+  // be a cross-shop leak for the price of a guessed id.
+  if (getMode() !== "demo") return { title: "Results" };
   const bundle = getRolloutBundle(id);
   return { title: bundle ? `${bundle.rollout.name} — results` : "Results" };
-}
-
-export function generateStaticParams() {
-  return getRollouts().map((rollout) => ({ id: rollout.id }));
 }
 
 /**
@@ -42,16 +55,20 @@ export function generateStaticParams() {
  * grading itself against a prediction nobody made. Getting that wrong once buys a
  * flattering screenshot and costs the whole product's credibility.
  */
-export default async function ReportPage({ params }: PageProps) {
+export default async function ReportPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const bundle = getRolloutBundle(id);
+  const ctx = await resolveShopForPage(await searchParams);
+  if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
+
+  const demoMode = ctx.mode === "demo";
+  const bundle = demoMode ? getRolloutBundle(id) : await getRealRolloutBundle(ctx.shop!, id);
   if (!bundle) notFound();
 
-  const report = buildDemoReport(id);
+  const report = demoMode ? buildDemoReport(id) : buildReportFromBundle(bundle);
   const { rollout } = bundle;
-  const { shop } = getDemoStore();
-  const scored = hadPredictedRange(id);
-  const money = (cents: number) => formatMoneyDelta(cents, { currency: shop.currency, showCents: false });
+  const currency = demoMode ? getDemoStore().shop.currency : ctx.shop!.currency;
+  const scored = demoMode ? hadPredictedRange(id) : bundleHadPredictedRange(bundle);
+  const money = (cents: number) => formatMoneyDelta(cents, { currency, showCents: false });
 
   if (!report) {
     return (
@@ -194,7 +211,7 @@ export default async function ReportPage({ params }: PageProps) {
         <CardHeader title="The change itself" description="For the record." />
         <CardBody>
           <DetailList>
-            <DetailRow label="What changed">{changeWords(rollout, shop.currency)}</DetailRow>
+            <DetailRow label="What changed">{changeWords(rollout, currency)}</DetailRow>
             <DetailRow label="Products">
               {countOf(bundle.variants.filter((variant) => !variant.excluded).length, "product")}
             </DetailRow>

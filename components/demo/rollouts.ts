@@ -193,7 +193,13 @@ export type RolloutBundle = {
   health: RolloutHealth;
   health_sentence: string;
   live: { stage_index: number; variants_live: number; variants_total: number; fraction: number };
-  can: { rollback: boolean; cancel: boolean; resume: boolean };
+  can: {
+    confirm: boolean;
+    rollback: boolean;
+    pause: boolean;
+    cancel: boolean;
+    resume: boolean;
+  };
 };
 
 let bundles: RolloutBundle[] | null = null;
@@ -533,9 +539,11 @@ function build(): { bundles: RolloutBundle[]; journal: JournalEntry[] } {
         fraction: currentStage >= 0 ? (stages[currentStage]?.fraction ?? 0) : 0,
       },
       can: {
-        rollback: variantsLive > 0 && (rollout.status === "running" || rollout.status === "paused"),
+        confirm: rollout.status === "draft",
+        rollback: ["running", "paused", "completed"].includes(rollout.status),
+        pause: rollout.status === "running" || rollout.status === "scheduled",
         cancel: rollout.status === "draft" || rollout.status === "scheduled",
-        resume: rollout.status === "paused",
+        resume: false,
       },
     });
 
@@ -615,13 +623,20 @@ export type LiveResponse = {
 export function getLive(): LiveResponse {
   const store = getDemoStore();
   const live = build().bundles.filter(
-    (bundle) => bundle.rollout.status === "running" || bundle.rollout.status === "paused",
+    (bundle) => bundle.rollout.status !== "cancelled" && bundle.live.variants_live > 0,
+  );
+  const liveVariantGids = new Set(
+    live.flatMap((bundle) =>
+      bundle.variants
+        .filter((variant) => variant.applied_at !== null && variant.reverted_at === null)
+        .map((variant) => variant.variant_gid),
+    ),
   );
 
   return {
     anything_live: live.some((bundle) => bundle.live.variants_live > 0),
     kill_switch_engaged: false,
-    skus_holding_priceflag_price: live.reduce((sum, bundle) => sum + bundle.live.variants_live, 0),
+    skus_holding_priceflag_price: liveVariantGids.size,
     rollouts: live.map((bundle) => ({
       id: bundle.rollout.id,
       name: bundle.rollout.name,

@@ -15,7 +15,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { IconArrowRight, IconCheck, IconTag } from "@/components/ui/icons";
 import { countOf, formatMoney, formatPct, marginPct, parseMoneyToCents } from "@/components/format";
-import { saveCost } from "@/app/products/actions";
+import { merchantJson } from "@/components/lib/merchant-api";
 import type { Product } from "@/lib/types";
 import type { Cents } from "@/lib/money";
 
@@ -36,9 +36,11 @@ import type { Cents } from "@/lib/money";
 export function BulkCosts({
   products,
   currency,
+  demoMode = true,
 }: {
   products: Product[];
   currency: string;
+  demoMode?: boolean;
 }) {
   const [values, setValues] = useState<Record<string, Cents | null>>(() =>
     Object.fromEntries(products.map((product) => [product.variant_gid, product.cogs_cents])),
@@ -77,13 +79,37 @@ export function BulkCosts({
       return next;
     });
     setSaving(product.variant_gid);
-    const result = await saveCost(product.variant_gid, cents);
+    let result: { ok: true; cogs_cents: Cents; persisted: boolean } | { ok: false; message: string };
+    if (demoMode) {
+      result = { ok: true, cogs_cents: cents, persisted: false };
+    } else {
+      try {
+        const reply = await merchantJson<{ product: { cogs_cents: Cents } }>(
+          `/api/products/${encodeURIComponent(product.variant_gid)}/cogs`,
+          { method: "PATCH", body: JSON.stringify({ cogs_cents: cents }) },
+        );
+        result = { ok: true, cogs_cents: reply.product.cogs_cents, persisted: true };
+      } catch (cause) {
+        result = {
+          ok: false,
+          message: cause instanceof Error ? cause.message : "That cost did not save. Try again.",
+        };
+      }
+    }
     setSaving(null);
 
     if (!result.ok) {
       setErrors((current) => ({ ...current, [product.variant_gid]: result.message }));
       return;
     }
+
+    toast({
+      tone: "success",
+      title: result.persisted ? "Cost saved" : "Cost updated on this screen",
+      description: result.persisted
+        ? `${product.title} now has a saved unit cost.`
+        : "This is the demo store, so nothing was stored or sent to Shopify.",
+    });
 
     setValues((current) => ({ ...current, [product.variant_gid]: result.cogs_cents }));
     setDrafts((current) => {

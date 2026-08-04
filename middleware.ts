@@ -24,7 +24,7 @@
  *
  * ## The exemptions, and why each one is safe
  *
- * Three paths bypass the gate because each already authenticates itself, and each
+ * These paths bypass the gate because each already authenticates itself, and each
  * would break if it could not be reached without a browser cookie:
  *
  *   - `/api/cron/evaluate` — `CRON_SECRET` bearer, constant-time. The GitHub
@@ -34,10 +34,33 @@
  *     cookie, so gating this would silently kill order ingestion.
  *   - `/api/health` — reports capability booleans and no data. Deliberately open
  *     so uptime checks work without a credential.
+ *   - `/api/auth` and `/api/auth/callback` — the OAuth round-trip. Shopify's
+ *     browser redirects arrive with no cookie and no way to get one; the
+ *     callback authenticates itself with Shopify's query HMAC + the state nonce.
  *
  *   - `/api/ml/ingest` — `ML_INGEST_SECRET` bearer, constant-time. The nightly
  *     worker has no browser cookie and this dedicated credential is its sole
  *     write authority.
+ *
+ * ## Embedded (Shopify admin) traffic
+ *
+ * The gate's `pf_access` cookie is SameSite=Lax, which a third-party iframe never
+ * sends — so without more, embedding the app in the Shopify admin is structurally
+ * impossible. A request is therefore ALSO admitted when it carries a credential
+ * Shopify signed (all verified with `crypto.subtle` — this is the edge runtime,
+ * `node:crypto` does not exist here):
+ *
+ *   - a valid `pf_shop` cookie (HMAC-signed by `POST /api/auth/session` after a
+ *     session-token verification);
+ *   - a valid App Bridge session token (`Authorization: Bearer` or the
+ *     `id_token` launch parameter) — HS256, alg pinned, `aud`/`exp`/`dest`
+ *     checked, mirroring `lib/shopify/session.ts`;
+ *   - iframe launch params signed with Shopify's query `hmac` (same scheme as
+ *     the OAuth callback), bounded to five minutes against replay.
+ *
+ * Admission here does NOT mint `pf_access` — shop-scoped identity is the page
+ * session's job (`app/api/auth/session` mints `pf_shop`), and conflating the two
+ * cookies would let a one-time launch URL mint the long-lived shared secret.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -60,7 +83,13 @@ const DEMO_COOKIE_DAYS = 7;
 /** Query parameter that mints the cookie: `?access=…` once, then it is stripped. */
 const QUERY_PARAM = 'access';
 
-const EXEMPT_EXACT = new Set(['/api/health', '/api/cron/evaluate', '/api/ml/ingest']);
+const EXEMPT_EXACT = new Set([
+  '/api/health',
+  '/api/cron/evaluate',
+  '/api/ml/ingest',
+  '/api/auth',
+  '/api/auth/callback',
+]);
 const EXEMPT_PREFIX = ['/api/webhooks/'];
 
 function isExempt(pathname: string): boolean {
@@ -132,6 +161,170 @@ function isDemoLogin(header: string | null): boolean {
   return userOk && passwordOk;
 }
 
+// --- Shopify credential verification (edge runtime, crypto.subtle only) -----
+
+/** Cookie minted by `POST /api/auth/session`: `{shop_domain}.{expiry}.{sig}`. */
+const SHOP_COOKIE = 'pf_shop';
+
+/** Clock skew tolerance for session tokens, matching `lib/shopify/session.ts`. */
+const JWT_LEEWAY_SECONDS = 5;
+
+/** Tight replay bound for hmac-signed launch params. */
+const LAUNCH_MAX_AGE_SECONDS = 5 * 60;
+
+async function hmacSha256(secret: string, message: string): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(message)));
+}
+
+function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
+  return out;
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Base64url segment → UTF-8 string, or null on malformed input. */
+function decodeBase64UrlUtf8(segment: string): string | null {
+  try {
+    const binary = atob(segment.replace(/-/g, '+').replace(/_/g, '/'));
+    return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `pf_shop` cookie check. Signature over `{shop_domain}.{expiry}`, parsed from
+ * the right because the domain itself contains dots. Mirrors `verifyShopCookie`
+ * in `lib/shopify/session.ts`, which cannot be imported here (node:crypto).
+ */
+async function isValidShopCookie(value: string, clientSecret: string): Promise<boolean> {
+  const sigIndex = value.lastIndexOf('.');
+  if (sigIndex === -1) return false;
+  const sig = value.slice(sigIndex + 1);
+  const payload = value.slice(0, sigIndex);
+  const expIndex = payload.lastIndexOf('.');
+  if (expIndex === -1) return false;
+  const expiryRaw = payload.slice(expIndex + 1);
+  if (!/^\d+$/.test(expiryRaw)) return false;
+
+  const expected = toBase64Url(await hmacSha256(clientSecret, payload));
+  if (!safeEqual(expected, sig)) return false;
+  return Number(expiryRaw) >= Math.floor(Date.now() / 1000);
+}
+
+/**
+ * App Bridge session token (JWT, HS256). A reimplementation of
+ * `verifySessionToken` in `lib/shopify/session.ts` for the edge runtime — keep
+ * the claim checks in lockstep with that file.
+ */
+async function isValidSessionToken(token: string, clientId: string, clientSecret: string): Promise<boolean> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const [headerB64, payloadB64, signatureB64] = parts as [string, string, string];
+
+  const headerJson = decodeBase64UrlUtf8(headerB64);
+  const payloadJson = decodeBase64UrlUtf8(payloadB64);
+  if (headerJson === null || payloadJson === null) return false;
+
+  let header: { alg?: string };
+  let claims: { exp?: number; nbf?: number; aud?: string; dest?: string; iss?: string };
+  try {
+    header = JSON.parse(headerJson) as { alg?: string };
+    claims = JSON.parse(payloadJson) as typeof claims;
+  } catch {
+    return false;
+  }
+
+  // Pin the algorithm — accepting the token's own `alg` is the classic JWT hole.
+  if (header.alg !== 'HS256') return false;
+
+  const expected = toBase64Url(await hmacSha256(clientSecret, `${headerB64}.${payloadB64}`));
+  if (!safeEqual(expected, signatureB64)) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof claims.exp !== 'number' || claims.exp + JWT_LEEWAY_SECONDS < now) return false;
+  if (typeof claims.nbf === 'number' && claims.nbf - JWT_LEEWAY_SECONDS > now) return false;
+  if (claims.aud !== clientId) return false;
+  if (typeof claims.dest !== 'string' || typeof claims.iss !== 'string') return false;
+  const expectedIssuer = `${claims.dest.replace(/\/$/, '')}/admin`;
+  return claims.iss === expectedIssuer;
+}
+
+/**
+ * Shopify iframe launch params: HMAC-SHA256 hex over the sorted `key=value`
+ * pairs, `hmac` itself excluded — the same scheme as the OAuth callback
+ * (`lib/shopify/hmac.ts`, ported here because node:crypto is unavailable).
+ */
+async function isValidLaunchRequest(searchParams: URLSearchParams, clientSecret: string): Promise<boolean> {
+  const hmac = searchParams.get('hmac');
+  const shop = searchParams.get('shop');
+  const timestamp = searchParams.get('timestamp');
+  if (!hmac || !shop || !timestamp) return false;
+
+  const issuedAt = Number(timestamp);
+  if (!Number.isFinite(issuedAt) || Math.abs(Date.now() / 1000 - issuedAt) > LAUNCH_MAX_AGE_SECONDS) {
+    return false;
+  }
+
+  const pairs: string[] = [];
+  for (const [key, value] of searchParams.entries()) {
+    if (key === 'hmac') continue;
+    pairs.push(`${key}=${value}`);
+  }
+  pairs.sort();
+
+  const digest = toHex(await hmacSha256(clientSecret, pairs.join('&')));
+  return safeEqual(digest, hmac);
+}
+
+/** `Authorization: Bearer <token>`, or null. */
+function bearerToken(header: string | null): string | null {
+  if (header === null) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? (match[1] as string) : null;
+}
+
+/**
+ * Is this request carrying any credential Shopify signed? Checked cheapest
+ * first, and only when the corresponding material is actually present — the
+ * common non-embedded request pays for nothing.
+ */
+async function isShopifyAuthenticated(request: NextRequest): Promise<boolean> {
+  const clientSecret = process.env.SHOPIFY_API_SECRET;
+  const clientId = process.env.SHOPIFY_API_KEY;
+  if (!clientSecret || !clientId) return false;
+
+  const shopCookie = request.cookies.get(SHOP_COOKIE)?.value;
+  if (shopCookie !== undefined && (await isValidShopCookie(shopCookie, clientSecret))) return true;
+
+  const bearer = bearerToken(request.headers.get('authorization'));
+  if (bearer !== null && (await isValidSessionToken(bearer, clientId, clientSecret))) return true;
+
+  const { searchParams } = request.nextUrl;
+  const idToken = searchParams.get('id_token');
+  if (idToken !== null && (await isValidSessionToken(idToken, clientId, clientSecret))) return true;
+
+  if (searchParams.get('hmac') !== null && (await isValidLaunchRequest(searchParams, clientSecret))) {
+    return true;
+  }
+
+  return false;
+}
+
 function unauthorized(): NextResponse {
   const response = new NextResponse(
     JSON.stringify({
@@ -153,10 +346,15 @@ function unauthorized(): NextResponse {
   return response;
 }
 
-export function middleware(request: NextRequest): NextResponse {
+export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname, searchParams } = request.nextUrl;
 
   if (isExempt(pathname)) return NextResponse.next();
+
+  // Shopify-signed credentials are stronger than the shared secret, and the
+  // embedded admin can never present the SameSite=Lax gate cookie. No pf_access
+  // is minted here — see the header comment.
+  if (await isShopifyAuthenticated(request)) return NextResponse.next();
 
   const secret = process.env.APP_ACCESS_SECRET;
 

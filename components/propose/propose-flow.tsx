@@ -29,10 +29,11 @@ import {
   type GuardrailDraft,
 } from "@/components/propose/guardrail-builder";
 import { useToast } from "@/components/ui/toast";
+import { merchantJson } from "@/components/lib/merchant-api";
 import { countOf, formatMoney, formatPct, parseMoneyToCents } from "@/components/format";
-import { createRollout, requestForecast, type ForecastRequest } from "@/app/propose/actions";
+import type { ForecastRequest, ForecastReply } from "@/app/propose/actions";
 import { normalizeStages } from "@/lib/engine/rollout";
-import type { ForecastResult } from "@/lib/contracts";
+import { CONTRACT_VERSION, type ForecastResult } from "@/lib/contracts";
 
 /**
  * The propose flow (A3).
@@ -42,10 +43,10 @@ import type { ForecastResult } from "@/lib/contracts";
  * as the change is edited — `POST /api/forecast` writes nothing, so it is safe to
  * call on every keystroke once debounced.
  *
- * One primary action on the screen, at the end: starting the change. Everything
- * above it is an input or an explanation.
+ * One primary action on the screen, at the end: creating a draft. A separate
+ * review screen owns the explicit confirmation required before any write.
  */
-export function ProposeFlow() {
+export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
   const [gids, setGids] = useState<string[] | null>(null);
   const [kind, setKind] = useState<"percent" | "absolute">("percent");
   const [direction, setDirection] = useState<"up" | "down">("up");
@@ -57,7 +58,7 @@ export function ProposeFlow() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [created, setCreated] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ message: string; rolloutId: string | null } | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -75,27 +76,49 @@ export function ProposeFlow() {
   // Debounced, and last-write-wins so a slow reply cannot overwrite a fast one.
   const requestId = useRef(0);
   useEffect(() => {
-    if (gids === null || gids.length === 0 || change === null) return;
+    if (gids === null || gids.length === 0 || change === null) {
+      setForecast(null);
+      setLoading(false);
+      return;
+    }
     const id = requestId.current + 1;
     requestId.current = id;
     setLoading(true);
 
     const timer = window.setTimeout(() => {
-      void requestForecast({ variant_gids: gids, change }).then((reply) => {
-        if (requestId.current !== id) return;
-        setLoading(false);
-        if (reply.ok) {
-          setForecast(reply.forecast);
+      void (async () => {
+        try {
+          let next: ForecastResult;
+          if (demoMode) {
+            const response = await fetch("/api/demo/forecast", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ variant_gids: gids, change }),
+            });
+            const reply = (await response.json()) as ForecastReply;
+            if (!reply.ok) throw new Error(reply.message);
+            next = reply.forecast;
+          } else {
+            next = await merchantJson<ForecastResult>("/api/forecast", {
+              method: "POST",
+              body: JSON.stringify({ contract_version: CONTRACT_VERSION, variant_gids: gids, change }),
+            });
+          }
+          if (requestId.current !== id) return;
+          setForecast(next);
           setError(null);
-        } else {
+        } catch (cause) {
+          if (requestId.current !== id) return;
           setForecast(null);
-          setError(reply.message);
+          setError(cause instanceof Error ? cause.message : "We could not forecast that change.");
+        } finally {
+          if (requestId.current === id) setLoading(false);
         }
-      });
+      })();
     }, 350);
 
     return () => window.clearTimeout(timer);
-  }, [gids, change]);
+  }, [gids, change, demoMode]);
 
   if (gids === null) return <SkeletonCard />;
 
@@ -209,20 +232,20 @@ export function ProposeFlow() {
         />
       ) : null}
 
-      {/* 4. Start it. The screen's one primary action. */}
+      {/* 4. Create the reviewable draft. This still performs no Shopify write. */}
       {forecast !== null && included.length > 0 ? (
         <Card tone={created ? "live" : "default"} edge={created !== null}>
           <CardHeader
-            title={created ? "What would happen next" : "Ready to start"}
+            title={created ? "Draft created" : "Ready to create a draft"}
             description={
               created
                 ? undefined
-                : "We will roll this out a few products at a time and watch orders between each step."
+                : "Priceflag will freeze today's baselines and prepare a staged plan. You review it once more before anything changes."
             }
           />
           <CardBody className="space-y-5">
             {created ? (
-              <p className="max-w-prose text-base text-ink">{created}</p>
+              <p className="max-w-prose text-base text-ink">{created.message}</p>
             ) : (
               <>
                 <Field
@@ -273,13 +296,15 @@ export function ProposeFlow() {
           <CardFooter>
             {created ? (
               <>
-                <span>Nothing was sent to Shopify.</span>
-                <TextLink href="/rollouts">See your price changes</TextLink>
+                <span>No Shopify price was changed.</span>
+                <TextLink href={created.rolloutId ? `/rollouts/${created.rolloutId}` : "/rollouts"}>
+                  {created.rolloutId ? "Review and confirm the draft" : "See the demo rollouts"}
+                </TextLink>
               </>
             ) : (
               <>
                 <span>
-                  Nothing changes until you press this, and you can undo it in one step afterwards.
+                  Creating this draft does not write to Shopify. Starting it requires a separate confirmation.
                 </span>
                 <Button
                   variant="primary"
@@ -287,22 +312,57 @@ export function ProposeFlow() {
                   loadingLabel="Setting up your price change"
                   onClick={async () => {
                     setCreating(true);
-                    const reply = await createRollout({
+                    const proposal = {
                       name: name.trim() || defaultName,
                       variant_gids: gids,
                       change: change!,
                       guardrails: toGuardrails(draft),
-                    });
+                    };
+                    let reply:
+                      | { ok: true; rollout_id: string | null; message: string }
+                      | { ok: false; message: string };
+                    try {
+                      if (demoMode) {
+                        // The public demo never persists a rollout. Keeping this
+                        // acknowledgement local avoids a needless Server Action
+                        // request after the forecast while preserving the
+                        // important guarantee: no adapter or Shopify write runs.
+                        reply = {
+                          ok: true,
+                          rollout_id: null,
+                          message:
+                            "This is the demo store, so no draft was stored and nothing was sent to Shopify. On a connected store, Priceflag would freeze today's prices in a draft and wait for a separate confirmation before writing anything.",
+                        };
+                      } else {
+                        const body = await merchantJson<{ rollout: { id: string } }>("/api/rollouts", {
+                          method: "POST",
+                          body: JSON.stringify({ contract_version: CONTRACT_VERSION, ...proposal }),
+                        });
+                        reply = {
+                          ok: true,
+                          rollout_id: body.rollout.id,
+                          message:
+                            "The draft is saved with today's prices, forecast, rollout stages, and pause limits. Review it before confirming the first Shopify write.",
+                        };
+                      }
+                    } catch (cause) {
+                      reply = {
+                        ok: false,
+                        message: cause instanceof Error ? cause.message : "The draft was not created. Try again.",
+                      };
+                    }
                     setCreating(false);
                     toast({
                       tone: reply.ok ? "success" : "error",
-                      title: reply.ok ? "Nothing was changed" : "That did not go through",
+                      title: reply.ok ? "Draft created — no prices changed" : "That did not go through",
                       description: reply.message,
                     });
-                    if (reply.ok) setCreated(reply.message);
+                    if (reply.ok) {
+                      setCreated({ message: reply.message, rolloutId: reply.rollout_id });
+                    }
                   }}
                 >
-                  Start this price change
+                  Create draft
                 </Button>
               </>
             )}

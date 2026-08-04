@@ -69,6 +69,7 @@ async function coldLoad(page: Page, path: string): Promise<void> {
 interface RouteCheck {
   name: string;
   path: string;
+  setup?: (page: Page) => Promise<void>;
   run: (page: Page) => Promise<{ ok: boolean; detail: string }>;
 }
 
@@ -110,6 +111,47 @@ const CHECKS: RouteCheck[] = [
         .catch(() => {});
       const after = await rows.count();
       return { ok: after !== before, detail: `rows ${before} -> ${after}` };
+    },
+  },
+  {
+    name: '/propose — forecast creates a no-write draft',
+    path: '/propose',
+    setup: async (page) => {
+      await page.addInitScript(() => {
+        window.sessionStorage.setItem(
+          'priceflag:selection:v1',
+          JSON.stringify(['gid://shopify/ProductVariant/46100000000']),
+        );
+      });
+    },
+    run: async (page) => {
+      const create = page.getByRole('button', { name: 'Create draft' });
+      await create.waitFor({ state: 'visible', timeout: 15_000 });
+      await create.click();
+      const created = page.getByText('Draft created', { exact: true });
+      await created.waitFor({ state: 'visible', timeout: 10_000 });
+      const noWrite = await page.getByText('No Shopify price was changed.', { exact: true }).count();
+      return {
+        ok: noWrite === 1,
+        detail: noWrite === 1 ? 'forecast rendered and draft stayed no-write' : 'missing no-write confirmation',
+      };
+    },
+  },
+  {
+    name: '/rollouts/ro_2043 — explicit confirmation shows prices and beta safety',
+    path: '/rollouts/ro_2043',
+    run: async (page) => {
+      const review = page.getByRole('button', { name: 'Review and start' });
+      await review.waitFor({ state: 'visible', timeout: 10_000 });
+      await review.click();
+      const modal = page.getByRole('dialog');
+      await modal.waitFor({ state: 'visible', timeout: 5_000 });
+      const safety = await modal.getByText('Automatic rollback is off', { exact: true }).count();
+      const confirmation = modal.getByRole('button', { name: 'Confirm first stage' });
+      return {
+        ok: safety === 1 && (await confirmation.isDisabled()),
+        detail: 'old/new prices shown and confirmation stays locked until acknowledged',
+      };
     },
   },
   {
@@ -171,6 +213,7 @@ async function main(): Promise<void> {
       });
 
       try {
+        await check.setup?.(page);
         await coldLoad(page, check.path);
         const outcome = await check.run(page);
         record(check.name, outcome.ok, outcome.detail);

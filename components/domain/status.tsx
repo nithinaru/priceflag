@@ -229,8 +229,8 @@ export function GuardrailSummary({
   if (sentences.length === 0) {
     return (
       <p className={cn("max-w-prose", className)}>
-        <span className="font-medium text-ink">No safety net: </span>
-        this change has no automatic limit, so nothing will undo it for you.
+        <span className="font-medium text-ink">No pause limit: </span>
+        this change has no rule that will stop later stages for review.
       </p>
     );
   }

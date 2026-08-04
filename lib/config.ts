@@ -50,13 +50,26 @@ export function isDemoMode(): boolean {
   return getMode() === 'demo';
 }
 
+/**
+ * True on the production deployment (and in `next build`/`next start` locally).
+ * The line that matters: production refuses the unauthenticated fallbacks that
+ * keep local development ergonomic.
+ */
+export function isProductionRuntime(): boolean {
+  return env('VERCEL_ENV') === 'production' || env('NODE_ENV') === 'production';
+}
+
 export function hasSupabaseConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && env('SUPABASE_SERVICE_ROLE_KEY') !== undefined;
 }
 
 /** Path B: OAuth credentials for a Partner-Dashboard app. */
 export function hasShopifyConfig(): boolean {
-  return env('SHOPIFY_API_KEY') !== undefined && env('SHOPIFY_API_SECRET') !== undefined;
+  return (
+    env('SHOPIFY_API_KEY') !== undefined &&
+    env('SHOPIFY_API_SECRET') !== undefined &&
+    env('SHOPIFY_APP_HANDLE') !== undefined
+  );
 }
 
 /** Path A: a static Admin API token from an admin-created custom app. */

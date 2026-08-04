@@ -91,6 +91,7 @@ import {
   isValidShopDomain,
   missingScopes,
   normalizeShopDomain,
+  postInstallUrl,
   ShopifyAuthError,
   verifyOAuthState,
 } from '../lib/shopify/oauth';
@@ -517,6 +518,18 @@ async function testShopifyAuth(): Promise<void> {
     // Absent `grant_options[]` is what makes the token offline. An online token
     // would expire and auto-rollback would silently stop working at 3am.
     assertEqual(url.searchParams.get('grant_options[]'), null, 'no grant_options means an offline token');
+  });
+
+  await test('post-install returns to the Shopify Admin app handle, never the client id', () => {
+    assertEqual(
+      postInstallUrl('acme-dev.myshopify.com', 'priceflag-beta'),
+      'https://admin.shopify.com/store/acme-dev/apps/priceflag-beta',
+      'embedded app home',
+    );
+    assertThrows(
+      () => postInstallUrl('acme-dev.myshopify.com', 'not/a-handle'),
+      'invalid app handle',
+    );
   });
 
   await test('the callback HMAC verifies exactly as Shopify computes it', () => {

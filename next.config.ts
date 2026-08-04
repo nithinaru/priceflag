@@ -13,6 +13,12 @@ const nextConfig: NextConfig = {
       {
         source: '/:path*',
         headers: [
+          {
+            // Embedded custom app: Shopify Admin and the owning shop may frame
+            // the UI. Merchant APIs still require fresh session tokens.
+            key: 'Content-Security-Policy',
+            value: 'frame-ancestors https://admin.shopify.com https://*.myshopify.com;',
+          },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },

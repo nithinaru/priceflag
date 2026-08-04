@@ -269,13 +269,27 @@ export class SupabaseAdapter implements StoreAdapter {
   // -- order history -------------------------------------------------------
 
   async getOrderDays(shopId: string, query: OrderDayQuery = {}): Promise<OrderDay[]> {
-    let builder = this.db.from('order_days').select('*').eq('shop_id', shopId);
-    if (query.variant_gids?.length) builder = builder.in('variant_gid', [...query.variant_gids]);
-    if (query.from_day) builder = builder.gte('day', query.from_day);
-    if (query.to_day) builder = builder.lte('day', query.to_day);
+    // Supabase/PostgREST projects commonly cap one response at 1,000 rows. A
+    // 180-day forecast crosses that with only six variants, so a single select
+    // would silently train on incomplete history. Page on a deterministic
+    // compound order until the server returns a short page.
+    const pageSize = 1000;
+    const rows: Row[] = [];
+    for (let offset = 0; ; offset += pageSize) {
+      let builder = this.db.from('order_days').select('*').eq('shop_id', shopId);
+      if (query.variant_gids?.length) builder = builder.in('variant_gid', [...query.variant_gids]);
+      if (query.from_day) builder = builder.gte('day', query.from_day);
+      if (query.to_day) builder = builder.lte('day', query.to_day);
 
-    const result = await builder.order('day', { ascending: true });
-    return unwrap(result, `getOrderDays(${shopId})`).map((row) => mapOrderDay(row as Row));
+      const result = await builder
+        .order('day', { ascending: true })
+        .order('variant_gid', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      const page = unwrap(result, `getOrderDays(${shopId})`) as Row[];
+      rows.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return rows.map((row) => mapOrderDay(row));
   }
 
   async upsertOrderDays(shopId: string, rows: readonly OrderDayUpsert[]): Promise<number> {

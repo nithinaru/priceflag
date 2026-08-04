@@ -3,8 +3,8 @@
  *
  * Plain language, one thing per email, and the subject line carries the news —
  * merchants read these on a phone and most will never open the body. An
- * auto-rollback email in particular has to be immediately legible: something was
- * undone, automatically, and here is what it was.
+ * rollback email in particular has to be immediately legible: something was
+ * restored, and here is what it was.
  *
  * Sending is best-effort by design. A failed email must never fail an
  * auto-rollback: the prices are already restored, and throwing here would make
@@ -60,7 +60,7 @@ export function compose(notification: Notification): Composed {
         subject: `"${name}" moved to stage ${notification.detail ?? 2}`,
         body:
           `Results held up, so the new price is now live on more of the products you selected.\n\n` +
-          `Nothing needs doing. We are still watching, and it still reverts automatically if the numbers drop.`,
+          `Nothing needs doing. We are still watching, and the rollout will pause and alert you if the numbers cross your limit.`,
       };
 
     case 'breach':
@@ -68,8 +68,7 @@ export function compose(notification: Notification): Composed {
         subject: `"${name}" is paused — results dropped`,
         body:
           `${notification.reason ?? 'Sales came in below the range you set as acceptable.'}\n\n` +
-          `Nothing has been changed back yet, because you asked to be told rather than have it undone ` +
-          `automatically. Open the rollout to revert it or let it continue.`,
+          `Nothing has been changed back. Open the rollout to review the results and choose whether to restore the frozen prices.`,
       };
 
     case 'auto_rollback':

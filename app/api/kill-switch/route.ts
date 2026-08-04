@@ -13,7 +13,12 @@
 import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
+import {
+  MerchantApiError,
+  merchantErrorResponse,
+  readJson,
+  resolveAuthenticatedShop,
+} from '@/lib/api/merchant';
 import { rollbackInProgressReason } from '@/lib/engine/rollout';
 import { rollbackRollout, verifyRollback } from '@/lib/pricing/writer';
 import { AdminGraphqlClient } from '@/lib/shopify/client';
@@ -28,13 +33,25 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     const adapter = getAdapter();
     const { shop } = await resolveAuthenticatedShop(request, adapter);
-    const body = (await request.json().catch(() => ({}))) as { reason?: string };
+    const raw = await readJson(request);
+    if (typeof raw !== 'object' || raw === null || (raw as { confirm?: unknown }).confirm !== true) {
+      throw new MerchantApiError(
+        'confirmation_required',
+        'Confirm that you want to put every Priceflag price back.',
+        400,
+      );
+    }
+    const body = raw as { confirm: true; reason?: unknown };
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim() !== ''
+        ? body.reason.trim().slice(0, 500)
+        : 'Store-wide undo requested by the merchant.';
 
     // Engage FIRST. If the revert below fails halfway, no writer can add to the
     // problem while a human works out what happened.
     const engaged = await adapter.updateShop(shop.id, {
       kill_switch_engaged_at: new Date().toISOString(),
-      kill_switch_reason: body.reason ?? 'Store-wide undo requested by the merchant.',
+      kill_switch_reason: reason,
     });
 
     const client = new AdminGraphqlClient(credentialsFromShop(engaged));
@@ -48,14 +65,35 @@ export async function POST(request: Request): Promise<NextResponse> {
     // Newest first is load-bearing for chained changes: 1210 -> 1100 -> 1000.
     // StoreAdapter.listRollouts guarantees this order, including timestamp ties.
     for (const rollout of await adapter.listRollouts(shop.id)) {
-      // A never-started draft cannot have changed Shopify. Scheduled rows are
-      // included so the kill switch also prevents a future first write.
-      if (rollout.status === 'draft' || rollout.status === 'cancelled') continue;
+      // Cancelled work is already inert. Drafts still need their lease taken:
+      // otherwise confirmation can race this scan and write after we report the
+      // store-wide stop complete.
+      if (rollout.status === 'cancelled') continue;
 
       try {
         const locked = await adapter.withRolloutLock(rollout.id, async () => {
           const fresh = await adapter.getRollout(rollout.id);
           if (fresh === null || fresh.shop_id !== shop.id) throw new Error('rollout disappeared while undoing');
+
+          if (fresh.status === 'draft') {
+            const stoppedAt = new Date().toISOString();
+            await adapter.updateRollout(fresh.id, {
+              status: 'cancelled',
+              ended_at: stoppedAt,
+              ended_reason: 'kill_switch',
+              paused_reason: null,
+            });
+            await adapter.appendRolloutEvent({
+              rollout_id: fresh.id,
+              shop_id: shop.id,
+              type: 'kill_switch',
+              actor: 'merchant',
+              message: 'Store-wide undo cancelled this draft before any Shopify price changed.',
+              data: { previous_status: 'draft', restored: 0 },
+              at: stoppedAt,
+            });
+            return;
+          }
 
           await adapter.updateRollout(fresh.id, {
             status: 'paused',

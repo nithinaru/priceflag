@@ -28,14 +28,12 @@ export type GuardrailDraft = {
   metric: GuardrailMetric;
   thresholdPct: number;
   consecutiveDays: number;
-  autoRollback: boolean;
 };
 
 export const DEFAULT_GUARDRAIL_DRAFT: GuardrailDraft = {
   metric: "units",
   thresholdPct: 30,
   consecutiveDays: 2,
-  autoRollback: true,
 };
 
 const METRIC_WORDS: Record<GuardrailMetric, string> = {
@@ -46,17 +44,14 @@ const METRIC_WORDS: Record<GuardrailMetric, string> = {
 
 export function guardrailSentence(draft: GuardrailDraft): string {
   const days = draft.consecutiveDays === 1 ? "1 day" : `${draft.consecutiveDays} days`;
-  const action = draft.autoRollback
-    ? "put every price back automatically"
-    : "pause the change and email me";
-  return `If daily ${METRIC_WORDS[draft.metric]} fall more than ${draft.thresholdPct}% below what we expect for ${days} in a row, ${action}.`;
+  return `If daily ${METRIC_WORDS[draft.metric]} fall more than ${draft.thresholdPct}% below what we expect for ${days} in a row, pause the change and email me.`;
 }
 
 /** The contract object, with the sentence exactly as it was on screen. */
 export function toGuardrails(draft: GuardrailDraft): Guardrails {
   return {
     contract_version: CONTRACT_VERSION,
-    auto_rollback: draft.autoRollback,
+    auto_rollback: false,
     rules: [
       {
         id: `${draft.metric}-${draft.thresholdPct}-${draft.consecutiveDays}d`,
@@ -65,7 +60,7 @@ export function toGuardrails(draft: GuardrailDraft): Guardrails {
         threshold_pct: draft.thresholdPct,
         consecutive_days: draft.consecutiveDays,
         scope: "rollout",
-        action: draft.autoRollback ? "rollback_all" : "pause",
+        action: "pause",
         min_expected_units: DEFAULT_MIN_EXPECTED_UNITS,
         sentence: guardrailSentence(draft),
       },
@@ -93,7 +88,7 @@ export function GuardrailBuilder({
       <CardHeader
         eyebrow="Decide this before anything goes live"
         title="When should we stop?"
-        description="Write the limit now, while you are calm about it. We check every day and act without asking."
+        description="Write the limit now, while you are calm about it. We check every day and pause for your decision when it is crossed."
       />
       <CardBody className="space-y-5">
         <p className="max-w-2xl text-md leading-relaxed text-ink">
@@ -132,17 +127,7 @@ export function GuardrailBuilder({
               label: days === 1 ? "1 day" : `${days} days`,
             }))}
           />{" "}
-          in a row,{" "}
-          <InlineSelect
-            label="what to do about it"
-            value={draft.autoRollback ? "revert" : "pause"}
-            onChange={(value) => onChange({ ...draft, autoRollback: value === "revert" })}
-            options={[
-              { value: "revert", label: "put every price back automatically" },
-              { value: "pause", label: "pause the change and email me" },
-            ]}
-          />
-          .
+          in a row, <strong className="font-medium">pause the change and email me</strong>.
         </p>
 
         <div className="rounded-lg border border-border bg-surface-muted px-4 py-3">
@@ -170,12 +155,10 @@ export function GuardrailBuilder({
           </p>
         </div>
 
-        {!draft.autoRollback ? (
-          <Notice tone="hold" title="Nothing will be undone for you">
-            We will stop the change moving forward and email you, but the prices already live stay
-            live until you put them back yourself.
-          </Notice>
-        ) : null}
+        <Notice tone="hold" title="Public beta: pause and ask">
+          We stop the rollout from advancing and alert you. Prices already live stay live until you
+          review the results and choose whether to continue or roll them back.
+        </Notice>
 
         {tooQuiet ? (
           <Notice tone="hold" title="These products sell too rarely for a daily limit to bite">

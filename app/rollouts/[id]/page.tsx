@@ -26,6 +26,8 @@ import {
 } from "@/components/ui";
 import { IconClock, IconInbox } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
+import { ConfirmRolloutButton } from "@/components/domain/confirm-rollout-button";
+import { PauseRolloutButton } from "@/components/domain/pause-rollout-button";
 import { OrdersChart } from "@/components/rollout/orders-chart";
 import { StageTimeline } from "@/components/domain/stage-timeline";
 import { ExpectedRangeMark, readingsDomainMax } from "@/components/domain/expected-range";
@@ -44,18 +46,26 @@ import {
 import { formatDateTime, formatDay, formatMoney, formatUnits } from "@/components/format";
 import { readingSentence, verdictForReading } from "@/lib/engine/readings";
 import { getDemoStore } from "@/components/demo/store";
-import { getJournalForRollout, getRolloutBundle, getRollouts } from "@/components/demo/rollouts";
+import { getJournalForRollout, getRolloutBundle } from "@/components/demo/rollouts";
+import { NotConnected } from "@/components/shell/not-connected";
+import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { getRealJournalForRollout, getRealRolloutBundle } from "@/app/lib/store-data";
+import { getMode } from "@/lib/config";
 
-type PageProps = { params: Promise<{ id: string }> };
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<PageSearchParams>;
+};
+
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
+  // Real mode stays generic: naming another shop's rollout in a tab title would
+  // be a cross-shop leak for the price of a guessed id.
+  if (getMode() !== "demo") return { title: "Price change" };
   const bundle = getRolloutBundle(id);
   return { title: bundle ? bundle.rollout.name : "Price change not found" };
-}
-
-export function generateStaticParams() {
-  return getRollouts().map((rollout) => ({ id: rollout.id }));
 }
 
 /**
@@ -70,15 +80,21 @@ export function generateStaticParams() {
  * A4 deepens this: the actual-vs-expected chart with its band drawn over time,
  * and the store-level kill switch.
  */
-export default async function RolloutPage({ params }: PageProps) {
+export default async function RolloutPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const bundle = getRolloutBundle(id);
+  const ctx = await resolveShopForPage(await searchParams);
+  if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
+
+  const demoMode = ctx.mode === "demo";
+  const bundle = demoMode ? getRolloutBundle(id) : await getRealRolloutBundle(ctx.shop!, id);
   if (!bundle) notFound();
 
   const { rollout, variants, readings, events, live, can, health, health_sentence } = bundle;
-  const { shop } = getDemoStore();
+  const currency = demoMode ? getDemoStore().shop.currency : ctx.shop!.currency;
   const meta = rolloutStatusMeta(rollout.status);
-  const journal = getJournalForRollout(rollout.id);
+  const journal = demoMode
+    ? getJournalForRollout(rollout.id)
+    : await getRealJournalForRollout(ctx.shop!, rollout.id);
   const domainMax = readingsDomainMax(readings);
   const belowDays = readings.filter(
     (reading) => !reading.band_floored && verdictForReading(reading) === "below",
@@ -118,6 +134,31 @@ export default async function RolloutPage({ params }: PageProps) {
                 rolloutName={rollout.name}
                 productCount={live.variants_live}
                 variant="primary"
+                demoMode={demoMode}
+              />
+            ) : null}
+            {can.pause ? (
+              <PauseRolloutButton
+                rolloutId={rollout.id}
+                rolloutName={rollout.name}
+                demoMode={demoMode}
+              />
+            ) : null}
+            {can.confirm ? (
+              <ConfirmRolloutButton
+                rolloutId={rollout.id}
+                rolloutName={rollout.name}
+                variants={included.map((variant) => ({
+                  variantGid: variant.variant_gid,
+                  title: variant.title,
+                  oldPriceCents: variant.baseline_price_cents,
+                  newPriceCents: variant.target_price_cents,
+                  cohortStage: variant.cohort_stage,
+                }))}
+                guardrails={rollout.guardrails.rules.map((rule) => rule.sentence)}
+                currency={currency}
+                scheduledAt={rollout.scheduled_start_at}
+                demoMode={demoMode}
               />
             ) : null}
           </>
@@ -125,17 +166,16 @@ export default async function RolloutPage({ params }: PageProps) {
       />
 
       {rollout.status === "paused" ? (
-        <Notice tone="hold" title="Paused, because a price was changed outside Priceflag">
-          {rollout.paused_reason} We stopped rather than blame this change for a difference we did
-          not cause. Nothing else will move until you either put the prices back or start again from
-          today&rsquo;s prices.
+        <Notice tone="hold" title="This rollout is paused for your decision">
+          {rollout.paused_reason ?? "Priceflag stopped the rollout."} Nothing else will move. Prices
+          already live stay in place until you review the results and choose a manual rollback or a
+          new plan.
         </Notice>
       ) : null}
 
       {rollout.status === "rolled_back" ? (
-        <Notice tone="breach" title="This change was undone automatically">
-          Orders came in below the range you set as acceptable for {countOf(guardrailDays, "day")} in
-          a row, which is the limit you wrote when you created it. Every price was put back.{" "}
+        <Notice tone="breach" title="This change was rolled back">
+          Every price was restored to its frozen baseline and verified against Shopify.{" "}
           <TextLink href="/journal">The journal</TextLink> has the exact prices and times.
         </Notice>
       ) : null}
@@ -151,8 +191,8 @@ export default async function RolloutPage({ params }: PageProps) {
           }
           description={
             live.variants_live > 0
-              ? `Everything selected is being set ${changeWords(rollout, shop.currency)}. Products not in the current step are still on their old price.`
-              : `If this runs, everything selected goes ${changeWords(rollout, shop.currency)}.`
+              ? `Everything selected is being set ${changeWords(rollout, currency)}. Products not in the current step are still on their old price.`
+              : `If this runs, everything selected goes ${changeWords(rollout, currency)}.`
           }
         />
         <CardBody>
@@ -213,7 +253,7 @@ export default async function RolloutPage({ params }: PageProps) {
           <Card>
             <CardHeader
               title="Orders, day by day"
-              description="Each day we compare the orders you actually got against the range we expected without a price change. The table under the chart has the same numbers."
+              description="Each day we compare actual orders with the range predicted for this price and rollout stage. That range includes the forecast price effect; the table below shows the same numbers."
             />
             {readings.length > 0 ? (
               <CardBody>
@@ -307,12 +347,12 @@ export default async function RolloutPage({ params }: PageProps) {
                         <CellNote>{variant.sku ?? "No SKU"}</CellNote>
                       </TD>
                       <TD numeric className="text-ink-muted">
-                        {formatMoney(variant.baseline_price_cents, { currency: shop.currency })}
+                        {formatMoney(variant.baseline_price_cents, { currency })}
                       </TD>
                       <TD numeric className="font-medium">
                         {variant.excluded
                           ? "—"
-                          : formatMoney(variant.target_price_cents, { currency: shop.currency })}
+                          : formatMoney(variant.target_price_cents, { currency })}
                       </TD>
                       <TD>
                         {variant.excluded ? (
@@ -348,7 +388,7 @@ export default async function RolloutPage({ params }: PageProps) {
             </CardFooter>
           </Card>
 
-          <SetupCard bundle={bundle} />
+          <SetupCard bundle={bundle} currency={currency} />
         </div>
 
         <div className="min-w-0 space-y-6">
@@ -431,9 +471,14 @@ export default async function RolloutPage({ params }: PageProps) {
   );
 }
 
-function SetupCard({ bundle }: { bundle: NonNullable<ReturnType<typeof getRolloutBundle>> }) {
+function SetupCard({
+  bundle,
+  currency,
+}: {
+  bundle: NonNullable<ReturnType<typeof getRolloutBundle>>;
+  currency: string;
+}) {
   const { rollout, variants } = bundle;
-  const { shop } = getDemoStore();
   const included = variants.filter((variant) => !variant.excluded).length;
 
   return (
@@ -441,7 +486,7 @@ function SetupCard({ bundle }: { bundle: NonNullable<ReturnType<typeof getRollou
       <CardHeader title="How this was set up" description="Fixed when you created it." />
       <CardBody>
         <DetailList>
-          <DetailRow label="Change">{changeWords(rollout, shop.currency)}</DetailRow>
+          <DetailRow label="Change">{changeWords(rollout, currency)}</DetailRow>
           <DetailRow label="Products">
             {countOf(included, "product")}
             {variants.length !== included ? ` (${variants.length - included} left out)` : ""}

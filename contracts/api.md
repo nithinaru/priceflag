@@ -45,6 +45,7 @@ Cross-cutting rules:
 | GET | `/api/auth` | Start Shopify OAuth (redirects) | B2 |
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
 | POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
+| POST | `/api/webhook-subscriptions` | Bearer-authenticated repair of required Shopify webhook subscriptions | ✅ beta |
 | GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | ✅ beta |
 | GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | ✅ beta |
 | PATCH | `/api/shop` | Update notification addresses | ✅ beta |

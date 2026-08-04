@@ -20,6 +20,16 @@ import { getRolloutBundle, type RolloutBundle } from "@/components/demo/rollouts
 export function buildDemoReport(rolloutId: string): RolloutReport | null {
   const bundle = getRolloutBundle(rolloutId);
   if (!bundle) return null;
+  return buildReportFromBundle(bundle);
+}
+
+/**
+ * The assembly itself, pure over a bundle. Real mode reuses this with bundles
+ * built from stored rows (`app/lib/store-data.ts`) — the readings are the
+ * evaluator's own, so the aggregation is identical in both modes by
+ * construction.
+ */
+export function buildReportFromBundle(bundle: RolloutBundle): RolloutReport | null {
   if (bundle.readings.length === 0) return null;
 
   const { rollout, readings, variants } = bundle;
@@ -97,6 +107,11 @@ export function buildDemoReport(rolloutId: string): RolloutReport | null {
 /** Whether a range was ever promised — what the report page branches on. */
 export function hadPredictedRange(rolloutId: string): boolean {
   return getRolloutBundle(rolloutId)?.rollout.forecast?.fitted != null;
+}
+
+/** The same question, for a bundle already in hand (real mode). */
+export function bundleHadPredictedRange(bundle: RolloutBundle): boolean {
+  return bundle.rollout.forecast?.fitted != null;
 }
 
 /**

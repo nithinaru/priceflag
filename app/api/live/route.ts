@@ -14,21 +14,27 @@ export async function GET(request: Request): Promise<NextResponse> {
     const adapter = getAdapter();
     const { shop } = await resolveAuthenticatedShop(request, adapter);
     const [rollouts, missingCosts] = await Promise.all([
-      adapter.listRollouts(shop.id, ['running', 'paused']),
+      // A completed rollout can still leave its final Priceflag price on the
+      // storefront. Keep it visible until every applied variant is reverted.
+      adapter.listRollouts(shop.id, ['running', 'paused', 'completed']),
       // We only need the exact count; asking for one row avoids both a large
       // payload and Supabase's response-row cap on stores with big catalogs.
       adapter.listProducts(shop.id, { only_repriceable: true, missing_cogs: true, limit: 1 }),
     ]);
     const views = await Promise.all(rollouts.map((rollout) => buildRolloutView(adapter, rollout)));
+    const liveVariantGids = new Set(
+      views.flatMap((view) =>
+        view.variants
+          .filter((variant) => variant.applied_at !== null && variant.reverted_at === null)
+          .map((variant) => variant.variant_gid),
+      ),
+    );
 
     return NextResponse.json(
       {
         anything_live: views.some((view) => view.live.variants_live > 0),
         kill_switch_engaged: shop.kill_switch_engaged_at !== null,
-        skus_holding_priceflag_price: views.reduce(
-          (total, view) => total + view.live.variants_live,
-          0,
-        ),
+        skus_holding_priceflag_price: liveVariantGids.size,
         rollouts: views.map((view) => {
           const latest = view.readings[view.readings.length - 1];
           return {

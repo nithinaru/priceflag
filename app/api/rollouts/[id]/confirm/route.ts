@@ -54,6 +54,25 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
         throw new MerchantApiError('rollout_not_found', 'That rollout was not found.', 404);
       }
 
+      // Shop-level stops can race this request after bearer authentication but
+      // before the rollout lease is acquired. Re-read under the lease and use
+      // this fresh row for every credential check and write below.
+      const currentShop = await adapter.getShop(shop.id);
+      if (currentShop === null || currentShop.uninstalled_at !== null) {
+        throw new MerchantApiError(
+          'shop_not_connected',
+          'Priceflag is no longer installed for this store. Reinstall and create a new rollout.',
+          409,
+        );
+      }
+      if (currentShop.kill_switch_engaged_at !== null) {
+        throw new MerchantApiError(
+          'kill_switch_engaged',
+          'Release the store-wide kill switch before confirming a price change.',
+          409,
+        );
+      }
+
       // Network retries after a committed confirmation are idempotent. A paused
       // result is returned honestly and is never restarted behind the merchant.
       if (rollout.status === 'scheduled' || rollout.status === 'running') {
@@ -85,14 +104,6 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
           422,
         );
       }
-      if (shop.kill_switch_engaged_at !== null) {
-        throw new MerchantApiError(
-          'kill_switch_engaged',
-          'Release the store-wide kill switch before confirming a price change.',
-          409,
-        );
-      }
-
       const requestedSchedule =
         input.scheduled_start_at === undefined ? rollout.scheduled_start_at : input.scheduled_start_at;
       const scheduleMs = typeof requestedSchedule === 'string' ? Date.parse(requestedSchedule) : null;
@@ -102,8 +113,8 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
       }
 
       if (scheduleMs !== null && scheduleMs > now.getTime()) {
-        const client = new AdminGraphqlClient(credentialsFromShop(shop));
-        const baseline = await verifyFrozenBaselines({ adapter, client, shop }, rollout);
+        const client = new AdminGraphqlClient(credentialsFromShop(currentShop));
+        const baseline = await verifyFrozenBaselines({ adapter, client, shop: currentShop }, rollout);
         if (baseline.mismatched.length > 0) {
           throw new MerchantApiError(
             'baseline_drift',
@@ -130,7 +141,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
         return { status: 200, body: { ok: true, rollout: scheduled, applied: null, unverified: [] } };
       }
 
-      const applied = await startRollout(adapter, shop, rollout, { now, skipLock: true });
+      const applied = await startRollout(adapter, currentShop, rollout, { now, skipLock: true });
       const updated = await adapter.getRollout(rollout.id);
       if (updated === null) throw new Error(`rollout ${rollout.id} disappeared after start`);
       const ok = updated.status === 'running' && applied.fully_applied;
