@@ -221,6 +221,24 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   request, rendering or framework-overlay failures. Automatic rollback remains
   disabled. External staging, real Shopify, Partner, preview and production-log
   gates remain closed and no production promotion has occurred.
+- `2026-08-04T08:57:37Z` — external-gate audit on `codex/prod-integration`
+  confirmed draft PR #3 is clean and all credential-free GitHub checks pass;
+  Supabase Preview is skipped because preview branches are disabled. Static
+  migration review found that the server-only rollout lease RPCs revoked their
+  default execute privilege without granting it back to `service_role`.
+  Migration `20260804090000_harden_rollout_lock_rpc.sql` now restores only the
+  service-role grant and fixes both functions to an empty search path. This must
+  still be applied and exercised on Priceflag staging before merge. The
+  authenticated Supabase connector available on this machine cannot access the
+  Priceflag project, and no database was touched. GitHub currently has
+  `CRON_SECRET` but not `SUPABASE_URL`, `SUPABASE_ML_READONLY_KEY`, or
+  `ML_INGEST_SECRET`; the latest completed nightly log explicitly used golden
+  mode, so real-data ML remains unverified. The exact Vercel preview is Ready
+  but SSO-protected; this machine is not authorized for the owner team, so the
+  preview browser and runtime-log gates remain open. The production health
+  endpoint reports real mode with Supabase reachable, while unauthenticated and
+  forged merchant-route requests both return 401. Invite access remains closed;
+  no merge, database change, evaluator run, price write, or promotion occurred.
 
 ## Current launch checklist
 
