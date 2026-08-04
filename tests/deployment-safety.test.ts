@@ -244,14 +244,17 @@ const mlRoleHardening = readFileSync(
   resolve(process.cwd(), 'supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql'),
   'utf8',
 );
-assert.match(mlRoleHardening, /alter role priceflag_ml_readonly[\s\S]*nosuperuser[\s\S]*noinherit[\s\S]*nobypassrls/);
+assert.match(mlRoleHardening, /migrator_is_superuser[\s\S]*reader\.rolsuper[\s\S]*reader\.rolbypassrls/);
+assert.match(mlRoleHardening, /if migrator_is_superuser then[\s\S]*nosuperuser[\s\S]*nobypassrls/);
+assert.match(mlRoleHardening, /else[\s\S]*raise exception[\s\S]*alter role priceflag_ml_readonly noinherit connection limit 5/);
+assert.match(mlRoleHardening, /errcode = '42501'/);
 assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*revoke %I from priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /revoke all privileges on all tables in schema public from priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /attribute\.attacl[\s\S]*grantee\.rolname = 'priceflag_ml_readonly'/);
 assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
 assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
 assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
-passed += 7;
+passed += 10;
 
 async function verifyAttestation(): Promise<void> {
   const sanitizerUrl = pathToFileURL(

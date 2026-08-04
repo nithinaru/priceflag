@@ -6,14 +6,52 @@
 -- must not trust the role name alone, so normalize all role attributes and
 -- direct object grants before restoring the documented read surface.
 
-alter role priceflag_ml_readonly
-  nosuperuser
-  nocreatedb
-  nocreaterole
-  noinherit
-  noreplication
-  nobypassrls
-  connection limit 5;
+-- Supabase's migration role deliberately is not a cluster superuser. PostgreSQL
+-- does not let a non-superuser mention NOSUPERUSER at all, even when the target
+-- role is already non-superuser. Normalize cluster-level attributes when the
+-- migrator can do so; otherwise prove that every privileged attribute is
+-- already absent and fail closed if an owner must repair the role out of band.
+do $$
+declare
+  migrator_is_superuser boolean;
+  reader record;
+begin
+  select rolsuper
+    into strict migrator_is_superuser
+    from pg_roles
+   where rolname = current_user;
+
+  select rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
+    into strict reader
+    from pg_roles
+   where rolname = 'priceflag_ml_readonly';
+
+  if migrator_is_superuser then
+    alter role priceflag_ml_readonly
+      nosuperuser
+      nocreatedb
+      nocreaterole
+      noinherit
+      noreplication
+      nobypassrls
+      connection limit 5;
+  else
+    if reader.rolsuper
+       or reader.rolcreatedb
+       or reader.rolcreaterole
+       or reader.rolreplication
+       or reader.rolbypassrls then
+      raise exception using
+        errcode = '42501',
+        message = 'priceflag_ml_readonly has privileged role attributes; an authorized database administrator must remove them before this migration can continue';
+    end if;
+
+    -- These attributes do not confer cluster-level authority and can be
+    -- tightened by the CREATEROLE migration identity that created the reader.
+    alter role priceflag_ml_readonly noinherit connection limit 5;
+  end if;
+end
+$$;
 
 alter role priceflag_ml_readonly set default_transaction_read_only = on;
 alter role priceflag_ml_readonly set statement_timeout = '60s';
