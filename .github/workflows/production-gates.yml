@@ -5,8 +5,8 @@ on:
   workflow_dispatch:
 
 # Tests only: this workflow receives no credentials and never deploys or calls
-# production. The staging Supabase suite is a separate environment-required
-# launch gate documented in README.md.
+# production. Its database job boots an isolated Supabase stack on the GitHub
+# runner. Hosted staging and its advisors remain separate launch gates.
 permissions:
   contents: read
 
@@ -83,6 +83,72 @@ jobs:
 
       - name: Reject high-severity dependency vulnerabilities
         run: npm audit --audit-level=high
+
+  database-safety:
+    name: Local Supabase migration and adapter safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      REQUIRE_SUPABASE_TESTS: "true"
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies from a clean state
+        run: npm ci
+
+      - name: Start an isolated Supabase stack and apply every migration
+        run: |
+          set -euo pipefail
+
+          # Supabase prints local JWTs when it starts. Keep that output out of
+          # the Actions log even though this runner is disposable.
+          if ! npx --no-install supabase start \
+            --exclude gotrue,realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor \
+            >"$RUNNER_TEMP/supabase-start.log" 2>&1; then
+            echo "::error::The isolated Supabase stack or migration chain failed to start."
+            exit 1
+          fi
+
+          npx --no-install supabase status -o env >"$RUNNER_TEMP/supabase.env"
+          set -a
+          source "$RUNNER_TEMP/supabase.env"
+          set +a
+
+          : "${API_URL:?Supabase status did not provide API_URL}"
+          : "${SERVICE_ROLE_KEY:?Supabase status did not provide SERVICE_ROLE_KEY}"
+          : "${DB_URL:?Supabase status did not provide DB_URL}"
+
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "SUPABASE_DB_URL=$DB_URL"
+          } >>"$GITHUB_ENV"
+
+          echo "Isolated Supabase is ready and the full migration chain applied."
+
+      - name: Lint the migrated database
+        run: npx --no-install supabase db lint --local --level warning --fail-on error
+
+      - name: Run the real Supabase adapter and privilege-boundary smoke suite
+        run: npm run smoke
+
+      - name: Run the adversarial integration suite against real Postgres
+        run: npx --no-install tsx tests/integration/run.ts
+
+      - name: Stop the isolated Supabase stack
+        if: always()
+        run: npx --no-install supabase stop >/dev/null 2>&1 || true
 
   ml-safety:
     name: Python 3.12 locked ML safety

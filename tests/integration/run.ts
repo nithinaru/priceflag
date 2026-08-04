@@ -25,6 +25,7 @@ import { runFalseRollbackSuite } from './false-rollback.test';
 import { runRollbackHonestySuite } from './rollback-honesty.test';
 
 const demoOnly = process.argv.includes('--demo');
+const requireSupabase = process.env.REQUIRE_SUPABASE_TESTS === 'true';
 
 async function main(): Promise<void> {
   process.stdout.write('\x1b[1mPriceflag — Lane D integration suite\x1b[0m\n');
@@ -54,13 +55,25 @@ async function main(): Promise<void> {
     skip('supabase invariants', '--demo passed');
   } else if (!hasSupabaseConfig()) {
     section('[SupabaseAdapter]');
-    skip('supabase invariants', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    if (requireSupabase) {
+      await test('required Supabase invariants are configured', async () => {
+        throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set');
+      });
+    } else {
+      skip('supabase invariants', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    }
   } else {
     const supabase = new SupabaseAdapter();
     const reachable = await supabase.ping().catch(() => ({ ok: false }) as { ok: boolean });
     if (!reachable.ok) {
       section('[SupabaseAdapter]');
-      skip('supabase invariants', 'database unreachable or not migrated');
+      if (requireSupabase) {
+        await test('required Supabase invariants can reach the migrated database', async () => {
+          throw new Error('Supabase database is unreachable or not migrated');
+        });
+      } else {
+        skip('supabase invariants', 'database unreachable or not migrated');
+      }
     } else {
       const shop: Shop = await supabase.upsertShop({
         shop_domain: 'lane-d-test.myshopify.com',
@@ -99,6 +112,7 @@ async function main(): Promise<void> {
     try {
       await runJournalImmutabilitySuite();
     } catch (cause) {
+      if (requireSupabase) throw cause;
       section('7. append-only journal (real Postgres)');
       skip('journal immutability', `direct Postgres unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
     }

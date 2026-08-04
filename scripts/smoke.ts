@@ -3458,9 +3458,16 @@ async function testAdapters(): Promise<void> {
   });
 
   // -- Supabase ------------------------------------------------------------
+  const requireSupabase = process.env.REQUIRE_SUPABASE_TESTS === 'true';
   if (!hasSupabaseConfig()) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    if (requireSupabase) {
+      await test('the required Supabase adapter suite is configured', async () => {
+        throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set');
+      });
+    } else {
+      skip('the full adapter suite', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    }
     return;
   }
 
@@ -3468,7 +3475,13 @@ async function testAdapters(): Promise<void> {
   const ping = await supabase.ping();
   if (!ping.ok) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', `unreachable: ${ping.detail ?? 'unknown'}`);
+    if (requireSupabase) {
+      await test('the required Supabase database is reachable', async () => {
+        throw new Error(`Supabase is unreachable: ${ping.detail ?? 'unknown'}`);
+      });
+    } else {
+      skip('the full adapter suite', `unreachable: ${ping.detail ?? 'unknown'}`);
+    }
     return;
   }
 
@@ -3489,7 +3502,13 @@ async function testAdapters(): Promise<void> {
     shopId = shop.id;
   } catch (cause) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', `could not seed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    if (requireSupabase) {
+      await test('the required Supabase database accepts the test fixture', async () => {
+        throw cause;
+      });
+    } else {
+      skip('the full adapter suite', `could not seed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
     return;
   }
 
@@ -3590,6 +3609,141 @@ async function testAdapters(): Promise<void> {
     assert(typeof row?.dow === 'number' && row.dow >= 1 && row.dow <= 7, 'dow is an ISO weekday');
     assert(row?.list_price_cents !== null, 'the elasticity regressor is populated');
   });
+
+  section('postgres privilege boundary');
+  const postgresUrl = process.env.SUPABASE_DB_URL;
+  if (postgresUrl === undefined || postgresUrl === '') {
+    if (requireSupabase) {
+      await test('the required direct-Postgres security checks are configured', async () => {
+        throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_DB_URL is not set');
+      });
+    } else {
+      skip('direct-Postgres security checks', 'SUPABASE_DB_URL not set');
+    }
+    return;
+  }
+
+  const { Client } = await import('pg');
+  const postgres = new Client({ connectionString: postgresUrl });
+  try {
+    await postgres.connect();
+
+    await test('every Priceflag table has row-level security enabled', async () => {
+      const { rows } = await postgres.query<{ relname: string; relrowsecurity: boolean }>(
+        `select c.relname, c.relrowsecurity
+           from pg_class c
+           join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public'
+            and c.relkind in ('r', 'p')
+          order by c.relname`,
+      );
+      assert(rows.length >= 15, `expected the Priceflag schema, found only ${rows.length} public tables`);
+      const exposed = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
+      assertEqual(exposed, [], `tables without RLS: ${exposed.join(', ')}`);
+    });
+
+    await test('browser database roles have no privilege on Priceflag tables or views', async () => {
+      const { rows } = await postgres.query<{ role_name: string; relname: string; privilege_name: string }>(
+        `with roles(role_name) as (
+           values ('anon'::text), ('authenticated'::text)
+         ), objects(relname) as (
+           select c.relname
+             from pg_class c
+             join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public'
+              and c.relkind in ('r', 'p', 'v', 'm')
+         ), privileges(privilege_name) as (
+           values ('SELECT'::text), ('INSERT'::text), ('UPDATE'::text),
+                  ('DELETE'::text), ('TRUNCATE'::text), ('REFERENCES'::text),
+                  ('TRIGGER'::text)
+         )
+         select role_name, relname, privilege_name
+           from roles
+           cross join objects
+           cross join privileges
+          where has_table_privilege(
+            role_name,
+            format('%I.%I', 'public', relname),
+            privilege_name
+          )
+          order by role_name, relname, privilege_name`,
+      );
+      assertEqual(
+        rows,
+        [],
+        `browser roles unexpectedly have database privileges: ${rows
+          .map((row) => `${row.role_name}:${row.relname}:${row.privilege_name}`)
+          .join(', ')}`,
+      );
+    });
+
+    await test('server-only RPCs are executable only by the service role', async () => {
+      const protectedFunctions = [
+        'pf_acquire_rollout_lock',
+        'pf_release_rollout_lock',
+        'pf_create_rollout_draft',
+        'pf_ingest_model_run',
+        'pf_ingest_order_webhook',
+        'pf_purge_shop_for_compliance',
+      ];
+      const { rows } = await postgres.query<{
+        proname: string;
+        prosecdef: boolean;
+        settings: string;
+        service_execute: boolean;
+        anon_execute: boolean;
+        authenticated_execute: boolean;
+        ml_execute: boolean;
+      }>(
+        `select p.proname,
+                p.prosecdef,
+                coalesce(array_to_string(p.proconfig, ','), '') as settings,
+                has_function_privilege('service_role', p.oid, 'EXECUTE') as service_execute,
+                has_function_privilege('anon', p.oid, 'EXECUTE') as anon_execute,
+                has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+                has_function_privilege('priceflag_ml_readonly', p.oid, 'EXECUTE') as ml_execute
+           from pg_proc p
+          where p.pronamespace = 'public'::regnamespace
+            and p.proname = any($1::text[])
+          order by p.proname`,
+        [protectedFunctions],
+      );
+      assertEqual(rows.length, protectedFunctions.length, 'every protected RPC exists exactly once');
+      for (const row of rows) {
+        assert(row.service_execute, `${row.proname} must be executable by service_role`);
+        assert(!row.anon_execute, `${row.proname} must not be executable by anon`);
+        assert(!row.authenticated_execute, `${row.proname} must not be executable by authenticated`);
+        assert(!row.ml_execute, `${row.proname} must not be executable by the ML reader`);
+        if (row.prosecdef) {
+          assert(
+            row.settings.includes('search_path=""'),
+            `${row.proname} is SECURITY DEFINER and must use an empty search_path; got ${row.settings}`,
+          );
+        }
+      }
+    });
+
+    await test('the ML reader cannot select the encrypted Shopify token', async () => {
+      const { rows } = await postgres.query<{
+        token_readable: boolean;
+        domain_readable: boolean;
+      }>(
+        `select
+           has_column_privilege(
+             'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+           ) as token_readable,
+           has_column_privilege(
+             'priceflag_ml_readonly', 'public.shops', 'shop_domain', 'SELECT'
+           ) as domain_readable`,
+      );
+      const permission = rows[0];
+      if (permission === undefined) throw new Error('Postgres did not return the ML column privileges');
+      assert(!permission.token_readable, 'the ML role can read shops.access_token_enc');
+      assert(permission.domain_readable, 'the ML role lost its documented non-sensitive shop-domain access');
+    });
+  } finally {
+    await postgres.end();
+  }
 }
 
 // ---------------------------------------------------------------------------

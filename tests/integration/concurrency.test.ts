@@ -288,6 +288,9 @@ export async function runJournalImmutabilitySuite(): Promise<void> {
 
   const url = process.env.SUPABASE_DB_URL;
   if (url === undefined || url === '') {
+    if (process.env.REQUIRE_SUPABASE_TESTS === 'true') {
+      throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_DB_URL is not set');
+    }
     skip('journal immutability', 'SUPABASE_DB_URL not set');
     return;
   }
