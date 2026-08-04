@@ -83,6 +83,31 @@ revoke all privileges on all sequences in schema public from priceflag_ml_readon
 revoke all privileges on all routines in schema public from priceflag_ml_readonly;
 revoke all privileges on schema public from priceflag_ml_readonly;
 
+-- Normalize independently recorded column grants as well. The information
+-- schema exposes only valid column privilege types and avoids depending on the
+-- elevated ACL-expansion catalog helper that hosted Supabase withholds.
+do $$
+declare
+  column_grant record;
+begin
+  for column_grant in
+    select table_schema, table_name, column_name, privilege_type
+      from information_schema.column_privileges
+     where grantee = 'priceflag_ml_readonly'
+       and table_schema = 'public'
+       and privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+  loop
+    execute format(
+      'revoke %s (%I) on table %I.%I from priceflag_ml_readonly',
+      column_grant.privilege_type,
+      column_grant.column_name,
+      column_grant.table_schema,
+      column_grant.table_name
+    );
+  end loop;
+end
+$$;
+
 -- A database-level CREATE grant would let this role manufacture a new schema
 -- even after every existing schema has been locked down. Remove a direct grant
 -- on the application database, then inventory every connectable database. An
@@ -102,7 +127,6 @@ begin
     from pg_database database
     join pg_roles reader on reader.rolname = 'priceflag_ml_readonly'
    where database.datallowconn
-     and not database.datistemplate
      and (
        database.datdba = reader.oid
        or has_database_privilege(reader.oid, database.oid, 'CREATE')
@@ -153,6 +177,62 @@ grant select on public.rollout_reports to priceflag_ml_readonly;
 -- security-invoker. No other routine is part of the ML credential surface.
 grant execute on function public.pf_shop_day(timestamptz, text)
   to priceflag_ml_readonly;
+
+-- Prove the effective column surface after grants are restored. This catches
+-- PUBLIC or differently-granted ACLs that the migration identity could see but
+-- could not revoke, including write privileges scoped to individual columns.
+do $$
+declare
+  unexpected_column_privileges integer;
+begin
+  select count(*)::integer
+    into strict unexpected_column_privileges
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    join pg_attribute attribute on attribute.attrelid = relation.oid
+   where namespace.nspname <> 'information_schema'
+     and namespace.nspname !~ '^pg_'
+     and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+     and attribute.attnum > 0
+     and not attribute.attisdropped
+     and (
+       has_column_privilege(
+         'priceflag_ml_readonly', relation.oid, attribute.attnum,
+         'INSERT,UPDATE,REFERENCES'
+       )
+       or (
+         has_column_privilege(
+           'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
+         )
+         and not (
+           namespace.nspname = 'public'
+           and (
+             relation.relname = any(array[
+               'ml_product_days', 'ml_products', 'ml_price_history',
+               'ml_rollout_windows', 'order_days', 'products',
+               'journal_entries', 'rollouts', 'rollout_variants',
+               'elasticity_fits', 'expected_bands', 'model_runs',
+               'rollout_reports'
+             ])
+             or (
+               relation.relname = 'shops'
+               and attribute.attname = any(array[
+                 'id', 'shop_domain', 'name', 'currency',
+                 'timezone', 'mode', 'created_at'
+               ])
+             )
+           )
+         )
+       )
+     );
+
+  if unexpected_column_privileges <> 0 then
+    raise exception using
+      errcode = '42501',
+      message = 'priceflag_ml_readonly retains column privileges outside the approved read surface';
+  end if;
+end
+$$;
 
 comment on role priceflag_ml_readonly is
   'Lane C LOGIN credential. NOINHERIT/non-superuser; SELECT only on the attested ML read surface; no token-column access.';

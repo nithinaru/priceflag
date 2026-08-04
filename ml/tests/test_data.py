@@ -279,7 +279,7 @@ def test_source_attestation_requires_exact_role_project_environment_and_sentinel
         "writable_relations": 0,
         "accessible_sequences": 0,
         "executable_security_definers": 0,
-        "unexpected_read_columns": 0,
+        "unexpected_column_privileges": 0,
     }]
     source, seen = _mock_source(rows)
     assert source.attest(
@@ -328,7 +328,7 @@ def test_source_attestation_requires_exact_role_project_environment_and_sentinel
         "writable_relations",
         "accessible_sequences",
         "executable_security_definers",
-        "unexpected_read_columns",
+        "unexpected_column_privileges",
     ):
         bad = dict(rows[0])
         bad[field] = 1

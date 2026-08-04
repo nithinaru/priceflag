@@ -4067,6 +4067,56 @@ async function testAdapters(): Promise<void> {
       }
     });
 
+    await test('the ML privilege normalizer removes independently granted forbidden columns', async () => {
+      const migration = readFileSync(
+        resolve(
+          process.cwd(),
+          'supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql',
+        ),
+        'utf8',
+      );
+      await postgres.query('begin');
+      try {
+        await postgres.query(
+          'grant select (access_token_enc), update (name) on public.shops to priceflag_ml_readonly',
+        );
+        const poisoned = await postgres.query<{
+          token_readable: boolean;
+          name_writable: boolean;
+        }>(`select
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+              ) as token_readable,
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'name', 'UPDATE'
+              ) as name_writable`);
+        assert(poisoned.rows[0]?.token_readable, 'the regression setup did not grant forbidden token access');
+        assert(poisoned.rows[0]?.name_writable, 'the regression setup did not grant a forbidden column write');
+
+        await postgres.query(migration);
+
+        const normalized = await postgres.query<{
+          token_readable: boolean;
+          name_writable: boolean;
+          domain_readable: boolean;
+        }>(`select
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+              ) as token_readable,
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'name', 'UPDATE'
+              ) as name_writable,
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'shop_domain', 'SELECT'
+              ) as domain_readable`);
+        assert(!normalized.rows[0]?.token_readable, 'normalization retained forbidden token access');
+        assert(!normalized.rows[0]?.name_writable, 'normalization retained a forbidden column write');
+        assert(normalized.rows[0]?.domain_readable, 'normalization lost the approved shop-domain read');
+      } finally {
+        await postgres.query('rollback');
+      }
+    });
+
     await test('the ML reader cannot select the encrypted Shopify token', async () => {
       const { rows } = await postgres.query<{
         token_readable: boolean;
@@ -4102,7 +4152,7 @@ async function testAdapters(): Promise<void> {
         writable_relations: number;
         accessible_sequences: number;
         executable_security_definers: number;
-        unexpected_read_columns: number;
+        unexpected_column_privileges: number;
       }>(
         `select role.rolsuper as is_superuser,
                 role.rolcreatedb as can_create_database,
@@ -4125,9 +4175,8 @@ async function testAdapters(): Promise<void> {
                       'priceflag_ml_readonly', namespace.oid, 'CREATE'
                     )) as creatable_schemas,
                 (select count(*)::int
-                   from pg_database database
+                  from pg_database database
                   where database.datallowconn
-                    and not database.datistemplate
                     and (
                       database.datdba = role.oid
                       or has_database_privilege(
@@ -4171,28 +4220,36 @@ async function testAdapters(): Promise<void> {
                     and relation.relkind in ('r', 'p', 'v', 'm', 'f')
                     and attribute.attnum > 0
                     and not attribute.attisdropped
-                    and has_column_privilege(
-                      'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
-                    )
-                    and not (
-                      namespace.nspname = 'public'
-                      and (
-                        relation.relname = any(array[
-                          'ml_product_days', 'ml_products', 'ml_price_history',
-                          'ml_rollout_windows', 'order_days', 'products',
-                          'journal_entries', 'rollouts', 'rollout_variants',
-                          'elasticity_fits', 'expected_bands', 'model_runs',
-                          'rollout_reports'
-                        ])
-                        or (
-                          relation.relname = 'shops'
-                          and attribute.attname = any(array[
-                            'id', 'shop_domain', 'name', 'currency',
-                            'timezone', 'mode', 'created_at'
-                          ])
+                    and (
+                      has_column_privilege(
+                        'priceflag_ml_readonly', relation.oid, attribute.attnum,
+                        'INSERT,UPDATE,REFERENCES'
+                      )
+                      or (
+                        has_column_privilege(
+                          'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
+                        )
+                        and not (
+                          namespace.nspname = 'public'
+                          and (
+                            relation.relname = any(array[
+                              'ml_product_days', 'ml_products', 'ml_price_history',
+                              'ml_rollout_windows', 'order_days', 'products',
+                              'journal_entries', 'rollouts', 'rollout_variants',
+                              'elasticity_fits', 'expected_bands', 'model_runs',
+                              'rollout_reports'
+                            ])
+                            or (
+                              relation.relname = 'shops'
+                              and attribute.attname = any(array[
+                                'id', 'shop_domain', 'name', 'currency',
+                                'timezone', 'mode', 'created_at'
+                              ])
+                            )
+                          )
                         )
                       )
-                    )) as unexpected_read_columns
+                    )) as unexpected_column_privileges
            from pg_roles role
           where role.rolname = 'priceflag_ml_readonly'`,
       );
@@ -4212,7 +4269,7 @@ async function testAdapters(): Promise<void> {
       assertEqual(authority.writable_relations, 0, 'ML-writable non-system relations');
       assertEqual(authority.accessible_sequences, 0, 'ML-accessible non-system sequences');
       assertEqual(authority.executable_security_definers, 0, 'ML-executable SECURITY DEFINER routines');
-      assertEqual(authority.unexpected_read_columns, 0, 'ML-readable columns outside the approved surface');
+      assertEqual(authority.unexpected_column_privileges, 0, 'ML column privileges outside the approved surface');
     });
   } finally {
     await postgres.end();

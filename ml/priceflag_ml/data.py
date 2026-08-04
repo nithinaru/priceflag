@@ -225,9 +225,8 @@ class SupabaseSource:
                          current_user, namespace.oid, 'CREATE'
                        )) as creatable_schemas,
                    (select count(*)::int
-                      from pg_database database
+                     from pg_database database
                      where database.datallowconn
-                       and not database.datistemplate
                        and (
                          database.datdba = role.oid
                          or has_database_privilege(
@@ -275,28 +274,36 @@ class SupabaseSource:
                        and relation.relkind in ('r', 'p', 'v', 'm', 'f')
                        and attribute.attnum > 0
                        and not attribute.attisdropped
-                       and has_column_privilege(
-                         current_user, relation.oid, attribute.attnum, 'SELECT'
-                       )
-                       and not (
-                         namespace.nspname = 'public'
-                         and (
-                           relation.relname = any(array[
-                             'ml_product_days', 'ml_products', 'ml_price_history',
-                             'ml_rollout_windows', 'order_days', 'products',
-                             'journal_entries', 'rollouts', 'rollout_variants',
-                             'elasticity_fits', 'expected_bands', 'model_runs',
-                             'rollout_reports'
-                           ])
-                           or (
-                             relation.relname = 'shops'
-                             and attribute.attname = any(array[
-                               'id', 'shop_domain', 'name', 'currency',
-                               'timezone', 'mode', 'created_at'
-                             ])
+                       and (
+                         has_column_privilege(
+                           current_user, relation.oid, attribute.attnum,
+                           'INSERT,UPDATE,REFERENCES'
+                         )
+                         or (
+                           has_column_privilege(
+                             current_user, relation.oid, attribute.attnum, 'SELECT'
+                           )
+                           and not (
+                             namespace.nspname = 'public'
+                             and (
+                               relation.relname = any(array[
+                                 'ml_product_days', 'ml_products', 'ml_price_history',
+                                 'ml_rollout_windows', 'order_days', 'products',
+                                 'journal_entries', 'rollouts', 'rollout_variants',
+                                 'elasticity_fits', 'expected_bands', 'model_runs',
+                                 'rollout_reports'
+                               ])
+                               or (
+                                 relation.relname = 'shops'
+                                 and attribute.attname = any(array[
+                                   'id', 'shop_domain', 'name', 'currency',
+                                   'timezone', 'mode', 'created_at'
+                                 ])
+                               )
+                             )
                            )
                          )
-                       )) as unexpected_read_columns
+                       )) as unexpected_column_privileges
               from pg_roles role
              where role.rolname = current_user
             """
@@ -335,7 +342,7 @@ class SupabaseSource:
                 "writable_relations",
                 "accessible_sequences",
                 "executable_security_definers",
-                "unexpected_read_columns",
+                "unexpected_column_privileges",
             )
         ):
             raise RuntimeError("ML database role has privileges outside the approved read surface")
