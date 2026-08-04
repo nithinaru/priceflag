@@ -336,9 +336,12 @@ async function verifyAttestation(): Promise<void> {
   const privilegeDiagnostic = (await import(privilegeDiagnosticUrl)) as {
     buildDiagnosticMigration: (source: string) => string;
     formatPrivilegeDiagnostics: (rows: Array<Record<string, unknown>>) => string;
+    formatNormalizerFailure: (cause: unknown) => string;
   };
   const diagnosticMigration = privilegeDiagnostic.buildDiagnosticMigration(mlRoleHardening);
   assert.match(diagnosticMigration, /if false and coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
+  assert.doesNotMatch(diagnosticMigration, /select priceflag_internal\.pf_normalize_extension_privileges\(\);/);
+  assert.match(diagnosticMigration, /diagnostic copy invokes the normalizer after startup/);
   assert.match(mlRoleHardening, /if coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
   assert.throws(() => privilegeDiagnostic.buildDiagnosticMigration('select 1;'), /exactly one/);
   const privilegeDescription = privilegeDiagnostic.formatPrivilegeDiagnostics([{
@@ -354,6 +357,13 @@ async function verifyAttestation(): Promise<void> {
     privilegeDescription,
     'Unexpected ML privilege-bearing relations (1, maximum 50 shown):\npublic.example (2 columns) [SELECT,UPDATE]',
   );
+  const normalizerFailure = privilegeDiagnostic.formatNormalizerFailure({
+    code: '42501',
+    message: 'permission denied token=very-secret-token postgresql://postgres:database-password@127.0.0.1/db',
+  });
+  assert.match(normalizerFailure, /\[42501\].*permission denied/);
+  assert.match(normalizerFailure, /postgresql:\/\/\[REDACTED\]@127\.0\.0\.1/);
+  assert.doesNotMatch(normalizerFailure, /very-secret-token|database-password/);
 
   const productionWorkflow = readFileSync(
     resolve(process.cwd(), '.github/workflows/production-gates.yml'),
@@ -372,7 +382,7 @@ async function verifyAttestation(): Promise<void> {
   );
   assert.match(productionWorkflow, /exit 1/);
   assert.doesNotMatch(productionWorkflow, /cat \"\$RUNNER_TEMP\/supabase-start\.log\"/);
-  passed += 15;
+  passed += 21;
 
   const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
   const guard = (await import(guardUrl)) as {

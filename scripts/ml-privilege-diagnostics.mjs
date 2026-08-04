@@ -5,13 +5,20 @@ import pg from 'pg';
 
 const ASSERTION = 'if coalesce(cardinality(unexpected_column_privileges), 0) <> 0 then';
 const DIAGNOSTIC_ASSERTION = 'if false and coalesce(cardinality(unexpected_column_privileges), 0) <> 0 then';
+const NORMALIZER_CALL = 'select priceflag_internal.pf_normalize_extension_privileges();';
+const DIAGNOSTIC_NORMALIZER_CALL = '-- diagnostic copy invokes the normalizer after startup';
 
 export function buildDiagnosticMigration(source) {
-  const parts = String(source).split(ASSERTION);
-  if (parts.length !== 2) {
+  const assertionParts = String(source).split(ASSERTION);
+  if (assertionParts.length !== 2) {
     throw new Error('Expected exactly one ML privilege post-assertion');
   }
-  return `${parts[0]}${DIAGNOSTIC_ASSERTION}${parts[1]}`;
+  const withoutAssertion = `${assertionParts[0]}${DIAGNOSTIC_ASSERTION}${assertionParts[1]}`;
+  const normalizerParts = withoutAssertion.split(NORMALIZER_CALL);
+  if (normalizerParts.length !== 2) {
+    throw new Error('Expected exactly one extension privilege normalizer call');
+  }
+  return `${normalizerParts[0]}${DIAGNOSTIC_NORMALIZER_CALL}${normalizerParts[1]}`;
 }
 
 export function formatPrivilegeDiagnostics(rows) {
@@ -26,6 +33,26 @@ export function formatPrivilegeDiagnostics(rows) {
     return `${row.schema_name}.${row.relation_name} (${row.column_count} columns) [${privileges.join(',')}]`;
   });
   return `Unexpected ML privilege-bearing relations (${rows.length}, maximum 50 shown):\n${descriptions.join('\n')}`;
+}
+
+function sanitizeDiagnosticText(value) {
+  return String(value ?? '')
+    .replace(/\b(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, '$1[REDACTED]@')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED_JWT]')
+    .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/gi, '[REDACTED_SUPABASE_KEY]')
+    .replace(/\b(?:password|token|api[_ -]?key|secret)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi, '[REDACTED_SECRET]')
+    .replace(/\b[A-Za-z0-9_+/=-]{80,}\b/g, '[REDACTED_TOKEN]')
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 600);
+}
+
+export function formatNormalizerFailure(cause) {
+  const record = cause && typeof cause === 'object' ? cause : {};
+  const rawCode = typeof record.code === 'string' ? record.code : '';
+  const code = /^[0-9A-Z]{5}$/.test(rawCode) ? ` [${rawCode}]` : '';
+  const message = sanitizeDiagnosticText(record.message || cause)
+    || 'Postgres rejected the normalizer without a message.';
+  return `Extension privilege normalizer failed${code}: ${message}`;
 }
 
 const UNEXPECTED_COLUMN_PRIVILEGES = `
@@ -97,6 +124,12 @@ async function inspect() {
   });
   try {
     await client.connect();
+    try {
+      await client.query(NORMALIZER_CALL);
+    } catch (cause) {
+      process.stdout.write(`${formatNormalizerFailure(cause)}\n`);
+      return;
+    }
     const result = await client.query(UNEXPECTED_COLUMN_PRIVILEGES);
     process.stdout.write(`${formatPrivilegeDiagnostics(result.rows)}\n`);
   } finally {
