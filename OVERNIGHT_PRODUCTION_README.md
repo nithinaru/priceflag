@@ -125,7 +125,10 @@ Before production promotion, also require:
 Agents append short entries here when a milestone changes. Include UTC timestamp, branch, commit, checks, and blockers. Never include credential values.
 
 - Coordination baseline: prepared from `716e762`; both implementation lanes pending.
+- 2026-08-04T05:55Z · `claude/prod-ui-auth-infra` · `b4ad935` + `94f6a4c` · Sprints 1 (App Bridge/session-token auth: embedded shell, authenticatedFetch, signed pf_shop cookie, production 401s on journal/sync/kill-switch, middleware admits Shopify-signed traffic, OAuth host preservation + embedded landing, frame-ancestors CSP) and 3 (webhook registration module `lib/shopify/webhooks.ts` + deterministic dedupe fallback; wiring lands with Sprint 4). Checks: typecheck pass, build pass, smoke 148 passed / 2 failed — both are the pre-existing baseline failure "order history reads back in a date window" (known safety failure 1, Codex-owned), byte-identical with and without these changes. Blockers: none.
 
 ## Cross-lane interface requests
 
 - None at coordination start.
+- From `claude/prod-ui-auth-infra` (2026-08-04): `components/domain/rollback-button.tsx` now sends `Authorization: Bearer <session token>` to `POST /api/rollouts/[id]/rollback`, which does not exist yet — it is a Codex-owned frozen interface. The UI also plans to target `POST /api/forecast` and `POST /api/rollouts` per the frozen interfaces once they land; until then real mode shows an explicit "backend pending" state. Shop resolution helpers are available for those routes: `resolveShopFromRequestOrCookie` in `lib/shopify/session.ts` (Bearer token > signed pf_shop cookie > dev-only fallback).
+- From `claude/prod-ui-auth-infra` (2026-08-04): the webhook receiver (`app/api/webhooks/[topic]`) has no handler-level test coverage; `scripts/smoke.ts` is Codex-owned, so a smoke section exercising the receiver (401 path, dedupe, applyOrder, external-change detection) is requested rather than added here.
