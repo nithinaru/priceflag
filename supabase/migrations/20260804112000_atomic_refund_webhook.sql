@@ -221,7 +221,10 @@ begin
       and received_at >= p_snapshot_started_at
   ) then
     raise exception 'sales data changed while the full sync was running; retry the sync'
-      using errcode = '40001';
+      -- 40001 invites infrastructure-level transaction retries, which cannot
+      -- make this intentionally stale snapshot fresh and can delay the merchant
+      -- response by a minute. This is a fail-closed application conflict.
+      using errcode = '55000';
   end if;
 
   insert into public.order_days as existing (
