@@ -1,0 +1,59 @@
+# App CI — typecheck + build + smoke on every push/PR that could break the app.
+#
+# Why this exists: until now only ml/** had CI (ml-ci.yml); nothing verified the
+# Next.js app on push, so a red `npm run build` could reach main unnoticed
+# (docs/lane-status/lane-b.md records exactly that happening with the vercel.json
+# cron). This is the merge gate's first half; the integration suite and Supabase
+# staging checks stay manual per OVERNIGHT_PRODUCTION_README.md.
+#
+# Smoke is informational-only for now: the baseline carries known failures owned
+# by the backend lane (see OVERNIGHT_PRODUCTION_README.md "Known safety failures").
+# It becomes blocking when that baseline is green — flip `continue-on-error` then.
+
+name: app-ci
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'lib/**'
+      - 'contracts/**'
+      - 'scripts/**'
+      - 'middleware.ts'
+      - 'next.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/app-ci.yml'
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (both tsconfigs)
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+        env:
+          PRICEFLAG_MODE: demo
+      - name: Engine smoke (informational until backend baseline is green)
+        run: npm run smoke
+        continue-on-error: true
