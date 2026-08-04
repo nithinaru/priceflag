@@ -114,7 +114,7 @@ jobs:
           # Supabase prints local JWTs when it starts. Keep that output out of
           # the Actions log even though this runner is disposable.
           if ! npx --no-install supabase start \
-            --exclude gotrue,realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor \
+            --exclude realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor \
             >"$RUNNER_TEMP/supabase-start.log" 2>&1; then
             echo "::error::The isolated Supabase stack or migration chain failed to start."
             exit 1
