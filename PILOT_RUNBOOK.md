@@ -37,10 +37,10 @@ present in the curl cookie jar.
 The merchant wants everything back the way it was, now:
 
 ```bash
-curl -X POST "$APP_URL/api/kill-switch" \
+curl --fail-with-body -sS -X POST "$APP_URL/api/kill-switch" \
   -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"reason":"Support request"}'
+  -d '{"confirm":true,"reason":"Support request"}'
 ```
 
 Engages the store-wide kill switch **first** (so nothing can write another price
@@ -54,9 +54,15 @@ verifies each one against Shopify. Returns
 To let Priceflag write prices again (this resumes nothing):
 
 ```bash
-curl -X DELETE "$APP_URL/api/kill-switch" \
-  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN"
+curl --fail-with-body -sS -X DELETE "$APP_URL/api/kill-switch" \
+  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm":true}'
 ```
+
+Do not release the switch unless the undo response returned `ok: true`, every
+unresolved restoration was reviewed, and Shopify was verified at each original
+price. A non-2xx release response means price writes remain disabled.
 
 ---
 
@@ -101,26 +107,34 @@ not break `cp4-chain.ts`, `smoke-browser.ts`, or any `?access=` link.
 **To revoke, the moment a review is over:**
 
 ```bash
-vercel env rm DEMO_PASSWORD production --yes
-vercel env rm DEMO_PASSWORD preview --yes
-vercel deploy --prod --yes          # a redeploy is required to take effect
+export PRICEFLAG_DEMO_ACCESS_CONFIRM="REVOKE_DEMO_ACCESS:$(git rev-parse HEAD)"
+bash scripts/vercel-demo-access.sh revoke
 ```
 
-Revocation is immediate and complete: the cookie a demo login mints holds the
-**password**, not the access secret, so clearing `DEMO_PASSWORD` invalidates every
-outstanding reviewer session on its next request. Had the cookie carried the
-access secret, those sessions would have kept working for their full lifetime —
-revocation that does not revoke.
+The running deployment retains its environment snapshot, so removal alone does
+not revoke the credential. From a clean checkout of the currently approved
+commit, remove `DEMO_PASSWORD` from the ignored `.env.production.local`, run the
+acknowledged `scripts/vercel-stage.sh` flow below, verify the exact staged URL,
+and promote only that artifact. Do not use `vercel deploy --prod`: it can assign
+production traffic from an unverified local tree.
 
-**To rotate instead of revoking**, set a new value and redeploy; existing cookies
-stop working for the same reason.
+Once the staged artifact is promoted, revocation is immediate and complete: the
+cookie a demo login mints holds the **password**, not the access secret, so the
+deployment without `DEMO_PASSWORD` invalidates every outstanding reviewer
+session on its next request. Had the cookie carried the access secret, those
+sessions would have kept working for their full lifetime.
+
+**To rotate instead of revoking**, use the same pinned wrapper; it prompts
+without echoing the new password. Existing cookies stop working after the newly
+staged artifact is promoted.
 
 ```bash
-printf 'new-password' | vercel env add DEMO_PASSWORD production --force
+export PRICEFLAG_DEMO_ACCESS_CONFIRM="ROTATE_DEMO_ACCESS:$(git rev-parse HEAD)"
+bash scripts/vercel-demo-access.sh rotate
 ```
 
-Removing only `DEMO_USERNAME` also disables the path (both must be set), but
-clear the password — that is what the cookie is checked against.
+Removing only `DEMO_USERNAME` also disables the path (both must be set), but the
+wrapper clears both values from the pinned Preview and Production environments.
 
 ## Triage
 
@@ -330,6 +344,44 @@ Worth knowing before "fixing" them:
 ---
 
 ## Escalation facts
+
+### Exact-artifact Vercel release
+
+Create `.env.preview.local` from `.env.example` using only staging Supabase and
+Shopify test-app values. `scripts/vercel-setup.sh` updates only the owner
+project's Preview variables, removes legacy static Shopify credentials from that
+environment, and creates a protected Preview deployment. It cannot read or
+change Production variables and cannot promote or alias the deployment.
+
+After the Preview gates pass, create `.env.production.local` separately and run
+`scripts/vercel-stage.sh` from a clean, acknowledged commit. It checks and
+updates the Production variables, then creates a Production-environment build with
+`--skip-domain`, so the artifact uses production variables but receives no
+production traffic. Verify that exact staged URL and its logs. Only an owner may
+then promote that same staged URL. Never promote the public Preview directly:
+Vercel rebuilds a Preview when converting it to Production, so it would not be
+the exact artifact that was tested.
+
+### Attested CP4 test-store chain
+
+`scripts/cp4-chain.ts` intentionally performs temporary Shopify price writes,
+so it never has a default URL or shop. It loads staging values from the ignored
+`.env.preview.local`, verifies the requested URL through Vercel's API as a READY,
+non-production deployment belonging to the pinned Priceflag project/team, and
+then requires an exact shop acknowledgement:
+
+```bash
+export PRICEFLAG_URL='https://<exact-preview-deployment>.vercel.app'
+export PRICEFLAG_CP4_SHOP_DOMAIN='<test-store>.myshopify.com'
+export PRICEFLAG_CP4_CONFIRM="WRITE_TEST_PRICES:$PRICEFLAG_CP4_SHOP_DOMAIN"
+npx --no-install tsx scripts/cp4-chain.ts
+```
+
+The script pauses its rollout before cleanup, restores the frozen baselines,
+and exits successfully only after Shopify verifies every price and managed
+compare-at value. Any failure leaves the rollout paused and requires the manual
+restore procedure in this runbook. CP4 proves the ML-to-evaluator chain; it does
+not replace the separate merchant-session API and browser end-to-end gate.
 
 | | |
 |---|---|

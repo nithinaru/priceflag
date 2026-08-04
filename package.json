@@ -17,6 +17,7 @@
     "test:pricing-safety": "tsx tests/pricing-safety.test.ts",
     "test:ml-ingest": "tsx tests/ml-ingest-api.test.ts",
     "test:webhooks": "tsx tests/webhooks.test.ts",
+    "test:deployment-safety": "tsx tests/deployment-safety.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",

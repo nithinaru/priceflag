@@ -85,7 +85,7 @@ npm run dev
 | `APP_URL` | Public app URL (ngrok / Vercel) |
 | `ENCRYPTION_KEY` | Encrypts Shopify tokens at rest |
 | `CRON_SECRET` | Protects the evaluator endpoint |
-| `PRICEFLAG_SHOP_ALLOWLIST` | Optional exact shop IDs/domains the evaluator may touch; invalid values fail closed |
+| `PRICEFLAG_SHOP_ALLOWLIST` | Required for beta deploys: exact invited shop IDs/domains the evaluator may touch |
 
 ### ML lane (Python)
 
@@ -99,9 +99,9 @@ pytest                       # golden-data recovery + backtest gates
 
 Every pull request runs the credential-free `production-gates` workflow. It
 installs the exact Node and Python lockfiles, then runs typechecking, smoke,
-merchant API, price-write, ML-ingest, and webhook tests, the demo integration
-suite, a dependency audit, the production build, Python tests, and the
-deterministic golden nightly model/drift gates. The workflow has
+merchant API, price-write, ML-ingest, webhook, deployment-safety, and demo
+integration tests; a dependency audit; the production build; Python tests; and
+the deterministic golden nightly model/drift gates. The workflow has
 read-only repository access; it receives no secrets, deploys nothing, and makes
 no production calls.
 

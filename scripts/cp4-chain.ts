@@ -23,8 +23,9 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 import { loadEnv } from './load-env';
+import { attestLiveWriteTarget, isVerifiedRollback } from './live-write-guard';
 
-loadEnv();
+loadEnv(['.env.preview.local']);
 
 import pg from 'pg';
 
@@ -34,12 +35,11 @@ import { addDays, today } from '../lib/dates';
 import { evaluateRollout, startRollout } from '../lib/evaluator';
 import { normalizeStages, planRolloutVariants } from '../lib/engine/rollout';
 import { collectingNotifier } from '../lib/notify';
-import { rollbackRollout } from '../lib/pricing/writer';
+import { rollbackRollout, verifyRollback } from '../lib/pricing/writer';
 import { AdminGraphqlClient } from '../lib/shopify/client';
-import { credentialsFromShop, ensureStaticShop } from '../lib/shopify/credentials';
+import { credentialsFromShop } from '../lib/shopify/credentials';
 import type { Rollout } from '../lib/types';
 
-const BASE_URL = process.env.PRICEFLAG_URL ?? 'https://priceflagv1.vercel.app';
 const ML_DIR = resolve(process.cwd(), 'ml');
 
 let failures = 0;
@@ -93,8 +93,14 @@ for sku, hist in frame.groupby("sku"):
 json.dump({"fits": fit_rows, "bands": band_rows, "errors": errors}, sys.stdout)
 `;
 
-async function post(path: string, body: unknown, secret: string, bypass: string): Promise<{ status: number; json: any }> {
-  const response = await fetch(`${BASE_URL}${path}`, {
+async function post(
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  secret: string,
+  bypass: string,
+): Promise<{ status: number; json: any }> {
+  const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -119,25 +125,26 @@ async function post(path: string, body: unknown, secret: string, bypass: string)
 }
 
 async function main(): Promise<void> {
+  // Attest ownership before reading from Supabase or sending any secret to the
+  // application origin. A hostname supplied by the operator is not authority.
+  const target = await attestLiveWriteTarget(process.env);
+  const baseUrl = target.baseUrl;
   const ingestSecret = process.env.ML_INGEST_SECRET as string;
   if (!ingestSecret) throw new Error('ML_INGEST_SECRET is not set');
-
-  // The bypass secret lives in the Vercel project, not in .env.local.
-  const projectResponse = await fetch(
-    'https://api.vercel.com/v9/projects/prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh?teamId=team_AqaBD6YaOf9DIJ7NzbytTZTW',
-    { headers: { authorization: `Bearer ${process.env.VERCEL_TOKEN as string}` } },
-  );
-  const project = (await projectResponse.json()) as { protectionBypass?: Record<string, unknown> };
-  const bypass = Object.keys(project.protectionBypass ?? {})[0] as string;
-  if (!bypass) throw new Error('no Vercel protection bypass secret available');
+  const bypass = target.vercelBypassSecret;
 
   const adapter = new SupabaseAdapter();
-  const shop = await ensureStaticShop(adapter);
-  if (shop === null) throw new Error('no static shop');
+  const shop = await adapter.getShopByDomain(target.expectedShopDomain);
+  if (shop === null) throw new Error(`acknowledged test shop ${target.expectedShopDomain} is not connected`);
   const shopDomain = shop.shop_domain;
+  if (shopDomain !== target.expectedShopDomain) {
+    throw new Error(
+      `Configured shop ${shopDomain} does not match acknowledged test shop ${target.expectedShopDomain}`,
+    );
+  }
 
   process.stdout.write(`\x1b[1mCP4 — full chain against ${shopDomain}\x1b[0m\n`);
-  process.stdout.write(`Ingest target: ${BASE_URL}/api/ml/ingest (production)\n`);
+  process.stdout.write(`Ingest target: ${baseUrl}/api/ml/ingest (protected non-production artifact)\n`);
 
   // ================= a. Lane C, over the read-only role ==================
   step('a. Lane C reads through the read-only role and produces artifacts');
@@ -194,11 +201,12 @@ async function main(): Promise<void> {
   // ================= b. through the real ingest path ======================
   step('b. Ingest — authentication, contracts, and the honesty gate');
 
-  const unauth = await post('/api/ml/ingest', {}, 'wrong-secret', bypass);
+  const unauth = await post(baseUrl, '/api/ml/ingest', {}, 'wrong-secret', bypass);
   check('an unauthenticated payload is refused', unauth.status === 401, `HTTP ${unauth.status}`);
 
   // R28: a challenger that lost must be recorded and its rows discarded.
   const rejected = await post(
+    baseUrl,
     '/api/ml/ingest',
     {
       shop_domain: shopDomain,
@@ -226,6 +234,7 @@ async function main(): Promise<void> {
   const broken = JSON.parse(JSON.stringify(artifacts.bands[0])) as Record<string, unknown>;
   broken.low = 9999;
   const invalid = await post(
+    baseUrl,
     '/api/ml/ingest',
     {
       shop_domain: shopDomain,
@@ -242,6 +251,7 @@ async function main(): Promise<void> {
   );
 
   const accepted = await post(
+    baseUrl,
     '/api/ml/ingest',
     {
       shop_domain: shopDomain,
@@ -366,13 +376,38 @@ async function main(): Promise<void> {
     step('Cleanup');
     const fresh = rollout === null ? null : await adapter.getRollout(rollout.id);
     if (fresh !== null) {
-      await rollbackRollout(context, fresh, { reason: 'CP4 cleanup', source: 'kill_switch' });
-      await adapter.updateRollout(fresh.id, {
-        status: 'rolled_back',
-        ended_at: new Date().toISOString(),
-        ended_reason: 'kill_switch',
+      // Freeze the rollout before attempting restoration. If Shopify or this
+      // process fails during cleanup, the scheduled evaluator must not advance
+      // another stage behind the operator's back.
+      const paused = await adapter.updateRollout(fresh.id, {
+        status: 'paused',
+        ended_at: null,
+        ended_reason: null,
+        paused_reason: 'CP4 cleanup is in progress.',
       });
-      check('prices restored', true, 'rollback applied');
+      const undo = await rollbackRollout(context, paused, { reason: 'CP4 cleanup', source: 'kill_switch' });
+      const verification = await verifyRollback(context, paused);
+      const restored = isVerifiedRollback(undo, verification);
+      if (restored) {
+        await adapter.updateRollout(paused.id, {
+          status: 'rolled_back',
+          ended_at: new Date().toISOString(),
+          ended_reason: 'kill_switch',
+          paused_reason: null,
+        });
+      } else {
+        await adapter.updateRollout(paused.id, {
+          status: 'paused',
+          ended_at: null,
+          ended_reason: null,
+          paused_reason: 'CP4 cleanup was not fully verified against Shopify. Manual restoration is required.',
+        });
+      }
+      check(
+        'prices restored and verified against Shopify',
+        restored,
+        `failed=${undo.failed} external=${undo.external_changes.length} mismatched=${verification.mismatched.length}`,
+      );
     }
   }
 

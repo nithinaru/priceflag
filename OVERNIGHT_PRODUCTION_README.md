@@ -90,6 +90,7 @@ npm run test:merchant-api
 npm run test:pricing-safety
 npm run test:ml-ingest
 npm run test:webhooks
+npm run test:deployment-safety
 npx tsx tests/integration/run.ts --demo
 npm run build
 npm audit --audit-level=high
@@ -300,6 +301,31 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   require the authorized owner account. Invite access remains closed,
   automatic rollback remains disabled, and no merge, promotion, hosted database
   mutation, evaluator run, or Shopify price write occurred.
+
+- `2026-08-04T11:15:09Z` — release-operations audit found and closed unsafe
+  handoff defaults before an owner could run them. Preview configuration now
+  reads only ignored staging/test-store values and cannot touch Production;
+  Production staging uses a separate ignored environment file, a clean exact
+  commit acknowledgement, and `--skip-domain`, so it cannot receive traffic or
+  promote itself. Both paths require the Shopify app handle and an exact invited
+  shop allowlist, remove static Admin-token configuration, and pin the correct
+  Vercel project/team. The CP4 live-chain script has no default target, rejects
+  production and legacy domains, attests the READY deployment through Vercel
+  before sending any secret, requires an exact test-shop acknowledgement, pauses
+  before cleanup, and terminalizes only after Shopify verifies every restored
+  price and managed compare-at value. Temporary reviewer credential changes now
+  use a pinned, attested, commit-confirmed wrapper instead of raw Vercel commands;
+  the emergency runbook uses the current explicit kill-switch confirmations.
+  A new deployment-safety suite (41 assertions) is part of the required Node CI
+  job. Independent final re-review reports no open P0/P1 in these paths. Local
+  evidence: typecheck; production build; 144/144 smoke; 38/38 merchant API;
+  15/15 price-write safety; ML-ingest and webhook integrity; 63/63 demo
+  adversarial integration; 41/41 deployment safety; zero dependency
+  vulnerabilities; and 12/12 compiled-browser interactions. No Vercel or
+  Supabase configuration was changed, no deployment was created or promoted,
+  and no Shopify price was written. External hosted staging, real-data ML,
+  authenticated preview/log, Partner configuration, and test-store gates remain
+  open; invite access remains closed and automatic rollback remains disabled.
 
 ## Current launch checklist
 
