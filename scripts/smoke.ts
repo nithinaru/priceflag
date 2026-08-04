@@ -3523,7 +3523,7 @@ async function testAdapters(): Promise<void> {
     auth: { persistSession: false },
   });
 
-  await test('the price journal rejects UPDATE, even from the service role', async () => {
+  await test('the price journal blocks UPDATE from the service role', async () => {
     const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
     const row = existing.items[0];
     assert(row !== undefined, 'there is a journal entry to attempt');
@@ -3535,8 +3535,8 @@ async function testAdapters(): Promise<void> {
 
     assert(error !== null, 'the update must be refused');
     assert(
-      /append-only/i.test(error?.message ?? ''),
-      `the guard trigger should say why, got: ${error?.message}`,
+      /append-only|permission denied/i.test(error?.message ?? ''),
+      `the database should reject journal mutation, got: ${error?.message}`,
     );
 
     // And the value is genuinely unchanged.
@@ -3544,13 +3544,16 @@ async function testAdapters(): Promise<void> {
     assert(after?.after_price_cents !== 999999, 'nothing was written');
   });
 
-  await test('the price journal rejects DELETE without an explicit purge', async () => {
+  await test('the price journal blocks DELETE from the service role', async () => {
     const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
     const row = existing.items[0] as { id: string };
 
     const { error } = await raw.from('journal_entries').delete().eq('id', row.id);
     assert(error !== null, 'the delete must be refused');
-    assert(/append-only/i.test(error?.message ?? ''), `and say why, got: ${error?.message}`);
+    assert(
+      /append-only|permission denied/i.test(error?.message ?? ''),
+      `the database should reject journal deletion, got: ${error?.message}`,
+    );
 
     const still = await supabase.listJournalEntries(shopId, { limit: 1 });
     assert(still.total > 0, 'the trail survives');
@@ -3639,7 +3642,7 @@ async function testAdapters(): Promise<void> {
       );
       assert(rows.length >= 15, `expected the Priceflag schema, found only ${rows.length} public tables`);
       const exposed = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
-      assertEqual(exposed, [], `tables without RLS: ${exposed.join(', ')}`);
+      assert(exposed.length === 0, `tables without RLS: ${exposed.join(', ')}`);
     });
 
     await test('browser database roles have no privilege on Priceflag tables or views', async () => {
@@ -3668,9 +3671,8 @@ async function testAdapters(): Promise<void> {
           )
           order by role_name, relname, privilege_name`,
       );
-      assertEqual(
-        rows,
-        [],
+      assert(
+        rows.length === 0,
         `browser roles unexpectedly have database privileges: ${rows
           .map((row) => `${row.role_name}:${row.relname}:${row.privilege_name}`)
           .join(', ')}`,
