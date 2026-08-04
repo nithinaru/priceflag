@@ -558,4 +558,6 @@ export interface OrderDayQuery {
   variant_gids?: string[];
   from_day?: DayString;
   to_day?: DayString;
+  limit?: number;
+  offset?: number;
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -75,8 +75,8 @@ assert.doesNotMatch(runbook, /^vercel env (?:rm|add)/m);
 assert.match(runbook, /-d '\{"confirm":true,"reason":"Support request"\}'/);
 assert.match(runbook, /-d '\{"confirm":true\}'/);
 assert.match(runbook, /scripts\/vercel-demo-access\.sh revoke/);
-assert.match(runbook, /Never enable or update `pg_net` ad hoc/);
-assert.match(runbook, /pf_normalize_extension_privileges\(\)[\s\S]*hosted staging gate/);
+assert.match(runbook, /never receives a PostgreSQL login/);
+assert.match(runbook, /hosted staging gate calls[\s\S]*pf_attest_ml_database_role_retired\(\)/);
 passed += 7;
 
 const demoAccess = readFileSync(resolve(process.cwd(), 'scripts/vercel-demo-access.sh'), 'utf8');
@@ -173,7 +173,7 @@ assert.doesNotMatch(stagingWorkflow, /SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD
 assert.doesNotMatch(stagingWorkflow, /ref: \$\{\{ inputs\.confirm_commit \}\}/);
 assert.match(stagingWorkflow, /refs\/heads\/main\|refs\/heads\/codex\/prod-integration/);
 assert.match(stagingWorkflow, /npm ci --ignore-scripts/);
-assert.match(stagingWorkflow, /psql "\$SUPABASE_DB_URL"[\s\S]*pf_normalize_extension_privileges\(\)/);
+assert.match(stagingWorkflow, /psql "\$SUPABASE_DB_URL"[\s\S]*pf_attest_ml_database_role_retired\(\)/);
 assert.doesNotMatch(
   stagingWorkflow.slice(stagingWorkflow.indexOf('env:'), stagingWorkflow.indexOf('steps:')),
   /secrets\./,
@@ -207,8 +207,8 @@ assert.match(mlNightlyWorkflow, /environment: priceflag-ml-production/);
 assert.match(mlNightlyWorkflow, /github-environment-guard\.mjs priceflag-ml-production main optional/);
 assert.match(mlNightlyWorkflow, /REQUIRE_REAL_INGEST: "true"/);
 assert.match(mlNightlyWorkflow, /verify_nightly_evidence\.py out\/real_ingest_evidence\.json/);
-assert.match(mlNightlyWorkflow, /SUPABASE_ML_READONLY_KEY: \$\{\{ secrets\.SUPABASE_ML_READONLY_KEY \}\}/);
-assert.match(mlNightlyWorkflow, /SUPABASE_ML_SENTINEL: \$\{\{ secrets\.SUPABASE_ML_SENTINEL \}\}/);
+assert.doesNotMatch(mlNightlyWorkflow, /SUPABASE_ML_READONLY_KEY|SUPABASE_ML_SENTINEL/);
+assert.match(mlNightlyWorkflow, /ML_INGEST_SECRET: \$\{\{ secrets\.ML_INGEST_SECRET \}\}/);
 assert.match(mlNightlyWorkflow, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
 assert.match(mlNightlyWorkflow, /PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz/);
 assert.match(mlNightlyWorkflow, /path: ml\/out\/real_ingest_evidence\.json/);
@@ -234,8 +234,8 @@ assert.match(mlReleaseWorkflow, /test "\$GITHUB_REPOSITORY" = "nithinaru\/pricef
 assert.match(mlReleaseWorkflow, /test "\$GITHUB_REF" = "refs\/heads\/codex\/prod-integration"/);
 assert.match(mlReleaseWorkflow, /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"/);
 assert.match(mlReleaseWorkflow, /REQUIRE_REAL_INGEST: "true"/);
-assert.match(mlReleaseWorkflow, /SUPABASE_ML_READONLY_KEY: \$\{\{ secrets\.SUPABASE_ML_READONLY_KEY \}\}/);
-assert.match(mlReleaseWorkflow, /SUPABASE_ML_SENTINEL: \$\{\{ secrets\.SUPABASE_ML_SENTINEL \}\}/);
+assert.doesNotMatch(mlReleaseWorkflow, /SUPABASE_ML_READONLY_KEY|SUPABASE_ML_SENTINEL/);
+assert.match(mlReleaseWorkflow, /ML_INGEST_SECRET: \$\{\{ secrets\.ML_INGEST_SECRET \}\}/);
 assert.match(mlReleaseWorkflow, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
 assert.match(mlReleaseWorkflow, /PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz/);
 assert.match(mlReleaseWorkflow, /path: ml\/out\/real_ingest_evidence\.json/);
@@ -247,68 +247,65 @@ const mlRoleHardening = readFileSync(
   resolve(process.cwd(), 'supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql'),
   'utf8',
 );
-assert.match(mlRoleHardening, /migrator_is_superuser[\s\S]*reader\.rolsuper[\s\S]*reader\.rolbypassrls/);
-assert.match(mlRoleHardening, /if migrator_is_superuser then[\s\S]*nosuperuser[\s\S]*nobypassrls/);
-assert.match(mlRoleHardening, /else[\s\S]*raise exception[\s\S]*alter role priceflag_ml_readonly noinherit connection limit 5/);
+assert.match(mlRoleHardening, /create role priceflag_ml_readonly nologin noinherit connection limit 0/);
+assert.match(mlRoleHardening, /alter role priceflag_ml_readonly nologin noinherit[\s\S]*connection limit 0/);
 assert.match(mlRoleHardening, /errcode = '42501'/);
-assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*revoke %I from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*drain member sessions and remove memberships/);
+assert.match(mlRoleHardening, /Priceflag ML membership precheck v1 passed/);
+assert.match(mlRoleHardening, /drop policy if exists ml_readonly_select/);
 assert.match(mlRoleHardening, /revoke all privileges on all tables in schema public from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on all routines in schema public from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on schema public from priceflag_ml_readonly/);
 assert.match(mlRoleHardening, /from information_schema\.column_privileges[\s\S]*revoke %s \(%I\)/);
-assert.match(mlRoleHardening, /revoke create on database %I from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /from pg_database database[\s\S]*has_database_privilege/);
-assert.match(mlRoleHardening, /database\.datdba = reader\.oid/);
-assert.doesNotMatch(mlRoleHardening, /aclexplode/);
-assert.doesNotMatch(mlRoleHardening, /not database\.datistemplate/);
-assert.match(mlRoleHardening, /create schema if not exists priceflag_internal authorization postgres/);
-assert.match(mlRoleHardening, /pf_normalize_extension_privileges\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
-assert.match(mlRoleHardening, /pg_net 0\.12\.0 or newer is required/);
-assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements[\s\S]*from public, priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /revoke select on extensions\.pg_stat_statements_info[\s\S]*from public, priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /revoke all privileges on all tables in schema net from public/);
-assert.match(mlRoleHardening, /revoke all privileges on all routines in schema net from public/);
-assert.match(mlRoleHardening, /revoke all privileges on all tables in schema net[\s\S]*from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /revoke all privileges on all sequences in schema net[\s\S]*from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /revoke all privileges on all routines in schema net[\s\S]*from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /revoke all privileges on schema net from priceflag_ml_readonly/);
-assert.match(mlRoleHardening, /supabase_functions_admin[\s\S]*authenticated[\s\S]*service_role/);
-assert.match(mlRoleHardening, /platform_role = 'postgres'[\s\S]*grant select, insert, update, delete on all tables/);
-assert.match(mlRoleHardening, /grant select, insert on net\.http_request_queue/);
-assert.match(mlRoleHardening, /grant select on net\._http_response/);
-assert.match(mlRoleHardening, /routine\.proname = any \(array\[[\s\S]*'http_get'[\s\S]*'http_post'[\s\S]*'http_delete'[\s\S]*'_urlencode_string'[\s\S]*'wake'/);
-assert.match(mlRoleHardening, /routine\.proname = any \(array\[[\s\S]*'worker_restart'[\s\S]*'wait_until_running'[\s\S]*'check_worker_is_up'/);
-assert.doesNotMatch(mlRoleHardening, /grant execute on all routines in schema net/);
-assert.doesNotMatch(mlRoleHardening, /grant all privileges on all tables in schema net/);
-assert.match(mlRoleHardening, /has_schema_privilege\('priceflag_ml_readonly', 'net', 'USAGE'\)/);
-assert.match(mlRoleHardening, /has_table_privilege\([\s\S]*SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER/);
-assert.match(mlRoleHardening, /has_sequence_privilege\([\s\S]*USAGE,SELECT,UPDATE/);
-assert.match(mlRoleHardening, /has_function_privilege\([\s\S]*priceflag_ml_readonly[\s\S]*EXECUTE/);
-assert.match(mlRoleHardening, /select priceflag_internal\.pf_normalize_extension_privileges\(\)/);
-assert.match(mlRoleHardening, /Run as postgres immediately after every pg_net enablement or update/);
-assert.match(mlRoleHardening, /unexpected_column_privileges[\s\S]*INSERT,UPDATE,REFERENCES/);
-assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
-assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
-assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
-passed += 41;
+assert.match(mlRoleHardening, /production design now reads through POST \/api\/ml\/export/);
+assert.doesNotMatch(mlRoleHardening, /alter role priceflag_ml_readonly login|password\s+'/i);
+assert.doesNotMatch(mlRoleHardening, /grant select .*priceflag_ml_readonly/i);
+assert.doesNotMatch(mlRoleHardening, /grant .*schema net|grant .*net\./i);
+passed += 13;
 
-const migrationDirectory = resolve(process.cwd(), 'supabase/migrations');
-const unsafePgNetChanges = readdirSync(migrationDirectory)
-  .filter((migration) => migration.endsWith('.sql'))
-  .flatMap((migration) => {
-    const source = readFileSync(resolve(migrationDirectory, migration), 'utf8');
-    const extensionChange = /\b(?:create\s+extension\s+(?:if\s+not\s+exists\s+)?pg_net|alter\s+extension\s+pg_net\s+update)\b/gi;
-    return [...source.matchAll(extensionChange)]
-      .filter((match) => source.indexOf(
-        'select priceflag_internal.pf_normalize_extension_privileges()',
-        match.index,
-      ) < 0)
-      .map(() => migration);
-  });
-assert.deepEqual(
-  unsafePgNetChanges,
-  [],
-  'every pg_net enablement/update migration must re-normalize and attest extension privileges',
+const mlRoleLockout = readFileSync(
+  resolve(process.cwd(), 'supabase/migrations/20260804193400_commit_ml_role_login_lockout.sql'),
+  'utf8',
 );
-passed += 1;
+const mlRoleMemberships = readFileSync(
+  resolve(process.cwd(), 'supabase/migrations/20260804193500_verify_ml_role_memberships.sql'),
+  'utf8',
+);
+const mlRoleDrain = readFileSync(
+  resolve(process.cwd(), 'supabase/migrations/20260804193600_drain_and_attest_ml_role.sql'),
+  'utf8',
+);
+assert.match(mlRoleLockout, /alter role priceflag_ml_readonly[\s\S]*nologin[\s\S]*connection limit 0[\s\S]*password null/);
+assert.match(mlRoleLockout, /shobj_description[\s\S]*Priceflag ML membership precheck v1 passed/);
+assert.match(mlRoleLockout, /from pg_auth_members[\s\S]*memberships_exist/);
+assert.match(mlRoleLockout, /not fresh_membership_precheck or memberships_exist/);
+assert.doesNotMatch(mlRoleLockout, /pg_terminate_backend/);
+assert.match(mlRoleMemberships, /version = '20260804193400'/);
+assert.match(mlRoleMemberships, /from pg_auth_members[\s\S]*restart to drain member sessions/);
+assert.doesNotMatch(mlRoleMemberships, /alter role priceflag_ml_readonly[\s\S]*login/);
+assert.match(mlRoleDrain, /version = '20260804193500'/);
+assert.match(mlRoleDrain, /requires_restart[\s\S]*pg_postmaster_start_time\(\) <= retirement_state\.lockout_recorded_at/);
+assert.match(mlRoleDrain, /pg_terminate_backend\(session_row\.pid, 5000\)/);
+assert.match(mlRoleDrain, /from pg_stat_activity[\s\S]*legacy ML database role still has active sessions/);
+assert.match(mlRoleDrain, /pf_attest_ml_database_role_retired\(\)[\s\S]*security invoker[\s\S]*set search_path = ''/);
+assert.match(mlRoleDrain, /role_state\.rolcanlogin[\s\S]*role_state\.rolinherit[\s\S]*role_state\.rolconnlimit <> 0/);
+assert.match(mlRoleDrain, /from pg_auth_members[\s\S]*legacy ML database role retains role memberships/);
+assert.match(mlRoleDrain, /from pg_policy[\s\S]*legacy ML database role remains referenced by an RLS policy/);
+assert.match(mlRoleDrain, /from information_schema\.table_privileges[\s\S]*legacy ML database role retains direct privileges/);
+assert.match(mlRoleDrain, /select priceflag_internal\.pf_attest_ml_database_role_retired\(\)/);
+assert.ok(
+  [
+    '20260804193400_commit_ml_role_login_lockout.sql',
+    '20260804193500_verify_ml_role_memberships.sql',
+    '20260804193600_drain_and_attest_ml_role.sql',
+  ].join('\n') === [
+    '20260804193600_drain_and_attest_ml_role.sql',
+    '20260804193400_commit_ml_role_login_lockout.sql',
+    '20260804193500_verify_ml_role_memberships.sql',
+  ].sort().join('\n'),
+  'the committed lockout migration must sort before the drain migration',
+);
+passed += 19;
 
 async function verifyAttestation(): Promise<void> {
   const sanitizerUrl = pathToFileURL(
@@ -334,74 +331,16 @@ async function verifyAttestation(): Promise<void> {
   assert.match(sanitized, /service_role key:\[REDACTED\]/);
   assert.doesNotMatch(sanitized, /very-secret-token|database-password|eyJabcdefghijk|a{80}/);
 
-  const privilegeDiagnosticUrl = pathToFileURL(
-    resolve(process.cwd(), 'scripts/ml-privilege-diagnostics.mjs'),
-  ).href;
-  const privilegeDiagnostic = (await import(privilegeDiagnosticUrl)) as {
-    buildDiagnosticMigration: (source: string) => string;
-    formatPrivilegeDiagnostics: (rows: Array<Record<string, unknown>>) => string;
-    formatNormalizerFailure: (cause: unknown) => string;
-    formatExtensionAccessContext: (row: Record<string, unknown> | undefined) => string;
-  };
-  const diagnosticMigration = privilegeDiagnostic.buildDiagnosticMigration(mlRoleHardening);
-  assert.match(diagnosticMigration, /if false and coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
-  assert.doesNotMatch(diagnosticMigration, /select priceflag_internal\.pf_normalize_extension_privileges\(\);/);
-  assert.match(diagnosticMigration, /diagnostic copy invokes the normalizer after startup/);
-  assert.match(mlRoleHardening, /if coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
-  assert.throws(() => privilegeDiagnostic.buildDiagnosticMigration('select 1;'), /exactly one/);
-  const privilegeDescription = privilegeDiagnostic.formatPrivilegeDiagnostics([{
-    schema_name: 'public',
-    relation_name: 'example',
-    column_count: 2,
-    can_select: true,
-    can_insert: false,
-    can_update: true,
-    can_reference: false,
-  }]);
-  assert.equal(
-    privilegeDescription,
-    'Unexpected ML privilege-bearing relations (1, maximum 50 shown):\npublic.example (2 columns) [SELECT,UPDATE]',
-  );
-  const normalizerFailure = privilegeDiagnostic.formatNormalizerFailure({
-    code: '42501',
-    message: 'permission denied token=very-secret-token postgresql://postgres:database-password@127.0.0.1/db',
-  });
-  assert.match(normalizerFailure, /\[42501\].*permission denied/);
-  assert.match(normalizerFailure, /postgresql:\/\/\[REDACTED\]@127\.0\.0\.1/);
-  assert.doesNotMatch(normalizerFailure, /very-secret-token|database-password/);
-  assert.equal(
-    privilegeDiagnostic.formatExtensionAccessContext({
-      current_role: 'postgres',
-      net_owner: 'supabase_admin',
-      net_acl: '{PUBLIC=U/supabase_admin,postgres=U/supabase_admin}',
-      ml_inherit: false,
-      ml_memberships: ['example_parent'],
-    }),
-    'Extension access context: current=postgres net_owner=supabase_admin ml_inherit=false ml_memberships=example_parent net_acl={PUBLIC=U/supabase_admin,postgres=U/supabase_admin}',
-  );
-  assert.equal(
-    privilegeDiagnostic.formatExtensionAccessContext(undefined),
-    'Extension access context was unavailable.',
-  );
-
   const productionWorkflow = readFileSync(
     resolve(process.cwd(), '.github/workflows/production-gates.yml'),
     'utf8',
   );
   assert.match(productionWorkflow, /supabase start --debug/);
   assert.match(productionWorkflow, /sanitize-supabase-start-log\.mjs/);
-  assert.match(productionWorkflow, /ml-privilege-diagnostics\.mjs prepare/);
-  assert.match(
-    productionWorkflow,
-    /SUPABASE_DB_URL="\$DB_URL" node scripts\/ml-privilege-diagnostics\.mjs inspect/,
-  );
-  assert.match(
-    productionWorkflow,
-    /PRICEFLAG_DIAGNOSTIC_ROOT="\$RUNNER_TEMP\/priceflag-supabase-diagnostic"/,
-  );
+  assert.doesNotMatch(productionWorkflow, /ml-privilege-diagnostics|PRICEFLAG_DIAGNOSTIC_ROOT/);
   assert.match(productionWorkflow, /exit 1/);
   assert.doesNotMatch(productionWorkflow, /cat \"\$RUNNER_TEMP\/supabase-start\.log\"/);
-  passed += 23;
+  passed += 11;
 
   const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
   const guard = (await import(guardUrl)) as {

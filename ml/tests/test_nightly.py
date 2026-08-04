@@ -22,11 +22,10 @@ def _set_real_attestation_env(monkeypatch):
     monkeypatch.setenv("GITHUB_SHA", COMMIT_SHA)
     monkeypatch.setenv("PRICEFLAG_ML_EXPECTED_PROJECT_REF", PROJECT_REF)
     monkeypatch.setenv("PRICEFLAG_ML_EXPECTED_ENVIRONMENT", "production")
-    monkeypatch.setenv("SUPABASE_ML_SENTINEL", "test-only-sentinel")
 
 
 def _identity():
-    return SourceIdentity(PROJECT_REF, "production", "priceflag_ml_readonly")
+    return SourceIdentity(PROJECT_REF, "production", "priceflag-ml-export")
 
 
 def _c3_snapshot():
@@ -102,7 +101,7 @@ def test_required_real_ingest_rejects_zero_visible_shops(monkeypatch, tmp_path):
     class ConfiguredIngest:
         pass
 
-    monkeypatch.setattr(data_module.SupabaseSource, "from_env", classmethod(lambda cls: EmptySource()))
+    monkeypatch.setattr(data_module.PriceflagApiSource, "from_env", classmethod(lambda cls: EmptySource()))
     monkeypatch.setattr(
         ingest_module.IngestClient,
         "from_env_or_none",
@@ -135,7 +134,7 @@ def test_required_real_ingest_rejects_a_shop_with_no_acknowledged_rows(monkeypat
     class ConfiguredIngest:
         pass
 
-    monkeypatch.setattr(data_module.SupabaseSource, "from_env", classmethod(lambda cls: EmptyHistorySource()))
+    monkeypatch.setattr(data_module.PriceflagApiSource, "from_env", classmethod(lambda cls: EmptyHistorySource()))
     monkeypatch.setattr(
         ingest_module.IngestClient,
         "from_env_or_none",
@@ -152,8 +151,8 @@ def test_required_real_ingest_rejects_a_shop_with_no_acknowledged_rows(monkeypat
 def _valid_real_evidence():
     return {
         "schema_version": 1,
-        "source_transport": "postgresql",
-        "database_role": "priceflag_ml_readonly",
+        "source_transport": "https",
+        "source_authority": "priceflag-ml-export",
         "project_ref": PROJECT_REF,
         "environment": "production",
         "required_real_ingest": True,
@@ -237,6 +236,7 @@ def test_real_refit_requires_receipt_readback_and_emits_redacted_evidence(monkey
         def verify_ingest_receipts(self, receipts, sha):
             assert sha == COMMIT_SHA
             assert len(receipts) == 2
+            assert all(receipt[0] == "private-merchant.myshopify.com" for receipt in receipts)
             if not readback_ok:
                 raise RuntimeError("test-only readback failure")
             return len(receipts)
@@ -260,7 +260,7 @@ def test_real_refit_requires_receipt_readback_and_emits_redacted_evidence(monkey
             return Result(f"00000000-0000-4000-8000-{self.calls:012d}")
 
     source = Source()
-    monkeypatch.setattr(data_module.SupabaseSource, "from_env", classmethod(lambda cls: source))
+    monkeypatch.setattr(data_module.PriceflagApiSource, "from_env", classmethod(lambda cls: source))
     monkeypatch.setattr(
         ingest_module.IngestClient,
         "from_env_or_none",
@@ -289,9 +289,6 @@ def test_real_refit_requires_receipt_readback_and_emits_redacted_evidence(monkey
 
 def test_partial_attestation_or_target_configuration_fails_closed(monkeypatch, tmp_path):
     keys = (
-        "SUPABASE_URL",
-        "SUPABASE_ML_READONLY_KEY",
-        "SUPABASE_ML_SENTINEL",
         "PRICEFLAG_ML_EXPECTED_PROJECT_REF",
         "PRICEFLAG_ML_EXPECTED_ENVIRONMENT",
         "PRICEFLAG_APP_URL",

@@ -77,7 +77,7 @@ above.
 The access gate is an **interim** preview boundary, not tenant authorization. The
 merchant APIs independently require Shopify session tokens. Machine endpoints
 are exempt because they authenticate themselves, and health is deliberately
-non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/webhooks/*`,
+non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/ml/export`, `/api/webhooks/*`,
 `/api/health`.
 
 Operational Shopify webhook callback URLs are capabilities, not public paths:
@@ -370,16 +370,30 @@ release record. The workflow hard-refuses the current Production project ID and
 will not mutate a database unless its protected staging identity and sentinel
 both match.
 
-Never enable or update `pg_net` ad hoc from the dashboard. Its install and older
-upgrade scripts can restore broad `PUBLIC` privileges. Every `pg_net` enablement
-or update must be represented by a reviewed migration that immediately calls
-`priceflag_internal.pf_normalize_extension_privileges()`, then passes the full
-hosted staging gate. The staging workflow also calls this control on every run,
-even when no migration is pending. A rejected extension version or failed ACL
-attestation keeps both the ML credential and merchant invite access closed.
-Apply the same reviewed migration and post-update control to Production before
-enabling the candidate; never use Production to discover whether an extension
-enablement or upgrade is compatible.
+The external ML worker never receives a PostgreSQL login, Supabase API key, or
+service-role key. The `20260804180000`, `20260804193400`, `20260804193500`, and `20260804193600`
+migration chain retires the former `priceflag_ml_readonly` identity. It refuses
+to continue if that role participates in any membership, commits NOLOGIN,
+NOINHERIT, a zero connection limit and a null password in phase one, then drains
+already-authenticated sessions and attests the result in a separate transaction.
+It also drops the old RLS policies and revokes direct application-schema grants.
+The hosted staging gate calls
+`priceflag_internal.pf_attest_ml_database_role_retired()` after every migration
+run. Any login, membership, policy, or direct grant keeps merchant invite access
+closed. Do not restore that role or create another external database credential;
+real reads go through authenticated `POST /api/ml/export`.
+
+An existing database that recorded an older form of migration `20260804180000`
+has no trustworthy proof that a member session never used `SET ROLE`. Its first
+staging-gate run therefore commits the login lockout and deliberately stops at
+`20260804193600` with a restart-required error. In that case, use the Supabase
+dashboard's project restart control, wait for Postgres health to recover, then
+rerun the same approval-gated workflow for the same commit. The second run must
+apply the drain migration and pass the retirement attestation. Never mark the
+failed first run green, and never bypass the restart by editing the retirement
+state. A membership error is a separate incident: leave the gate red, identify
+and drain the member sessions, and have an authorized database administrator
+remove the relationship before retrying.
 
 ### Exact-artifact Vercel release
 
@@ -403,16 +417,14 @@ the exact artifact that was tested.
 Before pushing the release candidate, the owner must configure the protected
 GitHub Environment `priceflag-ml-release` with a required reviewer, prevent
 self-review and administrator bypass, and allow only the
-`codex/prod-integration` deployment branch. Store `SUPABASE_URL`,
-`SUPABASE_ML_READONLY_KEY`, `SUPABASE_ML_SENTINEL`, `ML_INGEST_SECRET`, and a
-Vercel token with deployment-read access as environment secrets. Never give the
-ML reader a service-role key. The database URL must be the percent-encoded
-libpq URL for `priceflag_ml_readonly` and include
-`sslmode=verify-full&sslrootcert=system`.
+`codex/prod-integration` deployment branch. Store `ML_INGEST_SECRET` and a
+Vercel token with deployment-read access as environment secrets. The worker
+uses the same rotatable pipeline secret for the narrow export and validated
+ingest routes; it never receives Supabase credentials of any kind.
 
 Verify the configuration by name before pushing. The environment response must
 show a required reviewer with `prevent_self_review: true`, and the branch-policy
-response must contain exactly `codex/prod-integration`. The five ML credential
+response must contain exactly `codex/prod-integration`. The two ML credential
 names must appear under the release Environment and must not appear in the
 repository-level secret list:
 
@@ -427,16 +439,6 @@ The workflow independently repeats the reviewer/self-review,
 administrator-bypass and exact-branch checks against GitHub's API before any
 secret-bearing step.
 
-Before the first run, an owner must set the production database identity using
-a newly generated sentinel and store that same sentinel only in the protected
-environment:
-
-```sql
-alter database postgres set app.priceflag_environment = 'production';
-alter database postgres set app.priceflag_project_ref = 'vnyqevrdvfjsfhdnbfsz';
-alter database postgres set app.priceflag_ml_sentinel = '<random-secret>';
-```
-
 A push to `codex/prod-integration` automatically creates an
 `ml-release-gate` run. The reviewer must inspect the exact `GITHUB_SHA` before
 approving it. Do not manually dispatch `ml-nightly.yml` against a feature
@@ -445,7 +447,7 @@ branch: the production nightly is schedule-only and runs only from `main`.
 The release run is evidence only when the verifier passes and the retained
 `ml-release-evidence-<sha>-<run>` artifact contains a successful
 `real_ingest_evidence.json`. The evidence positively attests the project,
-environment, dedicated database role, visible shops, shops with orders,
+environment, authenticated export authority, visible shops, shops with orders,
 acknowledged rows, and read-back model runs for the same commit. It contains no
 shop domains, variant identifiers, model-run IDs, order data, connection
 details, or credentials. The application target is also attested through
@@ -487,4 +489,4 @@ not replace the separate merchant-session API and browser end-to-end gate.
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
 | Evaluator | `/api/cron/evaluate`; `evaluator.yml` is disabled for beta. If enabled after a later safety approval, it needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass`. |
-| ML role | `priceflag_ml_readonly` — SELECT only, cannot read `shops.access_token_enc` |
+| ML access | `POST /api/ml/export` — aggregate allowlist only; legacy DB role is `NOLOGIN` |

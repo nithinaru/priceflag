@@ -11,7 +11,7 @@ from pathlib import Path
 EXPECTED_FIELDS = {
     "schema_version",
     "source_transport",
-    "database_role",
+    "source_authority",
     "project_ref",
     "environment",
     "required_real_ingest",
@@ -39,10 +39,10 @@ def verify(
         raise ValueError("nightly evidence schema or redaction allowlist does not match")
     if evidence["schema_version"] != 1:
         raise ValueError("unsupported nightly evidence schema")
-    if evidence["source_transport"] != "postgresql":
-        raise ValueError("nightly did not use the direct read-only PostgreSQL source")
-    if evidence["database_role"] != "priceflag_ml_readonly":
-        raise ValueError("nightly did not use the dedicated read-only database role")
+    if evidence["source_transport"] != "https":
+        raise ValueError("nightly did not use the authenticated application export")
+    if evidence["source_authority"] != "priceflag-ml-export":
+        raise ValueError("nightly did not use the narrow Priceflag ML export authority")
     if not isinstance(evidence["project_ref"], str) or not re.fullmatch(r"[a-z]{20}", evidence["project_ref"]):
         raise ValueError("nightly evidence has no valid Supabase project identity")
     if evidence["environment"] not in {"staging", "production"}:

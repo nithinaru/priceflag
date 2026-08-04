@@ -193,6 +193,12 @@ export class SupabaseAdapter implements StoreAdapter {
         builder = builder.order('title', { ascending: true }).order('variant_title', { ascending: true });
     }
 
+    // Every paged ordering ends in a tenant-unique immutable key. Shopify can
+    // legitimately contain thousands of variants with identical titles or
+    // prices; OFFSET pagination without this tie-breaker can omit or duplicate
+    // rows when Postgres chooses a different order for ties between requests.
+    builder = builder.order('variant_gid', { ascending: true });
+
     const offset = query.offset ?? 0;
     if (query.limit !== undefined) builder = builder.range(offset, offset + query.limit - 1);
 
@@ -273,9 +279,10 @@ export class SupabaseAdapter implements StoreAdapter {
     // 180-day forecast crosses that with only six variants, so a single select
     // would silently train on incomplete history. Page on a deterministic
     // compound order until the server returns a short page.
-    const pageSize = 1000;
+    const pageSize = query.limit ?? 1000;
+    const initialOffset = query.offset ?? 0;
     const rows: Row[] = [];
-    for (let offset = 0; ; offset += pageSize) {
+    for (let offset = initialOffset; ; offset += pageSize) {
       let builder = this.db.from('order_days').select('*').eq('shop_id', shopId);
       if (query.variant_gids?.length) builder = builder.in('variant_gid', [...query.variant_gids]);
       if (query.from_day) builder = builder.gte('day', query.from_day);
@@ -287,7 +294,7 @@ export class SupabaseAdapter implements StoreAdapter {
         .range(offset, offset + pageSize - 1);
       const page = unwrap(result, `getOrderDays(${shopId})`) as Row[];
       rows.push(...page);
-      if (page.length < pageSize) break;
+      if (query.limit !== undefined || page.length < pageSize) break;
     }
     return rows.map((row) => mapOrderDay(row));
   }
@@ -719,6 +726,16 @@ export class SupabaseAdapter implements StoreAdapter {
     if (shopId !== null) builder = builder.eq('shop_id', shopId);
     const result = await builder.order('started_at', { ascending: false }).limit(limit);
     return unwrap(result, 'listModelRuns').map((row) => mapModelRun(row as Row));
+  }
+
+  async getModelRunsByIds(shopId: string, ids: readonly string[]): Promise<ModelRun[]> {
+    if (ids.length === 0) return [];
+    const result = await this.db
+      .from('model_runs')
+      .select('*')
+      .eq('shop_id', shopId)
+      .in('id', [...ids]);
+    return unwrap(result, `getModelRunsByIds(${shopId})`).map((row) => mapModelRun(row as Row));
   }
 
   async recordModelRun(

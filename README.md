@@ -80,7 +80,7 @@ npm run dev
 | `SHOPIFY_APP_HANDLE` | App-home slug from Shopify Dev Dashboard |
 | `SHOPIFY_SCOPES` | `read_products,write_products,read_orders,read_all_orders` |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Database |
-| `SUPABASE_ML_READONLY_KEY` | Percent-encoded PostgreSQL URL for the dedicated `priceflag_ml_readonly` role; never an API/service key |
+| `ML_INGEST_SECRET` | Rotatable server-to-server credential for narrow ML export and validated ingest routes |
 | `RESEND_API_KEY` | Email notifications |
 | `APP_URL` | Public app URL (ngrok / Vercel) |
 | `ENCRYPTION_KEY` | Encrypts Shopify tokens at rest |
@@ -95,24 +95,23 @@ uv sync                      # Python 3.12, pinned deps
 pytest                       # golden-data recovery + backtest gates
 ```
 
-The production nightly does not use a Supabase API or service-role key for
-reads. After applying the migrations, an owner sets a strong password on the
-`priceflag_ml_readonly` database role out of band and stores its complete,
-percent-encoded TLS libpq URL in the GitHub secret
-`SUPABASE_ML_READONLY_KEY`. The direct reader checks that the API origin and
-database URL identify the same 20-letter Supabase project, requires the exact
-read-only role, requires certificate and hostname verification, positively
-attests protected project/environment/sentinel database markers, disables
-prepared statements for transaction-pooler compatibility, and wraps every
-query in a read-only transaction. Never grant this role access to
-`shops.access_token_enc` and never substitute `SUPABASE_SERVICE_ROLE_KEY`.
+The production nightly never receives a Supabase credential. It reads aggregate
+model inputs through authenticated `POST /api/ml/export`; the application keeps
+its service-role key server-side and the route cannot represent Shopify tokens,
+customer identities, or order-level records. The worker first attests that the
+origin is a READY deployment in the pinned Vercel project and that the export
+reports the expected Supabase project and environment. Migration
+`20260804180000_normalize_ml_readonly_privileges.sql` permanently retires the
+former direct reader as `NOLOGIN` and removes its policies, memberships and
+application grants.
 
 `ml-nightly.yml` fails closed unless it sees at least one real shop with order
 history and the application acknowledges at least one model-output row. Its
 target is verified against the pinned Vercel project and deployment class before
 the ingest secret is sent. Every accepted model-run receipt is then read back
-from the attested database with the exact commit, status and row count. The only
-uploaded file is `real_ingest_evidence.json`; it records the database identity,
+through the same authenticated application boundary with the exact commit,
+status and row count. The only uploaded file is `real_ingest_evidence.json`; it
+records the source identity,
 aggregate counts, commit and pass/fail state—never shop domains, products,
 variant IDs, model-run IDs, order data, connection details, or credentials. A
 green golden-only run is useful PR evidence but is not a production-nightly

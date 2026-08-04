@@ -27,8 +27,7 @@ import { createHash } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { env } from '@/lib/config';
-import { safeEqual } from '@/lib/crypto';
+import { isMlPipelineAuthorised } from '@/lib/ml-pipeline-auth';
 import {
   validateElasticityFits,
   validateExpectedBands,
@@ -64,15 +63,6 @@ function fail(code: string, message: string, status: number, extra: Record<strin
   return NextResponse.json({ error: { code, message, retryable: false, details: null }, ...extra }, { status });
 }
 
-function authorised(request: NextRequest): boolean {
-  const secret = env('ML_INGEST_SECRET');
-  if (secret === undefined) return false;
-  const header = request.headers.get('authorization');
-  if (header === null) return false;
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match !== null && safeEqual(match[1] as string, secret);
-}
-
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -85,7 +75,7 @@ function canonical(value: unknown): string {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (!authorised(request)) {
+  if (!isMlPipelineAuthorised(request)) {
     return fail('unauthorized', 'Missing or invalid ML ingest secret.', 401);
   }
 

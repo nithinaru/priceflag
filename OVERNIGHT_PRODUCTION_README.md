@@ -402,6 +402,30 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   remain open. Invite access stays closed; no merge, promotion, hosted database
   mutation or Shopify price write occurred.
 
+- `2026-08-04T19:30:24Z` — the 17:13/17:39 direct-PostgreSQL ML design above is
+  superseded. Hosted Supabase extension schemas carry platform-owned PUBLIC
+  privileges that tenant migrations cannot reliably narrow, so the external
+  worker now receives no database login or service-role key. Real model inputs
+  move through authenticated `POST /api/ml/export`, whose contract exposes only
+  aggregate product-day, catalog, applied-price-history and rollout-window
+  fields for active real stores. The worker first attests the pinned READY
+  Vercel target and exact Supabase project/environment, paginates deterministic
+  tenant-scoped rows, writes through the existing atomic ingest route, then
+  verifies every accepted run by exact shop/commit/id/row count. The old
+  `priceflag_ml_readonly` identity is retired across separate committed
+  migrations: direct login closes first, any membership fails the next gate,
+  and only then are old sessions drained and the policies/grants attested absent.
+  A database that applied an older membership migration must prove a full
+  Postgres restart after lockout, eliminating otherwise invisible historical
+  `SET ROLE` sessions. A 1,005-tied-product regression
+  crosses the maximum export page boundary and proves no variant is omitted or
+  duplicated. Psycopg and the former DB-key/sentinel workflow secrets were
+  removed. Local API, deployment, type, smoke and demo-adversarial checks are
+  green; the newest migration still requires the isolated GitHub Supabase replay
+  and hosted staging before this candidate may merge. No hosted system or
+  Shopify price was changed, invite access remains closed, and automatic
+  rollback remains disabled.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
@@ -412,8 +436,9 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
 - [x] Zero-price, acknowledgement-loss, partial rollback, compare-at restore,
   chained kill switch and external-edit regressions
 - [x] Automatic rollback disabled by default; scheduled evaluator disabled
-- [x] Fresh isolated Supabase migration replay, schema lint, real adapter and
-  adversarial Postgres suites
+- [ ] Fresh isolated Supabase migration replay, schema lint, real adapter and
+  adversarial Postgres suites for the newest role-retirement migration (the
+  previously published migration chain passed; the current candidate has not)
 - [ ] Hosted staging migration apply, security/performance advisors and staging
   integration suite
 - [ ] GitHub ML secrets and a proven real-store nightly ingest
@@ -457,3 +482,10 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   Also correct `priceflag-staging`, whose live settings currently allow
   self-review/admin bypass and contain no secrets. Record only secret names and
   run URLs here—never values.
+- `2026-08-04T19:30:24Z` — ML credential handoff supersedes the preceding
+  five-credential request. Configure only `ML_INGEST_SECRET` and `VERCEL_TOKEN`
+  in each protected ML Environment. Remove `SUPABASE_ML_READONLY_KEY` and
+  `SUPABASE_ML_SENTINEL` if they were added; never re-enable the retired database
+  role. Keep `SUPABASE_SERVICE_ROLE_KEY` solely in Vercel's server-side app
+  environment. Approve only the exact integration SHA after its isolated
+  Supabase job and code-owned checks are green.

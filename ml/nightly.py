@@ -100,7 +100,7 @@ def _write_real_ingest_evidence(out_dir: Path, evidence: dict) -> None:
     allowed = {
         "schema_version",
         "source_transport",
-        "database_role",
+        "source_authority",
         "project_ref",
         "environment",
         "required_real_ingest",
@@ -185,20 +185,20 @@ def _reports_for_shop(source, client, shop_domain, orders, generated_at, gates_o
     if result.accepted:
         if result.model_run_id is None:
             return False
-        receipts.append((result.model_run_id, result.rows_written))
+        receipts.append((shop_domain, result.model_run_id, result.rows_written))
     return ok and not result.is_error
 
 
 def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require_ingest: bool = False) -> bool:
     from priceflag_ml import elasticity, forecaster, reports  # noqa: PLC0415
-    from priceflag_ml.data import SupabaseSource  # noqa: PLC0415
+    from priceflag_ml.data import PriceflagApiSource  # noqa: PLC0415
     from priceflag_ml.ingest import IngestClient  # noqa: PLC0415
 
     generated_at = _utc_now_iso()
     evidence = {
         "schema_version": 1,
-        "source_transport": "postgresql",
-        "database_role": None,
+        "source_transport": "https",
+        "source_authority": None,
         "project_ref": None,
         "environment": None,
         "required_real_ingest": require_ingest,
@@ -216,21 +216,19 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     }
     expected_project_ref = os.environ.get("PRICEFLAG_ML_EXPECTED_PROJECT_REF", "")
     expected_environment = os.environ.get("PRICEFLAG_ML_EXPECTED_ENVIRONMENT", "")
-    sentinel = os.environ.get("SUPABASE_ML_SENTINEL", "")
     commit_sha = os.environ.get("GITHUB_SHA", "")
     if require_ingest and (
         not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
         or not expected_project_ref
         or not expected_environment
-        or not sentinel
     ):
         evidence["failure_code"] = "missing_attestation_configuration"
         _write_real_ingest_evidence(out_dir, evidence)
         print("real-data refit: required commit/database attestation configuration is incomplete")
         return False
-    source = SupabaseSource.from_env()
-    identity = source.attest(expected_project_ref, expected_environment, sentinel)
-    evidence["database_role"] = identity.database_role
+    source = PriceflagApiSource.from_env()
+    identity = source.attest(expected_project_ref, expected_environment)
+    evidence["source_authority"] = identity.source_authority
     evidence["project_ref"] = identity.project_ref
     evidence["environment"] = identity.environment
     client = IngestClient.from_env_or_none()
@@ -253,7 +251,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     all_fits: list[dict] = []
     all_bands: list[dict] = []
     all_reports: list[dict] = []
-    receipts: list[tuple[str, int]] = []
+    receipts: list[tuple[str, str, int]] = []
     ok = True
     for shop_index, shop_domain in enumerate(shops, start=1):
         orders = source.order_days(shop_domain)
@@ -307,7 +305,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
                     if result.model_run_id is None:
                         ok = False
                     else:
-                        receipts.append((result.model_run_id, result.rows_written))
+                        receipts.append((shop_domain, result.model_run_id, result.rows_written))
         ok &= _reports_for_shop(
             source,
             client,
@@ -326,7 +324,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     evidence["fits_generated"] = len(all_fits)
     evidence["bands_generated"] = len(all_bands)
     evidence["reports_generated"] = len(all_reports)
-    evidence["rows_acknowledged"] = sum(rows_written for _, rows_written in receipts)
+    evidence["rows_acknowledged"] = sum(rows_written for _, _, rows_written in receipts)
     if require_ingest and evidence["rows_acknowledged"] == 0:
         print("real-data refit: no model rows were acknowledged; refusing a green production nightly")
         ok = False
@@ -354,10 +352,7 @@ def main() -> int:
     (out_dir / "model_runs.json").write_text(json.dumps(rows, indent=2, default=str))
 
     require_real = os.environ.get("REQUIRE_REAL_INGEST", "").lower() in {"1", "true", "yes"}
-    read_keys = (
-        "SUPABASE_URL",
-        "SUPABASE_ML_READONLY_KEY",
-        "SUPABASE_ML_SENTINEL",
+    identity_keys = (
         "PRICEFLAG_ML_EXPECTED_PROJECT_REF",
         "PRICEFLAG_ML_EXPECTED_ENVIRONMENT",
     )
@@ -367,18 +362,18 @@ def main() -> int:
         "PRICEFLAG_EXPECTED_VERCEL_TARGET",
         "VERCEL_TOKEN",
     )
-    read_configured = all(os.environ.get(key) for key in read_keys)
+    identity_configured = all(os.environ.get(key) for key in identity_keys)
     write_configured = bool(os.environ.get("PRICEFLAG_APP_URL") or os.environ.get("APP_URL")) and all(
         os.environ.get(key) for key in write_keys
     )
     any_configured = any(
         os.environ.get(key)
-        for key in (*read_keys, "PRICEFLAG_APP_URL", "APP_URL", *write_keys)
+        for key in (*identity_keys, "PRICEFLAG_APP_URL", "APP_URL", *write_keys)
     )
-    if any_configured and not (read_configured and write_configured):
-        print("real-data refit: partial configuration is unsafe; all read and ingest settings are required")
+    if any_configured and not (identity_configured and write_configured):
+        print("real-data refit: partial configuration is unsafe; all source and ingest settings are required")
         ok = False
-    elif read_configured and write_configured:
+    elif identity_configured and write_configured:
         metrics = {row["model_version"]: row["metrics"] for row in rows}
         ok &= refit_real_stores(out_dir, gates_ok=ok, gate_metrics=metrics, require_ingest=require_real)
     elif require_real:

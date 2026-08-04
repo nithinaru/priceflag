@@ -4067,7 +4067,7 @@ async function testAdapters(): Promise<void> {
       }
     });
 
-    await test('the ML privilege normalizer removes independently granted forbidden columns', async () => {
+    await test('the legacy ML-role retirement removes independently granted forbidden columns', async () => {
       const migration = readFileSync(
         resolve(
           process.cwd(),
@@ -4098,178 +4098,86 @@ async function testAdapters(): Promise<void> {
         const normalized = await postgres.query<{
           token_readable: boolean;
           name_writable: boolean;
-          domain_readable: boolean;
         }>(`select
               has_column_privilege(
                 'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
               ) as token_readable,
               has_column_privilege(
                 'priceflag_ml_readonly', 'public.shops', 'name', 'UPDATE'
-              ) as name_writable,
-              has_column_privilege(
-                'priceflag_ml_readonly', 'public.shops', 'shop_domain', 'SELECT'
-              ) as domain_readable`);
-        assert(!normalized.rows[0]?.token_readable, 'normalization retained forbidden token access');
-        assert(!normalized.rows[0]?.name_writable, 'normalization retained a forbidden column write');
-        assert(normalized.rows[0]?.domain_readable, 'normalization lost the approved shop-domain read');
+              ) as name_writable`);
+        assert(!normalized.rows[0]?.token_readable, 'role retirement retained forbidden token access');
+        assert(!normalized.rows[0]?.name_writable, 'role retirement retained a forbidden column write');
       } finally {
         await postgres.query('rollback');
       }
     });
 
-    await test('the ML reader cannot select the encrypted Shopify token', async () => {
+    await test('the legacy external ML database identity is permanently unusable', async () => {
       const { rows } = await postgres.query<{
+        can_login: boolean;
+        inherits_roles: boolean;
+        is_superuser: boolean;
+        can_create_database: boolean;
+        can_create_role: boolean;
+        can_replicate: boolean;
+        bypasses_rls: boolean;
+        connection_limit: number;
+        memberships: number;
+        policies: number;
+        direct_grants: number;
         token_readable: boolean;
         domain_readable: boolean;
       }>(
         `select
+           role.rolcanlogin as can_login,
+           role.rolinherit as inherits_roles,
+           role.rolsuper as is_superuser,
+           role.rolcreatedb as can_create_database,
+           role.rolcreaterole as can_create_role,
+           role.rolreplication as can_replicate,
+           role.rolbypassrls as bypasses_rls,
+           role.rolconnlimit as connection_limit,
+           (select count(*)::int
+              from pg_auth_members link
+             where role.oid in (link.roleid, link.member)) as memberships,
+           (select count(*)::int
+              from pg_policy policy
+             where role.oid = any(policy.polroles)) as policies,
+           (select count(*)::int
+              from (
+                select 1 from information_schema.table_privileges
+                 where grantee = 'priceflag_ml_readonly' and table_schema = 'public'
+                union all
+                select 1 from information_schema.column_privileges
+                 where grantee = 'priceflag_ml_readonly' and table_schema = 'public'
+                union all
+                select 1 from information_schema.routine_privileges
+                 where grantee = 'priceflag_ml_readonly' and routine_schema = 'public'
+              ) grants) as direct_grants,
            has_column_privilege(
              'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
            ) as token_readable,
            has_column_privilege(
              'priceflag_ml_readonly', 'public.shops', 'shop_domain', 'SELECT'
-           ) as domain_readable`,
-      );
-      const permission = rows[0];
-      if (permission === undefined) throw new Error('Postgres did not return the ML column privileges');
-      assert(!permission.token_readable, 'the ML role can read shops.access_token_enc');
-      assert(permission.domain_readable, 'the ML role lost its documented non-sensitive shop-domain access');
-    });
-
-    await test('the ML reader has no effective authority outside its approved read surface', async () => {
-      const { rows } = await postgres.query<{
-        is_superuser: boolean;
-        can_create_database: boolean;
-        can_create_role: boolean;
-        inherits_roles: boolean;
-        can_replicate: boolean;
-        bypasses_rls: boolean;
-        connection_limit: number;
-        role_memberships: number;
-        can_create_public_objects: boolean;
-        creatable_schemas: number;
-        creatable_databases: number;
-        writable_relations: number;
-        accessible_sequences: number;
-        executable_security_definers: number;
-        unexpected_column_privileges: number;
-      }>(
-        `select role.rolsuper as is_superuser,
-                role.rolcreatedb as can_create_database,
-                role.rolcreaterole as can_create_role,
-                role.rolinherit as inherits_roles,
-                role.rolreplication as can_replicate,
-                role.rolbypassrls as bypasses_rls,
-                role.rolconnlimit as connection_limit,
-                (select count(*)::int
-                   from pg_auth_members membership
-                  where membership.member = role.oid) as role_memberships,
-                has_schema_privilege(
-                  'priceflag_ml_readonly', 'public', 'CREATE'
-                ) as can_create_public_objects,
-                (select count(*)::int
-                   from pg_namespace namespace
-                  where namespace.nspname <> 'information_schema'
-                    and namespace.nspname !~ '^pg_'
-                    and has_schema_privilege(
-                      'priceflag_ml_readonly', namespace.oid, 'CREATE'
-                    )) as creatable_schemas,
-                (select count(*)::int
-                  from pg_database database
-                  where database.datallowconn
-                    and (
-                      database.datdba = role.oid
-                      or has_database_privilege(
-                        'priceflag_ml_readonly', database.oid, 'CREATE'
-                      )
-                    )) as creatable_databases,
-                (select count(*)::int
-                   from pg_class relation
-                   join pg_namespace namespace on namespace.oid = relation.relnamespace
-                  where namespace.nspname <> 'information_schema'
-                    and namespace.nspname !~ '^pg_'
-                    and relation.relkind in ('r', 'p', 'v', 'm', 'f')
-                    and has_table_privilege(
-                      'priceflag_ml_readonly', relation.oid,
-                      'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
-                    )) as writable_relations,
-                (select count(*)::int
-                   from pg_class sequence
-                   join pg_namespace namespace on namespace.oid = sequence.relnamespace
-                  where namespace.nspname <> 'information_schema'
-                    and namespace.nspname !~ '^pg_'
-                    and sequence.relkind = 'S'
-                    and has_sequence_privilege(
-                      'priceflag_ml_readonly', sequence.oid, 'USAGE,SELECT,UPDATE'
-                    )) as accessible_sequences,
-                (select count(*)::int
-                   from pg_proc routine
-                   join pg_namespace namespace on namespace.oid = routine.pronamespace
-                  where namespace.nspname <> 'information_schema'
-                    and namespace.nspname !~ '^pg_'
-                    and routine.prosecdef
-                    and has_function_privilege(
-                      'priceflag_ml_readonly', routine.oid, 'EXECUTE'
-                    )) as executable_security_definers,
-                (select count(*)::int
-                   from pg_class relation
-                   join pg_namespace namespace on namespace.oid = relation.relnamespace
-                   join pg_attribute attribute on attribute.attrelid = relation.oid
-                  where namespace.nspname <> 'information_schema'
-                    and namespace.nspname !~ '^pg_'
-                    and relation.relkind in ('r', 'p', 'v', 'm', 'f')
-                    and attribute.attnum > 0
-                    and not attribute.attisdropped
-                    and (
-                      has_column_privilege(
-                        'priceflag_ml_readonly', relation.oid, attribute.attnum,
-                        'INSERT,UPDATE,REFERENCES'
-                      )
-                      or (
-                        has_column_privilege(
-                          'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
-                        )
-                        and not (
-                          namespace.nspname = 'public'
-                          and (
-                            relation.relname = any(array[
-                              'ml_product_days', 'ml_products', 'ml_price_history',
-                              'ml_rollout_windows', 'order_days', 'products',
-                              'journal_entries', 'rollouts', 'rollout_variants',
-                              'elasticity_fits', 'expected_bands', 'model_runs',
-                              'rollout_reports'
-                            ])
-                            or (
-                              relation.relname = 'shops'
-                              and attribute.attname = any(array[
-                                'id', 'shop_domain', 'name', 'currency',
-                                'timezone', 'mode', 'created_at'
-                              ])
-                            )
-                          )
-                        )
-                      )
-                    )) as unexpected_column_privileges
-           from pg_roles role
-          where role.rolname = 'priceflag_ml_readonly'`,
+           ) as domain_readable
+          from pg_roles role
+         where role.rolname = 'priceflag_ml_readonly'`,
       );
       const authority = rows[0];
-      if (authority === undefined) throw new Error('Postgres did not return the ML role authority');
-      assert(!authority.is_superuser, 'the ML role is a superuser');
-      assert(!authority.can_create_database, 'the ML role can create databases');
-      assert(!authority.can_create_role, 'the ML role can create or alter roles');
-      assert(!authority.inherits_roles, 'the ML role can inherit memberships');
-      assert(!authority.can_replicate, 'the ML role has replication authority');
-      assert(!authority.bypasses_rls, 'the ML role bypasses row-level security');
-      assertEqual(authority.connection_limit, 5, 'the ML role connection limit');
-      assertEqual(authority.role_memberships, 0, 'the ML role membership count');
-      assert(!authority.can_create_public_objects, 'the ML role can create public-schema objects');
-      assertEqual(authority.creatable_schemas, 0, 'ML-creatable non-system schemas');
-      assertEqual(authority.creatable_databases, 0, 'ML-creatable connectable databases');
-      assertEqual(authority.writable_relations, 0, 'ML-writable non-system relations');
-      assertEqual(authority.accessible_sequences, 0, 'ML-accessible non-system sequences');
-      assertEqual(authority.executable_security_definers, 0, 'ML-executable SECURITY DEFINER routines');
-      assertEqual(authority.unexpected_column_privileges, 0, 'ML column privileges outside the approved surface');
+      if (authority === undefined) throw new Error('Postgres did not return the retired ML role');
+      assert(!authority.can_login, 'the retired ML role can still log in');
+      assert(!authority.inherits_roles, 'the retired ML role inherits roles');
+      assert(!authority.is_superuser, 'the retired ML role is a superuser');
+      assert(!authority.can_create_database, 'the retired ML role can create databases');
+      assert(!authority.can_create_role, 'the retired ML role can create or alter roles');
+      assert(!authority.can_replicate, 'the retired ML role has replication authority');
+      assert(!authority.bypasses_rls, 'the retired ML role bypasses row-level security');
+      assertEqual(authority.connection_limit, 0, 'the retired ML role connection limit');
+      assertEqual(authority.memberships, 0, 'the retired ML role membership count');
+      assertEqual(authority.policies, 0, 'RLS policies referencing the retired ML role');
+      assertEqual(authority.direct_grants, 0, 'direct public-schema grants to the retired ML role');
+      assert(!authority.token_readable, 'the retired ML role can read shops.access_token_enc');
+      assert(!authority.domain_readable, 'the retired ML role retains the obsolete direct read surface');
     });
   } finally {
     await postgres.end();

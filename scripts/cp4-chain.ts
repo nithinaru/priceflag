@@ -15,8 +15,9 @@
  * so wide low-confidence bands are a fine outcome — what must be true is that the
  * artifact travelled the real path, including the honesty gate.
  *
- * Data is pulled through the READ-ONLY ML role, exactly as Lane C's nightly will,
- * and written through the ingest endpoint rather than by direct DB write.
+ * Data is pulled through the authenticated ML export API, exactly as Lane C's
+ * nightly will, and written through the ingest endpoint. The worker receives no
+ * PostgreSQL or Supabase credential.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -26,8 +27,6 @@ import { loadEnv } from './load-env';
 import { attestLiveWriteTarget, isVerifiedRollback } from './live-write-guard';
 
 loadEnv(['.env.preview.local']);
-
-import pg from 'pg';
 
 import { SupabaseAdapter } from '../lib/adapters/supabase';
 import { defaultGuardrails } from '../lib/contracts';
@@ -124,6 +123,39 @@ async function post(
   return { status: response.status, json: parsed };
 }
 
+async function exportRows(
+  baseUrl: string,
+  shopDomain: string,
+  secret: string,
+  bypass: string,
+): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = [];
+  let cursor: number | null = 0;
+  while (cursor !== null) {
+    const result = await post(
+      baseUrl,
+      '/api/ml/export',
+      { operation: 'read', surface: 'product_days', shop_domain: shopDomain, cursor, limit: 1_000 },
+      secret,
+      bypass,
+    );
+    if (result.status !== 200 || result.json === null || typeof result.json !== 'object') {
+      throw new Error(`ML export failed with HTTP ${result.status}`);
+    }
+    const page = (result.json as { rows?: unknown; next_cursor?: unknown }).rows;
+    const next = (result.json as { next_cursor?: unknown }).next_cursor;
+    if (!Array.isArray(page) || page.some((row) => row === null || typeof row !== 'object' || Array.isArray(row))) {
+      throw new Error('ML export returned an invalid product-day page');
+    }
+    rows.push(...(page as Array<Record<string, unknown>>));
+    if (next !== null && (!Number.isSafeInteger(next) || (next as number) <= cursor || page.length === 0)) {
+      throw new Error('ML export returned an invalid cursor');
+    }
+    cursor = next as number | null;
+  }
+  return rows;
+}
+
 async function main(): Promise<void> {
   // Attest ownership before reading from Supabase or sending any secret to the
   // application origin. A hostname supplied by the operator is not authority.
@@ -146,38 +178,38 @@ async function main(): Promise<void> {
   process.stdout.write(`\x1b[1mCP4 — full chain against ${shopDomain}\x1b[0m\n`);
   process.stdout.write(`Ingest target: ${baseUrl}/api/ml/ingest (protected non-production artifact)\n`);
 
-  // ================= a. Lane C, over the read-only role ==================
-  step('a. Lane C reads through the read-only role and produces artifacts');
-
-  const ml = new pg.Client({
-    connectionString: process.env.SUPABASE_ML_READONLY_KEY,
-    ssl: { rejectUnauthorized: false },
-  });
-  await ml.connect();
+  // ================= a. Lane C, over the narrow export API ===============
+  step('a. Lane C reads through the authenticated export API and produces artifacts');
 
   // History stops two days back, mirroring how the nightly actually runs: it
   // sees data through yesterday and forecasts forward from today. Passing every
   // day up to now would make the forecast start tomorrow, and the evaluator —
   // which judges the last CLOSED day — would find no band covering it.
   const historyEnd = addDays(today(shop.timezone), -2);
-  const frame = await ml.query(
-    `select shop_domain, variant_gid as sku, day::text as date, units,
-            coalesce(list_price_cents, 0) as price_cents,
-            net_revenue_cents as revenue_cents, on_promo as promo, had_stockout as stockout
-       from ml_product_days where shop_domain = $1 and day <= $2 order by variant_gid, day`,
-    [shopDomain, historyEnd],
-  );
-  await ml.end();
+  const exported = await exportRows(baseUrl, shopDomain, ingestSecret, bypass);
+  const frame = exported
+    .filter((row) => typeof row.day === 'string' && row.day <= historyEnd)
+    .map((row) => ({
+      shop_domain: row.shop_domain,
+      sku: row.variant_gid,
+      date: row.day,
+      units: row.units,
+      price_cents: row.list_price_cents ?? 0,
+      revenue_cents: row.net_revenue_cents,
+      promo: row.on_promo,
+      stockout: row.had_stockout,
+    }))
+    .sort((left, right) => `${left.sku}:${left.date}`.localeCompare(`${right.sku}:${right.date}`));
   process.stdout.write(`    history through ${historyEnd}; forecast therefore starts ${addDays(historyEnd, 1)}\n`);
 
-  check('pulled history through the READ-ONLY role', frame.rows.length > 0, `${frame.rows.length} product-days`);
+  check('pulled history through the narrow export API', frame.length > 0, `${frame.length} product-days`);
 
   const generatedAt = new Date().toISOString();
   const horizon = 21;
   const raw = execFileSync('uv', ['run', '--quiet', 'python', '-c', BRIDGE], {
     cwd: ML_DIR,
     input: JSON.stringify({
-      rows: frame.rows.map((row) => ({ ...row, shop_id: shopDomain })),
+      rows: frame.map((row) => ({ ...row, shop_id: shopDomain })),
       shop_domain: shopDomain,
       generated_at: generatedAt,
       horizon,

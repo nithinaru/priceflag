@@ -243,7 +243,7 @@ hierarchical Bayes; anything fancier must prove itself on the harness.
 
 `.env.example` (Lane B maintains): `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`,
 `SHOPIFY_SCOPES=read_products,write_products,read_orders,read_all_orders`,
-`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ML_READONLY_KEY`,
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ML_INGEST_SECRET`,
 `RESEND_API_KEY`, `APP_URL`, `ENCRYPTION_KEY`, `CRON_SECRET`. Lane C
 additionally uses repo secrets in GitHub Actions for the nightly job.
 

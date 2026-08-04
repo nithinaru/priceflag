@@ -118,32 +118,7 @@ jobs:
             >"$RUNNER_TEMP/supabase-start.log" 2>&1; then
             echo "::error::The isolated Supabase stack or migration chain failed to start."
             node scripts/sanitize-supabase-start-log.mjs "$RUNNER_TEMP/supabase-start.log"
-
-            # Keep the real migration red. In a disposable copy only, bypass
-            # its final post-assertion and print safe catalog names so the
-            # unexpected grant can be removed precisely on the next change.
             npx --no-install supabase stop >/dev/null 2>&1 || true
-            PRICEFLAG_DIAGNOSTIC_ROOT="$RUNNER_TEMP/priceflag-supabase-diagnostic"
-            mkdir -p "$PRICEFLAG_DIAGNOSTIC_ROOT"
-            cp -R supabase "$PRICEFLAG_DIAGNOSTIC_ROOT/supabase"
-            node scripts/ml-privilege-diagnostics.mjs prepare \
-              "$PRICEFLAG_DIAGNOSTIC_ROOT/supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql"
-
-            if npx --no-install supabase start --debug \
-              --workdir "$PRICEFLAG_DIAGNOSTIC_ROOT" \
-              --exclude realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor \
-              >"$RUNNER_TEMP/supabase-diagnostic-start.log" 2>&1; then
-              npx --no-install supabase status --workdir "$PRICEFLAG_DIAGNOSTIC_ROOT" \
-                -o env >"$RUNNER_TEMP/supabase-diagnostic.env"
-              set -a
-              source "$RUNNER_TEMP/supabase-diagnostic.env"
-              set +a
-              SUPABASE_DB_URL="$DB_URL" node scripts/ml-privilege-diagnostics.mjs inspect
-            else
-              echo "The disposable privilege diagnostic stack could not start."
-            fi
-            npx --no-install supabase stop --workdir "$PRICEFLAG_DIAGNOSTIC_ROOT" \
-              >/dev/null 2>&1 || true
             exit 1
           fi
 
@@ -168,6 +143,9 @@ jobs:
 
       - name: Lint the migrated database
         run: npx --no-install supabase db lint --local --level warning --fail-on error
+
+      - name: Prove the multi-transaction ML role lockout against a live legacy session
+        run: npm run test:ml-role-retirement
 
       - name: Run the real Supabase adapter and privilege-boundary smoke suite
         run: npm run smoke

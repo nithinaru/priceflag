@@ -7,7 +7,6 @@ dependencies = [
     "lightgbm==4.7.0",
     "numpy==2.5.1",
     "pandas==3.0.5",
-    "psycopg[binary]==3.3.4",
     "scikit-learn==1.9.0",
     "statsmodels==0.14.6",
 ]

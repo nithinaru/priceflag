@@ -58,9 +58,6 @@ jobs:
       - name: Refit real stores, pass model gates, and ingest accepted outputs
         run: uv run --locked python nightly.py
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ML_READONLY_KEY: ${{ secrets.SUPABASE_ML_READONLY_KEY }}
-          SUPABASE_ML_SENTINEL: ${{ secrets.SUPABASE_ML_SENTINEL }}
           PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
           PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
           PRICEFLAG_APP_URL: https://priceflag-app.vercel.app

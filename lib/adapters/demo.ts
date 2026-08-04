@@ -402,16 +402,23 @@ export class DemoAdapter implements StoreAdapter {
     }
 
     items.sort((a, b) => {
+      let primary: number;
       switch (query.sort) {
         case 'price_asc':
-          return a.price_cents - b.price_cents;
+          primary = a.price_cents - b.price_cents;
+          break;
         case 'price_desc':
-          return b.price_cents - a.price_cents;
+          primary = b.price_cents - a.price_cents;
+          break;
         case 'units_desc':
-          return (unitsByVariant.get(b.variant_gid) ?? 0) - (unitsByVariant.get(a.variant_gid) ?? 0);
+          primary = (unitsByVariant.get(b.variant_gid) ?? 0) - (unitsByVariant.get(a.variant_gid) ?? 0);
+          break;
         default:
-          return `${a.title}${a.variant_title ?? ''}`.localeCompare(`${b.title}${b.variant_title ?? ''}`);
+          primary = `${a.title}\u0000${a.variant_title ?? ''}`.localeCompare(
+            `${b.title}\u0000${b.variant_title ?? ''}`,
+          );
       }
+      return primary === 0 ? a.variant_gid.localeCompare(b.variant_gid) : primary;
     });
 
     const offset = query.offset ?? 0;
@@ -498,7 +505,8 @@ export class DemoAdapter implements StoreAdapter {
       return true;
     });
     rows.sort((a, b) => (a.day === b.day ? a.variant_gid.localeCompare(b.variant_gid) : a.day.localeCompare(b.day)));
-    return clone(rows);
+    const offset = query.offset ?? 0;
+    return clone(query.limit === undefined ? rows.slice(offset) : rows.slice(offset, offset + query.limit));
   }
 
   async upsertOrderDays(shopId: string, rows: readonly OrderDayUpsert[]): Promise<number> {
@@ -1164,6 +1172,11 @@ export class DemoAdapter implements StoreAdapter {
       .filter((row) => (shopId === null ? true : row.shop_id === shopId))
       .sort((a, b) => b.started_at.localeCompare(a.started_at));
     return clone(rows.slice(0, limit));
+  }
+
+  async getModelRunsByIds(shopId: string, ids: readonly string[]): Promise<ModelRun[]> {
+    const wanted = new Set(ids);
+    return clone(this.state.modelRuns.filter((row) => row.shop_id === shopId && wanted.has(row.id)));
   }
 
   async recordModelRun(

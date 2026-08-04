@@ -7,30 +7,10 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote, urlparse
+from .target import VercelTargetAttestor, clean_https_origin
 
 MAX_ROWS_PER_REQUEST = 20_000
 VALID_KINDS = ("elasticity", "baseline", "counterfactual", "report")
-PRICEFLAG_VERCEL_PROJECT_ID = "prj_RU8NlBDoR7t89BNqn5BagOpmpnmm"
-PRICEFLAG_VERCEL_TEAM_ID = "team_AqaBD6YaOf9DIJ7NzbytTZTW"
-
-
-def _clean_https_origin(value: str, name: str) -> str:
-    parsed = urlparse(value)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-        or parsed.port not in {None, 443}
-    ):
-        raise ValueError(f"{name} must be a clean HTTPS origin")
-    return f"https://{parsed.hostname}"
-
-
 def assert_bands_cannot_double_count(bands: list[dict]) -> None:
     if not bands:
         return
@@ -100,22 +80,13 @@ class IngestClient:
     ) -> None:
         if not base_url or not secret:
             raise ValueError("IngestClient needs both base_url and secret")
-        origin = _clean_https_origin(base_url, "PRICEFLAG_APP_URL")
-        if (vercel_token is None) != (expected_target is None):
-            raise ValueError("Vercel token and expected target must be configured together")
-        if expected_target not in {None, "production", "preview"}:
-            raise ValueError("expected Vercel target must be production or preview")
-        if vercel_token is not None and not origin.endswith(".vercel.app"):
-            raise ValueError("attested ingest target must be a vercel.app origin")
+        origin = clean_https_origin(base_url, "PRICEFLAG_APP_URL")
         self._origin = origin
         self._url = origin + "/api/ml/ingest"
         self._secret = secret
         self._client = client
         self._timeout = timeout
-        self._vercel_token = vercel_token
-        self._expected_target = expected_target
-        self._attestation_client = attestation_client
-        self._attested = False
+        self._target = VercelTargetAttestor(origin, vercel_token, expected_target, attestation_client)
 
     @classmethod
     def from_env(cls, client: Any = None) -> "IngestClient":
@@ -130,8 +101,8 @@ class IngestClient:
                 "VERCEL_TOKEN and PRICEFLAG_EXPECTED_VERCEL_TARGET are required for real ingest"
             )
         try:
-            origin = _clean_https_origin(base, "PRICEFLAG_APP_URL")
-            expected_origin = _clean_https_origin(expected_base, "PRICEFLAG_EXPECTED_APP_URL")
+            origin = clean_https_origin(base, "PRICEFLAG_APP_URL")
+            expected_origin = clean_https_origin(expected_base, "PRICEFLAG_EXPECTED_APP_URL")
         except ValueError as error:
             raise RuntimeError(str(error)) from error
         if origin != expected_origin:
@@ -159,42 +130,7 @@ class IngestClient:
         return self._client
 
     def _attest_target(self) -> None:
-        if self._vercel_token is None or self._attested:
-            return
-        if self._attestation_client is None:
-            import httpx
-
-            self._attestation_client = httpx.Client(timeout=30.0)
-        hostname = urlparse(self._origin).hostname
-        endpoint = (
-            f"https://api.vercel.com/v13/deployments/{quote(hostname or '', safe='')}"
-            f"?teamId={quote(PRICEFLAG_VERCEL_TEAM_ID, safe='')}"
-        )
-        response = self._attestation_client.get(
-            endpoint,
-            headers={"Authorization": f"Bearer {self._vercel_token}"},
-        )
-        if response.status_code != 200:
-            raise RuntimeError(f"Vercel ingest-target attestation failed with HTTP {response.status_code}")
-        body = response.json()
-        if not isinstance(body, dict):
-            raise RuntimeError("Vercel ingest-target attestation returned an invalid payload")
-        project = body.get("project")
-        project_id = body.get("projectId") or (project.get("id") if isinstance(project, dict) else None)
-        aliases = body.get("alias") if isinstance(body.get("alias"), list) else []
-        deployment_url = body.get("url")
-        if project_id != PRICEFLAG_VERCEL_PROJECT_ID:
-            raise RuntimeError("ingest target is outside the pinned Priceflag Vercel project")
-        if body.get("readyState") != "READY":
-            raise RuntimeError("ingest target deployment is not READY")
-        actual_target = body.get("target")
-        if self._expected_target == "production" and actual_target != "production":
-            raise RuntimeError("ingest target is not the Production deployment")
-        if self._expected_target == "preview" and actual_target == "production":
-            raise RuntimeError("preview ingest gate resolved to a Production deployment")
-        if hostname != deployment_url and hostname not in aliases:
-            raise RuntimeError("Vercel attestation did not return the expected ingest hostname")
-        self._attested = True
+        self._target.attest()
 
     def post_run(
         self,

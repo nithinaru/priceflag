@@ -38,9 +38,9 @@
  *     browser redirects arrive with no cookie and no way to get one; the
  *     callback authenticates itself with Shopify's query HMAC + the state nonce.
  *
- *   - `/api/ml/ingest` — `ML_INGEST_SECRET` bearer, constant-time. The nightly
- *     worker has no browser cookie and this dedicated credential is its sole
- *     write authority.
+ *   - `/api/ml/ingest` and `/api/ml/export` — `ML_INGEST_SECRET` bearer,
+ *     constant-time. The nightly worker has no browser cookie; it never receives
+ *     a database credential or the Supabase service key.
  *
  * ## Embedded (Shopify admin) traffic
  *
@@ -87,6 +87,7 @@ const EXEMPT_EXACT = new Set([
   '/api/health',
   '/api/cron/evaluate',
   '/api/ml/ingest',
+  '/api/ml/export',
   '/api/auth',
   '/api/auth/callback',
 ]);
