@@ -55,6 +55,32 @@ jobs:
       - name: Build production bundle
         run: npm run build
 
+      - name: Install the Chromium browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify the compiled app in a real browser
+        env:
+          PRICEFLAG_MODE: demo
+          APP_ACCESS_SECRET: local-ci-browser-gate
+          PRICEFLAG_URL: http://127.0.0.1:3000
+        run: |
+          npm start >/tmp/priceflag-next.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              cat /tmp/priceflag-next.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          npm run smoke:browser
+
       - name: Reject high-severity dependency vulnerabilities
         run: npm audit --audit-level=high
 

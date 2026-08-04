@@ -157,20 +157,38 @@ async function main(): Promise<void> {
     for (const check of CHECKS) {
       const page = await context.newPage();
       const consoleErrors: string[] = [];
+      const requestFailures: string[] = [];
       page.on('console', (message) => {
         if (message.type() === 'error') consoleErrors.push(message.text());
       });
       page.on('pageerror', (error) => consoleErrors.push(String(error.message)));
+      page.on('requestfailed', (request) => {
+        const error = request.failure()?.errorText ?? 'request failed';
+        // Next can cancel an RSC prefetch when a navigation or page close makes
+        // it irrelevant. That is expected browser behavior, not a broken request.
+        if (error === 'net::ERR_ABORTED' && request.url().includes('_rsc=')) return;
+        requestFailures.push(`${request.method()} ${request.url()} (${error})`);
+      });
 
       try {
         await coldLoad(page, check.path);
         const outcome = await check.run(page);
         record(check.name, outcome.ok, outcome.detail);
 
-        // A hydration failure often shows here even when the DOM check passes.
-        if (consoleErrors.length > 0) {
-          process.stdout.write(`      \x1b[33mconsole: ${consoleErrors[0]?.slice(0, 140)}\x1b[0m\n`);
-        }
+        const overlayCount = await page
+          .locator('[data-nextjs-dialog], .vite-error-overlay, #webpack-dev-server-client-overlay')
+          .count();
+        const runtimeOk = consoleErrors.length === 0 && requestFailures.length === 0 && overlayCount === 0;
+        const detail = runtimeOk
+          ? 'no console errors, failed requests, or framework overlay'
+          : [
+              consoleErrors[0] ? `console: ${consoleErrors[0].slice(0, 140)}` : null,
+              requestFailures[0] ? `request: ${requestFailures[0].slice(0, 180)}` : null,
+              overlayCount > 0 ? `${overlayCount} framework error overlay(s)` : null,
+            ]
+              .filter((item): item is string => item !== null)
+              .join('; ');
+        record(`${check.path} — no blocking browser errors`, runtimeOk, detail);
       } catch (cause) {
         record(check.name, false, cause instanceof Error ? cause.message : String(cause));
       } finally {

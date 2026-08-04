@@ -145,6 +145,13 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   preview, but its own PR description still marks real-mode pages and browser
   verification incomplete. Invite access remains closed and no merge or
   production deployment has been performed.
+- `2026-08-04T05:01:02Z` — backend draft PR #2 is green for every
+  credential-free GitHub check and has a Ready, SSO-protected Vercel preview.
+  Supabase Preview is explicitly skipped, so staging remains closed. The
+  production-gates workflow now installs Chromium and treats hydration,
+  framework overlays, console errors and non-benign failed requests as blocking;
+  the compiled local artifact passes 6/6 browser assertions. Claude draft PR #1
+  has not yet rebased or completed its documented real-mode page/browser work.
 
 ## Current launch checklist
 
