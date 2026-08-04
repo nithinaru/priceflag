@@ -86,7 +86,12 @@ async function main(): Promise<void> {
     await admin.query(
       `comment on role priceflag_ml_readonly is 'Priceflag ML membership precheck v1 passed.'`,
     );
-    await admin.query(`alter role priceflag_ml_readonly login password '${testPassword}'`);
+    // The applied retirement migration also leaves CONNECTION LIMIT 0 behind.
+    // Re-open both boundaries in this localhost-only setup so the test can
+    // establish a genuinely pre-lockout session before applying phase one.
+    await admin.query(
+      `alter role priceflag_ml_readonly login connection limit -1 password '${testPassword}'`,
+    );
     legacy = new Client({
       connectionString: roleUrl('priceflag_ml_readonly'),
       connectionTimeoutMillis: 2_000,
