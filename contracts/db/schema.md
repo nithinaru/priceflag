@@ -88,6 +88,12 @@ before 180 days of order history finishes, and onboarding says so (R24).
 
 ### `rollouts`
 
+Draft creation uses the server-only `pf_create_rollout_draft(jsonb, jsonb)` RPC.
+It inserts the rollout, its frozen `rollout_variants` selection, and the created
+event in one
+transaction; execution is revoked from `public`, `anon`, and `authenticated` and
+granted only to `service_role`.
+
 | Column | Notes |
 |---|---|
 | `stages` | jsonb `[{index, fraction, hold_days}]`. Cumulative fractions **of the SKU selection, never of traffic**. Immutable after start |

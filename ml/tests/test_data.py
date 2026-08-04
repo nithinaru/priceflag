@@ -125,3 +125,17 @@ def test_supabase_order_days_empty_result(monkeypatch):
     out = src.order_days("nope")
     assert out.empty
     assert list(out.columns) == CANONICAL_COLUMNS
+
+
+def test_list_shops_deduplicates_across_pages(monkeypatch):
+    monkeypatch.setattr(data, "_PAGE_SIZE", 2)
+    source, seen = _mock_source(
+        [
+            {"shop_domain": "a.myshopify.com"},
+            {"shop_domain": "a.myshopify.com"},
+            {"shop_domain": "b.myshopify.com"},
+        ],
+        page_size=2,
+    )
+    assert source.list_shops() == ["a.myshopify.com", "b.myshopify.com"]
+    assert [params["offset"] for params in seen] == ["0", "2"]

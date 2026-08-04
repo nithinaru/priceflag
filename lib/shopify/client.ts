@@ -39,7 +39,13 @@ export interface GraphqlUserError {
 
 export class ShopifyApiError extends Error {
   constructor(
-    readonly code: 'throttled' | 'graphql_errors' | 'http_error' | 'network' | 'user_errors',
+    readonly code:
+      | 'throttled'
+      | 'graphql_errors'
+      | 'http_error'
+      | 'network'
+      | 'user_errors'
+      | 'invalid_response',
     message: string,
     readonly details?: unknown,
     readonly status?: number,

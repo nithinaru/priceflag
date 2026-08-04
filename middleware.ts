@@ -18,10 +18,9 @@
  *
  * This is a shared secret, not authentication. It does not identify a merchant,
  * it does not scope a request to a shop, and everyone who has it has all of it.
- * **R33 — App Bridge session-token verification — is still required before any
- * merchant is onboarded.** `lib/shopify/session.ts` already verifies those tokens
- * (HS256 pinned, `aud`/`iss`/`dest` checked); what is missing is that no route
- * requires one. This gate buys time; it does not replace that work.
+ * Merchant routes independently require App Bridge session tokens and derive
+ * their tenant only from the signed `dest` claim. This gate remains the
+ * invite-only preview boundary; it is not merchant authentication.
  *
  * ## The exemptions, and why each one is safe
  *
@@ -36,9 +35,9 @@
  *   - `/api/health` — reports capability booleans and no data. Deliberately open
  *     so uptime checks work without a credential.
  *
- * `/api/ml/ingest` is NOT exempt at the gate level even though it has its own
- * secret — defence in depth on the path that writes the numbers driving
- * auto-rollback. Lane C's workflow sends both.
+ *   - `/api/ml/ingest` — `ML_INGEST_SECRET` bearer, constant-time. The nightly
+ *     worker has no browser cookie and this dedicated credential is its sole
+ *     write authority.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -61,7 +60,7 @@ const DEMO_COOKIE_DAYS = 7;
 /** Query parameter that mints the cookie: `?access=…` once, then it is stripped. */
 const QUERY_PARAM = 'access';
 
-const EXEMPT_EXACT = new Set(['/api/health', '/api/cron/evaluate']);
+const EXEMPT_EXACT = new Set(['/api/health', '/api/cron/evaluate', '/api/ml/ingest']);
 const EXEMPT_PREFIX = ['/api/webhooks/'];
 
 function isExempt(pathname: string): boolean {

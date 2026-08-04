@@ -72,6 +72,7 @@ async function main(): Promise<void> {
       await runInvariantSuite(supabase, shop, 'SupabaseAdapter');
       await runConcurrencySuite(supabase, shop, 'SupabaseAdapter');
       await runExternalChangeSuite(supabase, shop, 'SupabaseAdapter');
+      await runZeroPriceSuite(supabase, shop, 'SupabaseAdapter');
 
       // Leave nothing active behind. The production evaluator runs hourly over
       // `listActiveRollouts()` across EVERY shop, so a test rollout left in

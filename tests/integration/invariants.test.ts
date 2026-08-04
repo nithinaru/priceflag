@@ -48,6 +48,7 @@ import {
   test,
   uniqueId,
   type ProductSpec,
+  type FaultKind,
 } from './_harness';
 
 // ---------------------------------------------------------------------------
@@ -432,6 +433,85 @@ export async function runInvariantSuite(adapter: StoreAdapter, shop: Shop, label
     const journal = await adapter.listJournalEntries(shop.id, { rollout_id: scenario.rollout.id, limit: 100 });
     const successes = journal.items.filter((entry) => entry.status !== 'failed');
     assertEqual(successes.length, 1, `exactly one successful journal row, got ${successes.length}`);
+  });
+
+  await test('null, partial, or mismatched Shopify acknowledgements never stamp the database', async () => {
+    const faults: FaultKind[] = [
+      'ack_missing',
+      'ack_null',
+      'ack_partial',
+      'ack_wrong_id',
+      'ack_extra',
+      'ack_wrong_price',
+      'ack_wrong_compare_at',
+    ];
+
+    for (const [index, fault] of faults.entries()) {
+      const product = makeProduct(700 + index, {
+        priceCents: 1000 + index * 100,
+        compareAtCents: 2500,
+        productIndex: 700 + index,
+      });
+      const scenario = await makeScenario(adapter, shop, [product], { type: 'percent', percent: 10 });
+      const finalStage = scenario.rollout.stages.length - 1;
+      scenario.rollout = await adapter.updateRollout(scenario.rollout.id, {
+        current_stage: finalStage,
+        stage_entered_at: nowIso(),
+      });
+      scenario.shopify.program({ kind: fault, onCall: 1 });
+
+      const first = await applyStage(scenario.context as never, scenario.rollout, finalStage);
+      assertEqual(first.applied, 0, `${fault}: malformed acknowledgement was counted as applied`);
+      assertEqual(first.failed, 1, `${fault}: malformed acknowledgement was not a failure`);
+      assertEqual(first.fully_applied, false, `${fault}: stage was allowed to advance`);
+
+      const afterFailure = (await adapter.getRolloutVariants(scenario.rollout.id))[0] as RolloutVariant;
+      assertEqual(afterFailure.applied_at, null, `${fault}: database led Shopify reality`);
+      assertExactCents(
+        scenario.shopify.priceOf(product.variant_gid),
+        afterFailure.target_price_cents,
+        `${fault}: fixture did not exercise an acknowledgement lost after write`,
+      );
+      assertEqual(
+        scenario.shopify.compareAtOf(product.variant_gid),
+        afterFailure.target_compare_at_cents,
+        `${fault}: Shopify did not apply the requested compare-at value`,
+      );
+
+      scenario.shopify.clearFaults();
+      const repaired = await reconcileRollout(scenario.context as never, scenario.rollout);
+      assertEqual(repaired.fully_applied, true, `${fault}: reconciliation did not recover`);
+      assertEqual(repaired.skipped_noop, 1, `${fault}: live exact pair was not recognized`);
+      const healed = (await adapter.getRolloutVariants(scenario.rollout.id))[0] as RolloutVariant;
+      assert(healed.applied_at !== null, `${fault}: database never caught up after live verification`);
+    }
+  });
+
+  await test('a mismatched rollback acknowledgement cannot stamp restoration early', async () => {
+    const product = makeProduct(800, { priceCents: 1800, compareAtCents: 2600, productIndex: 800 });
+    const scenario = await makeScenario(adapter, shop, [product], { type: 'percent', percent: 10 });
+    const finalStage = scenario.rollout.stages.length - 1;
+    await advanceTo(scenario, finalStage);
+    scenario.shopify.program({ kind: 'ack_wrong_compare_at', onCall: 1 });
+
+    const first = await rollbackRollout(scenario.context as never, scenario.rollout, { reason: 'bad ack' });
+    assertEqual(first.applied, 0, 'mismatched rollback acknowledgement was counted as restored');
+    assertEqual(first.failed, 1, 'mismatched rollback acknowledgement was not reported');
+    const afterFailure = (await adapter.getRolloutVariants(scenario.rollout.id))[0] as RolloutVariant;
+    assertEqual(afterFailure.reverted_at, null, 'database stamped rollback before exact acknowledgement');
+    assertExactCents(scenario.shopify.priceOf(product.variant_gid), product.price_cents, 'Shopify restored the price');
+    assertEqual(
+      scenario.shopify.compareAtOf(product.variant_gid),
+      product.compare_at_cents,
+      'Shopify restored compare-at despite the malformed acknowledgement',
+    );
+
+    scenario.shopify.clearFaults();
+    const repaired = await rollbackRollout(scenario.context as never, scenario.rollout, { reason: 'verify live pair' });
+    assertEqual(repaired.fully_applied, true, 'rollback did not recover from acknowledgement mismatch');
+    assertEqual(repaired.skipped_noop, 1, 'exact live baseline pair was not recognized');
+    const healed = (await adapter.getRolloutVariants(scenario.rollout.id))[0] as RolloutVariant;
+    assert(healed.reverted_at !== null, 'database did not stamp rollback after live verification');
   });
 }
 

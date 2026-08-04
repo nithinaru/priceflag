@@ -259,7 +259,7 @@ export interface Guardrails {
 export function defaultGuardrails(): Guardrails {
   return {
     contract_version: CONTRACT_VERSION,
-    auto_rollback: true,
+    auto_rollback: false,
     rules: [
       {
         id: 'units-30-2d',
@@ -271,7 +271,7 @@ export function defaultGuardrails(): Guardrails {
         action: 'rollback_all',
         min_expected_units: DEFAULT_MIN_EXPECTED_UNITS,
         sentence:
-          'If daily units fall more than 30% below expected for 2 days in a row, put every price back automatically.',
+          'If daily units fall more than 30% below expected for 2 days in a row, pause the rollout and alert me.',
       },
     ],
   };

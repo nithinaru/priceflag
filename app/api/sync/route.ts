@@ -8,14 +8,13 @@
  * job and the contract does not change — Lane A already polls `/api/sync/status`.
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
+import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
 import { getMode } from '@/lib/config';
-import { ensureStaticShop, resolveShopCredentials, CredentialError } from '@/lib/shopify/credentials';
+import { resolveShopCredentials } from '@/lib/shopify/credentials';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
-import { ShopifyAuthError } from '@/lib/shopify/oauth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,61 +24,42 @@ function fail(code: string, message: string, status: number, retryable = false):
   return NextResponse.json({ error: { code, message, retryable, details: null } }, { status });
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (getMode() === 'demo') {
-    return fail(
-      'demo_mode',
-      'The simulated store already has its catalog and history loaded — there is nothing to sync.',
-      409,
-    );
-  }
-
-  const adapter = getAdapter();
-
-  // The static-token path has no install flow, so nothing else would ever create
-  // the shop row that every other table points at.
-  await ensureStaticShop(adapter);
-
-  let shopDomain: string;
+export async function POST(request: Request): Promise<NextResponse> {
   try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
-  } catch (cause) {
-    if (cause instanceof ShopifyAuthError) {
-      const { staticShopDomain } = await import('@/lib/shopify/credentials');
-      const fallback = staticShopDomain();
-      if (fallback === null) return fail(cause.code, 'Could not work out which store this request is for.', 401);
-      shopDomain = fallback;
-    } else {
-      throw cause;
+    const adapter = getAdapter();
+    const { shop } = await resolveAuthenticatedShop(request, adapter);
+
+    // Authenticate first: demo mode is a separate product experience, not an
+    // unauthenticated escape hatch around merchant-route authorization.
+    if (getMode() === 'demo') {
+      return fail(
+        'demo_mode',
+        'The simulated store already has its catalog and history loaded — there is nothing to sync.',
+        409,
+      );
     }
-  }
 
-  const shop = await adapter.getShopByDomain(shopDomain);
-  if (shop === null) return fail('shop_not_connected', `${shopDomain} is not connected to Priceflag.`, 404);
-
-  try {
     // Resolve credentials before starting, so a bad token fails immediately
     // rather than halfway through writing a catalog.
-    await resolveShopCredentials(adapter, shopDomain);
+    await resolveShopCredentials(adapter, shop.shop_domain);
+
+    const url = new URL(request.url);
+    const outcome = await runSync(adapter, shop, {
+      catalogOnly: url.searchParams.get('catalogOnly') === '1',
+      historyDays: url.searchParams.has('days') ? Number(url.searchParams.get('days')) : undefined,
+    });
+
+    const run = await adapter.getLatestSyncRun(shop.id);
+
+    return NextResponse.json(
+      {
+        progress: syncProgressFromRun(run),
+        products: outcome.products,
+        orders: outcome.orders,
+      },
+      { status: outcome.error === null ? 200 : 502, headers: { 'Cache-Control': 'no-store' } },
+    );
   } catch (cause) {
-    if (cause instanceof CredentialError) return fail(cause.code, cause.message, 401);
-    throw cause;
+    return merchantErrorResponse(cause);
   }
-
-  const url = new URL(request.url);
-  const outcome = await runSync(adapter, shop, {
-    catalogOnly: url.searchParams.get('catalogOnly') === '1',
-    historyDays: url.searchParams.has('days') ? Number(url.searchParams.get('days')) : undefined,
-  });
-
-  const run = await adapter.getLatestSyncRun(shop.id);
-
-  return NextResponse.json(
-    {
-      progress: syncProgressFromRun(run),
-      products: outcome.products,
-      orders: outcome.orders,
-    },
-    { status: outcome.error === null ? 200 : 502 },
-  );
 }

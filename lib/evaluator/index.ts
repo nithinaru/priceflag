@@ -23,9 +23,14 @@ import { MAX_BAND_AGE_DAYS } from '../contracts';
 import type { StoreAdapter } from '../adapters/types';
 import { addDays, dayInTimeZone, diffDays, nowIso, yesterday, type DayString } from '../dates';
 import type { Cents } from '../money';
-import { bracketBand, combineBands, type BandEstimate } from '../engine/bands';
+import {
+  bracketBand,
+  combineBands,
+  conditionBandOnDemandEffect,
+  type BandEstimate,
+} from '../engine/bands';
 import { evaluateGuardrails, type DailyObservation } from '../engine/guardrails';
-import { decideNext } from '../engine/rollout';
+import { decideNext, rollbackInProgressReason, START_ATTENTION_REASON } from '../engine/rollout';
 import { readingVerdict } from '../engine/readings';
 import type { AdminGraphqlClient } from '../shopify/client';
 import { credentialsFromShop } from '../shopify/credentials';
@@ -34,10 +39,19 @@ import {
   applyStage,
   reconcileRollout,
   rollbackRollout,
+  verifyFrozenBaselines,
   verifyRollback,
+  verifyStage,
   type ApplyResult,
 } from '../pricing/writer';
-import type { EvaluationDecision, Rollout, RolloutReading, Shop } from '../types';
+import type {
+  EvaluationDecision,
+  ExpectedBandRow,
+  Rollout,
+  RolloutReading,
+  RolloutVariant,
+  Shop,
+} from '../types';
 import { notify, type Notifier } from '../notify';
 
 export interface EvaluateOptions {
@@ -112,34 +126,41 @@ async function expectedBandForDay(
     rolloutId: undefined,
   });
 
-  const usable = modelBands.filter((band) => {
-    const ageDays = (now.getTime() - Date.parse(band.generated_at)) / 86_400_000;
-    return Number.isFinite(ageDays) && ageDays <= MAX_BAND_AGE_DAYS;
-  });
+  const usable = selectExpectedBandsForRollout(modelBands, rollout.id, now);
 
-  if (usable.length > 0) {
+  const expectedVariantCount = new Set(variantGids).size;
+  if (usable.length > 0 && usable.length === expectedVariantCount) {
+    const demandMultiplier = forecastDemandMultiplier(rollout);
     const combined = combineBands(
-      usable.map((band) => ({
-        expected_units: band.expected_units,
-        low: band.low,
-        high: band.high,
-        interval: band.interval_nominal,
-        floored: band.is_floored,
-        source: 'bracket' as const,
-        n_obs: 0,
-      })),
+      usable.map((band) => {
+        const estimate: BandEstimate = {
+          expected_units: band.expected_units,
+          low: band.low,
+          high: band.high,
+          interval: band.interval_nominal,
+          floored: band.is_floored,
+          source: 'bracket',
+          n_obs: 0,
+        };
+        return band.band_kind === 'counterfactual'
+          ? estimate
+          : conditionBandOnDemandEffect(estimate, demandMultiplier);
+      }),
     );
-    // A counterfactual band from C5 carries a calibrated breach probability; take
-    // the most pessimistic across the affected variants.
+    // Only this rollout's counterfactual bands carry a probability meaningful
+    // for this decision. Prior rollouts and baseline rows were excluded above.
     const probabilities = usable
+      .filter((band) => band.band_kind === 'counterfactual' && band.rollout_id === rollout.id)
       .map((band) => band.breach_probability)
       .filter((value): value is number => value !== null && value !== undefined);
 
     return {
       band: combined,
       source: 'model',
-      modelVersion: usable[0]?.model_version ?? null,
-      stale: modelBands.length > usable.length,
+      modelVersion: usable.map((band) => band.model_version).sort().at(-1) ?? null,
+      // Every selected row passed the freshness gate. Irrelevant stale versions
+      // or another rollout's rows must not make this chosen band look stale.
+      stale: false,
       breachProbability: probabilities.length > 0 ? Math.max(...probabilities) : null,
     };
   }
@@ -157,9 +178,12 @@ async function expectedBandForDay(
   const byDay = new Map<DayString, number>();
   for (const row of history) byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.units);
 
-  const band = bracketBand(
-    [...byDay.entries()].map(([bandDay, units]) => ({ day: bandDay, units })),
-    day,
+  const band = conditionBandOnDemandEffect(
+    bracketBand(
+      [...byDay.entries()].map(([bandDay, units]) => ({ day: bandDay, units })),
+      day,
+    ),
+    forecastDemandMultiplier(rollout),
   );
 
   return {
@@ -169,6 +193,106 @@ async function expectedBandForDay(
     stale: modelBands.length > 0,
     breachProbability: null,
   };
+}
+
+/**
+ * Return exactly one model output per variant/day. Matching counterfactuals win;
+ * otherwise the latest baseline wins. Another rollout's band is never eligible.
+ */
+export function selectExpectedBandsForRollout(
+  bands: readonly ExpectedBandRow[],
+  rolloutId: string,
+  now: Date,
+): ExpectedBandRow[] {
+  const eligible = bands.filter((band) => {
+    const ageDays = (now.getTime() - Date.parse(band.generated_at)) / 86_400_000;
+    if (!Number.isFinite(ageDays) || ageDays > MAX_BAND_AGE_DAYS || ageDays < -1) return false;
+    if (band.band_kind === 'counterfactual') return band.rollout_id === rolloutId;
+    return band.band_kind === 'baseline' && band.rollout_id === null;
+  });
+
+  const grouped = new Map<string, ExpectedBandRow[]>();
+  for (const band of eligible) {
+    const key = `${band.variant_gid}\u0000${band.day}`;
+    const group = grouped.get(key) ?? [];
+    group.push(band);
+    grouped.set(key, group);
+  }
+
+  const selected: ExpectedBandRow[] = [];
+  for (const group of grouped.values()) {
+    const counterfactuals = group.filter((band) => band.band_kind === 'counterfactual');
+    const candidates = counterfactuals.length > 0 ? counterfactuals : group;
+    candidates.sort((a, b) =>
+      b.generated_at.localeCompare(a.generated_at) ||
+      b.model_version.localeCompare(a.model_version) ||
+      b.id.localeCompare(a.id),
+    );
+    const latest = candidates[0];
+    if (latest) selected.push(latest);
+  }
+
+  return selected.sort((a, b) =>
+    a.variant_gid.localeCompare(b.variant_gid) || a.day.localeCompare(b.day),
+  );
+}
+
+const FALLBACK_ELASTICITY = -1.5;
+
+export function forecastDemandMultiplier(rollout: Rollout): number {
+  const changePct = rollout.forecast?.fitted?.expected.units_change_pct;
+  if (changePct !== null && changePct !== undefined && Number.isFinite(changePct)) {
+    return Math.max(0, 1 + changePct / 100);
+  }
+
+  // With insufficient history, keep monitoring change-aware using the public
+  // beta's conservative consumer-goods elasticity assumption. Weight each SKU's
+  // response by its baseline demand rather than averaging price ratios.
+  const products = (rollout.forecast?.products ?? []).filter(
+    (product) => !product.excluded && product.current_price_cents > 0 && product.target_price_cents > 0,
+  );
+  if (products.length === 0) return 1;
+  const baselineWeight = products.reduce(
+    (sum, product) => sum + Math.max(0, product.baseline_units_per_day),
+    0,
+  );
+  const weighted = baselineWeight > 0;
+  const denominator = weighted ? baselineWeight : products.length;
+  const multiplier = products.reduce((sum, product) => {
+    const weight = weighted ? Math.max(0, product.baseline_units_per_day) : 1;
+    const priceRatio = product.target_price_cents / product.current_price_cents;
+    return sum + weight * Math.pow(priceRatio, FALLBACK_ELASTICITY);
+  }, 0) / denominator;
+  return Number.isFinite(multiplier) ? Math.max(0, multiplier) : 1;
+}
+
+/** Units-weighted economics for the cohort live at a particular stage. */
+export function weightedUnitEconomics(
+  variants: readonly RolloutVariant[],
+): { price: number; cost: number | null } {
+  if (variants.length === 0) return { price: 0, cost: null };
+  const baselineWeight = variants.reduce(
+    (sum, variant) => sum + Math.max(0, variant.baseline_units_per_day ?? 0),
+    0,
+  );
+  const weighted = baselineWeight > 0;
+  const weightOf = (variant: RolloutVariant): number =>
+    weighted ? Math.max(0, variant.baseline_units_per_day ?? 0) : 1;
+  const totalWeight = weighted ? baselineWeight : variants.length;
+  const price = variants.reduce(
+    (sum, variant) => sum + variant.target_price_cents * weightOf(variant),
+    0,
+  ) / totalWeight;
+  const costKnown = variants.every(
+    (variant) => weightOf(variant) === 0 || variant.cogs_cents_at_creation !== null,
+  );
+  const cost = costKnown
+    ? variants.reduce(
+        (sum, variant) => sum + (variant.cogs_cents_at_creation ?? 0) * weightOf(variant),
+        0,
+      ) / totalWeight
+    : null;
+  return { price, cost };
 }
 
 /** Evaluate one rollout for one day. */
@@ -223,7 +347,8 @@ export async function evaluateRollout(
     }
 
     // --- 2. what happened -------------------------------------------------
-    const variants = (await adapter.getRolloutVariants(rollout.id)).filter(
+    const allVariants = await adapter.getRolloutVariants(rollout.id);
+    const variants = allVariants.filter(
       (variant) => !variant.excluded && variant.cohort_stage <= rollout.current_stage,
     );
     if (variants.length === 0) {
@@ -238,11 +363,9 @@ export async function evaluateRollout(
 
     // Expected revenue and profit follow from expected units at the prices that
     // are actually live, so a units-based band drives all three metrics.
-    const liveUnitPrice =
-      variants.reduce((sum, variant) => sum + variant.target_price_cents, 0) / Math.max(1, variants.length);
-    const liveUnitCost = variants.every((variant) => variant.cogs_cents_at_creation !== null)
-      ? variants.reduce((sum, variant) => sum + (variant.cogs_cents_at_creation as number), 0) / variants.length
-      : null;
+    const liveEconomics = weightedUnitEconomics(variants);
+    const liveUnitPrice = liveEconomics.price;
+    const liveUnitCost = liveEconomics.cost;
 
     const expectedRevenue = Math.round(expected.band.expected_units * liveUnitPrice);
     const expectedProfit =
@@ -252,20 +375,31 @@ export async function evaluateRollout(
     const previous = await adapter.listRolloutReadings(rollout.id);
     const history: DailyObservation[] = previous
       .filter((reading) => reading.day < day)
-      .map((reading) => ({
-        day: reading.day,
-        stage_index: reading.stage_index,
-        actual_units: reading.actual_units,
-        actual_revenue_cents: reading.actual_revenue_cents,
-        actual_profit_cents: reading.actual_profit_cents,
-        expected_units: reading.expected_units,
-        expected_low: reading.expected_low,
-        expected_high: reading.expected_high,
-        expected_revenue_cents: Math.round(reading.expected_units * liveUnitPrice),
-        expected_profit_cents:
-          liveUnitCost === null ? null : Math.round(reading.expected_units * (liveUnitPrice - liveUnitCost)),
-        breach_probability: reading.breach_probability,
-      }));
+      .map((reading) => {
+        const historicalEconomics = weightedUnitEconomics(
+          allVariants.filter(
+            (variant) => !variant.excluded && variant.cohort_stage <= reading.stage_index,
+          ),
+        );
+        return {
+          day: reading.day,
+          stage_index: reading.stage_index,
+          actual_units: reading.actual_units,
+          actual_revenue_cents: reading.actual_revenue_cents,
+          actual_profit_cents: reading.actual_profit_cents,
+          expected_units: reading.expected_units,
+          expected_low: reading.expected_low,
+          expected_high: reading.expected_high,
+          expected_revenue_cents: Math.round(reading.expected_units * historicalEconomics.price),
+          expected_profit_cents:
+            historicalEconomics.cost === null
+              ? null
+              : Math.round(
+                  reading.expected_units * (historicalEconomics.price - historicalEconomics.cost),
+                ),
+          breach_probability: reading.breach_probability,
+        };
+      });
 
     const todayObservation: DailyObservation = {
       day,
@@ -327,27 +461,64 @@ export async function evaluateRollout(
 
     // --- 5. act -----------------------------------------------------------
     let rollbackVerified: boolean | null = null;
+    let effectiveDecision = decision.decision;
 
     switch (decision.decision) {
       case 'rollback': {
+        // Durable intent before Shopify. Besides blocking normal evaluation, this
+        // lets products/update recognize the baseline webhook as our own write.
+        await adapter.updateRollout(rollout.id, {
+          status: 'paused',
+          paused_reason: rollbackInProgressReason('automatic'),
+          ended_at: null,
+          ended_reason: null,
+        });
         const undo = await rollbackRollout(context, rollout, { reason: decision.reason });
         const check = await verifyRollback(context, rollout);
-        rollbackVerified = check.mismatched.length === 0;
+        rollbackVerified = undo.fully_applied && check.mismatched.length === 0;
 
-        await adapter.updateRollout(rollout.id, {
-          status: 'rolled_back',
-          ended_at: nowIso(now),
-          ended_reason: 'guardrail_breach',
-        });
-        await adapter.appendRolloutEvent({
-          rollout_id: rollout.id,
-          shop_id: shop.id,
-          type: 'auto_rollback',
-          actor: 'priceflag',
-          message: `${decision.reason} Every price has been put back to what it was.`,
-          data: { restored: undo.applied + undo.skipped_noop, verified: rollbackVerified, mismatched: check.mismatched },
-        });
-        await notifier({ kind: 'auto_rollback', shop, rollout, detail: undo.applied, reason: decision.reason });
+        if (rollbackVerified) {
+          await adapter.updateRollout(rollout.id, {
+            status: 'rolled_back',
+            ended_at: nowIso(now),
+            ended_reason: 'guardrail_breach',
+            paused_reason: null,
+          });
+          await adapter.appendRolloutEvent({
+            rollout_id: rollout.id,
+            shop_id: shop.id,
+            type: 'auto_rollback',
+            actor: 'priceflag',
+            message: `${decision.reason} Every price was verified back at its frozen baseline.`,
+            data: { restored: check.verified, verified: true, mismatched: [] },
+          });
+          await notifier({ kind: 'auto_rollback', shop, rollout, detail: check.verified, reason: decision.reason });
+        } else {
+          effectiveDecision = 'pause';
+          const attention =
+            'Automatic rollback paused for attention because one or more Shopify prices could not be verified at baseline.';
+          await adapter.updateRollout(rollout.id, {
+            status: 'paused',
+            paused_reason: attention,
+            ended_at: null,
+            ended_reason: null,
+          });
+          await adapter.appendRolloutEvent({
+            rollout_id: rollout.id,
+            shop_id: shop.id,
+            type: 'auto_rollback',
+            actor: 'priceflag',
+            message: attention,
+            data: {
+              restored: check.verified,
+              verified: false,
+              failures: undo.failures,
+              external_changes: undo.external_changes,
+              mismatched: check.mismatched,
+            },
+          });
+          await notifier({ kind: 'breach', shop, rollout, reason: attention });
+        }
         break;
       }
 
@@ -436,7 +607,7 @@ export async function evaluateRollout(
 
     return {
       ...base,
-      decision: decision.decision,
+      decision: effectiveDecision,
       reason: decision.reason,
       reading,
       apply,
@@ -529,12 +700,39 @@ export interface EvaluateAllResult {
   errors: { rollout_id: string; message: string }[];
 }
 
+const SHOP_DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Undefined means unrestricted. Any configured empty or malformed value returns
+ * an empty set, deliberately failing closed.
+ */
+export function parseEvaluatorShopAllowlist(raw: string | undefined): ReadonlySet<string> | null {
+  if (raw === undefined) return null;
+  const entries = raw.split(',').map((entry) => entry.trim().toLowerCase());
+  if (
+    entries.length === 0 ||
+    entries.some(
+      (entry) => entry.length === 0 || (!UUID_PATTERN.test(entry) && !SHOP_DOMAIN_PATTERN.test(entry)),
+    )
+  ) {
+    return new Set();
+  }
+  return new Set(entries);
+}
+
+export function evaluatorAllowsShop(shop: Shop, allowlist: ReadonlySet<string> | null): boolean {
+  if (allowlist === null) return true;
+  return allowlist.has(shop.id.toLowerCase()) || allowlist.has(shop.shop_domain.toLowerCase());
+}
+
 /** One cron tick: every active rollout across every shop. */
 export async function evaluateAll(
   adapter: StoreAdapter,
   options: EvaluateOptions = {},
 ): Promise<EvaluateAllResult> {
   const now = options.now ?? new Date();
+  const allowlist = parseEvaluatorShopAllowlist(process.env.PRICEFLAG_SHOP_ALLOWLIST);
   const result: EvaluateAllResult = {
     evaluated: 0,
     skipped_locked: 0,
@@ -551,6 +749,7 @@ export async function evaluateAll(
   for (const rollout of await adapter.listActiveRollouts()) {
     const shop = await adapter.getShop(rollout.shop_id);
     if (shop === null) continue;
+    if (!evaluatorAllowsShop(shop, allowlist)) continue;
 
     // A shop with the kill switch engaged is not evaluated at all: nothing should
     // be advancing while a merchant has pulled the cord.
@@ -596,24 +795,138 @@ export async function evaluateAll(
   return result;
 }
 
-/** Put stage 0 live. */
+/** Put stage 0 live under the same lease used by daily evaluation. */
 export async function startRollout(
   adapter: StoreAdapter,
   shop: Shop,
   rollout: Rollout,
   options: EvaluateOptions = {},
 ): Promise<ApplyResult> {
+  if (options.skipLock !== true) {
+    const outcome = await adapter.withRolloutLock(rollout.id, async () => {
+      const latest = await adapter.getRollout(rollout.id);
+      if (latest === null || latest.shop_id !== shop.id) throw new Error(`rollout ${rollout.id} no longer exists`);
+      return startRollout(adapter, shop, latest, { ...options, skipLock: true });
+    });
+    if (!outcome.acquired) throw new Error(`rollout ${rollout.id} is busy`);
+    return outcome.result as ApplyResult;
+  }
+
   const now = options.now ?? new Date();
   const client = options.client ?? new Client(credentialsFromShop(shop));
+  const context = { adapter, client, shop };
+
+  if (rollout.status !== 'draft' && rollout.status !== 'scheduled') {
+    throw new Error(`rollout ${rollout.id} cannot start from ${rollout.status}`);
+  }
+
+  // Read every frozen baseline while still non-live. Nothing is written if the
+  // merchant changed even one selected price after approving the draft.
+  const baseline = await verifyFrozenBaselines(context, rollout);
+  if (baseline.mismatched.length > 0) {
+    await adapter.updateRollout(rollout.id, {
+      status: 'paused',
+      paused_reason: START_ATTENTION_REASON,
+      scheduled_start_at: null,
+    });
+    await adapter.appendRolloutEvent({
+      rollout_id: rollout.id,
+      shop_id: shop.id,
+      type: 'held',
+      actor: 'priceflag',
+      message: 'Start paused before any price changed because a frozen baseline no longer matches Shopify.',
+      data: { baseline_mismatches: baseline.mismatched },
+    });
+    return {
+      intended: baseline.verified + baseline.mismatched.length,
+      applied: 0,
+      skipped_noop: 0,
+      failed: baseline.mismatched.length,
+      failures: baseline.mismatched.map((mismatch) => ({
+        variant_gid: mismatch.variant_gid,
+        message: 'The live Shopify price no longer matches the frozen baseline.',
+      })),
+      external_changes: baseline.mismatched
+        .filter((mismatch) => mismatch.found !== null)
+        .map((mismatch) => ({
+          variant_gid: mismatch.variant_gid,
+          expected_cents: mismatch.expected,
+          found_cents: mismatch.found as Cents,
+        })),
+      fully_applied: false,
+    };
+  }
 
   const started = await adapter.updateRollout(rollout.id, {
     status: 'running',
     current_stage: 0,
     stage_entered_at: nowIso(now),
     started_at: rollout.started_at ?? nowIso(now),
+    scheduled_start_at: null,
+    paused_reason: null,
   });
 
-  const applied = await applyStage({ adapter, client, shop }, started, 0);
+  // A second compare-before-write closes the small interval between preflight
+  // and marking the rollout running. abortOnExternalChange means no subset is
+  // written if that second read finds drift.
+  let applied: ApplyResult;
+  let verified: Awaited<ReturnType<typeof verifyStage>>;
+  try {
+    applied = await applyStage(context, started, 0, { abortOnExternalChange: true });
+    verified = await verifyStage(context, started, 0);
+  } catch (cause) {
+    // The rollout became live before the writer call so products/update can
+    // recognize our target as an in-flight Priceflag change. If Shopify then
+    // times out (including after accepting a write), fail closed into a state
+    // the merchant can inspect and roll back; never leave it "running".
+    await adapter.updateRollout(rollout.id, {
+      status: 'paused',
+      paused_reason: START_ATTENTION_REASON,
+    });
+    await adapter.appendRolloutEvent({
+      rollout_id: rollout.id,
+      shop_id: shop.id,
+      type: 'price_write_failed',
+      actor: 'priceflag',
+      message: 'The first stage is paused after an unexpected Shopify write or verification error.',
+      data: { error: cause instanceof Error ? cause.message : String(cause) },
+    }).catch(() => undefined);
+    throw cause;
+  }
+  const failedGids = new Set(applied.failures.map((failure) => failure.variant_gid));
+  for (const mismatch of verified.mismatched) {
+    if (failedGids.has(mismatch.variant_gid)) continue;
+    applied.failed += 1;
+    applied.failures.push({
+      variant_gid: mismatch.variant_gid,
+      message: 'Shopify did not verify the requested first-stage price.',
+    });
+    failedGids.add(mismatch.variant_gid);
+  }
+  applied.fully_applied =
+    applied.fully_applied && applied.failed === 0 && verified.mismatched.length === 0;
+
+  if (!applied.fully_applied) {
+    await adapter.updateRollout(rollout.id, {
+      status: 'paused',
+      paused_reason: START_ATTENTION_REASON,
+    });
+    await adapter.appendRolloutEvent({
+      rollout_id: rollout.id,
+      shop_id: shop.id,
+      type: 'price_write_failed',
+      actor: 'priceflag',
+      message: 'The first stage is paused because not every Shopify price could be verified. No later stage will start.',
+      data: {
+        applied: applied.applied,
+        failed: applied.failed,
+        external_changes: applied.external_changes,
+        unverified: verified.mismatched,
+      },
+    });
+    await (options.notifier ?? notify)({ kind: 'breach', shop, rollout: started, reason: START_ATTENTION_REASON });
+    return applied;
+  }
 
   await adapter.appendRolloutEvent({
     rollout_id: rollout.id,
@@ -623,7 +936,7 @@ export async function startRollout(
     message: `Started. The new price is live on ${applied.applied + applied.skipped_noop} product${
       applied.applied + applied.skipped_noop === 1 ? '' : 's'
     }.`,
-    data: { applied: applied.applied, failed: applied.failed },
+    data: { applied: applied.applied, failed: applied.failed, verified: verified.verified },
   });
 
   await (options.notifier ?? notify)({ kind: 'started', shop, rollout: started, detail: applied.applied });

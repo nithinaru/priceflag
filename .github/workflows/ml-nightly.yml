@@ -5,26 +5,38 @@ on:
     - cron: "0 7 * * *" # daily 07:00 UTC
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ml-nightly
+  cancel-in-progress: false
+
 jobs:
   refit-and-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ml
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
       - run: uv sync --locked
       # Full harness gates + drift check; exits 1 (red run) if any champion
       # stops beating its incumbent or any committed verdict snapshot drifts.
-      # With Supabase secrets configured (post-B6), also refits real stores
-      # and emits contract-row artifacts.
-      - run: uv run python nightly.py
+      # Production nightlies are not allowed to pass in golden-only mode.
+      - run: uv run --locked python nightly.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ML_READONLY_KEY: ${{ secrets.SUPABASE_ML_READONLY_KEY }}
+          PRICEFLAG_APP_URL: ${{ vars.PRICEFLAG_URL }}
+          ML_INGEST_SECRET: ${{ secrets.ML_INGEST_SECRET }}
+          REQUIRE_REAL_INGEST: "true"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

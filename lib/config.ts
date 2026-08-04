@@ -16,20 +16,14 @@ export const DEFAULT_SHOPIFY_API_VERSION = '2026-07';
 /**
  * Scopes requested during OAuth.
  *
- * `read_all_orders` is deliberately NOT here. Two app types, two rules:
- *
- *   - **Admin-created custom app** (what the dev store uses): full order history
- *     is already available without the scope, and the scope is not in the admin's
- *     checkbox list at all — so requesting it in an OAuth call fails outright.
- *   - **Partner-Dashboard app with custom distribution** (what pilots will need):
- *     `read_all_orders` must be requested *and* approved, alongside
- *     protected-customer-data access.
- *
- * When the Partner app exists, add it back here and re-check `missingScopes`.
- * Until then, order history beyond 60 days comes from the static-token path.
+ * The invite-only beta uses Partner custom distribution, so `read_all_orders`
+ * is mandatory. Shopify must approve that scope before a beta store is invited;
+ * without it the Admin API silently caps history at 60 days and a 180-day
+ * forecast would be misleading. Admin-created static-token apps remain a local
+ * development path only and do not use this OAuth scope list.
  */
 export const DEFAULT_SHOPIFY_SCOPES =
-  'read_products,write_products,read_orders,write_orders,write_draft_orders';
+  'read_products,write_products,read_orders,read_all_orders';
 
 export function env(name: string): string | undefined {
   const value = process.env[name];

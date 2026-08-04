@@ -1,0 +1,90 @@
+name: production-gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Tests only: this workflow receives no credentials and never deploys or calls
+# production. The staging Supabase suite is a separate environment-required
+# launch gate documented in README.md.
+permissions:
+  contents: read
+
+concurrency:
+  group: production-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-safety:
+    name: Node 22 application safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies from a clean state
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run smoke suite
+        run: npm run smoke
+
+      - name: Run authenticated merchant API suite
+        run: npm run test:merchant-api
+
+      - name: Run price-write, ML-ingest, and Shopify-webhook safety suites
+        run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:webhooks
+
+      - name: Run demo integration suite
+        run: npx --no-install tsx tests/integration/run.ts --demo
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Reject high-severity dependency vulnerabilities
+        run: npm audit --audit-level=high
+
+  ml-safety:
+    name: Python 3.12 locked ML safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Python 3.12 and uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: ml/uv.lock
+
+      - name: Install exactly the locked Python environment
+        run: uv sync --locked
+
+      - name: Run Python tests
+        run: uv run --locked pytest
+
+      - name: Run golden nightly model and drift gates
+        # No Supabase variables or secrets are supplied: this is deliberately
+        # the deterministic, offline golden-data leg of nightly.py.
+        run: uv run --locked python nightly.py

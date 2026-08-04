@@ -85,10 +85,15 @@ If a change is required in the other lane's files, record the requested interfac
 ```bash
 npm ci
 npm run typecheck
-npm run build
 npm run smoke
+npm run test:merchant-api
+npm run test:pricing-safety
+npm run test:ml-ingest
+npm run test:webhooks
 npx tsx tests/integration/run.ts --demo
-cd ml && uv sync --frozen && uv run pytest -q
+npm run build
+npm audit --audit-level=high
+cd ml && uv sync --locked && uv run --locked pytest && uv run --locked python nightly.py
 ```
 
 Before production promotion, also require:
@@ -125,7 +130,43 @@ Before production promotion, also require:
 Agents append short entries here when a milestone changes. Include UTC timestamp, branch, commit, checks, and blockers. Never include credential values.
 
 - Coordination baseline: prepared from `716e762`; both implementation lanes pending.
+- `2026-08-04T04:52:22Z` — `codex/prod-backend-safety` at coordination commit
+  `94800d6` plus an uncommitted verified candidate. Local gates: clean `npm ci`;
+  typecheck; 138/138 smoke; 25/25 merchant API; 10/10 price-write safety;
+  ML-ingest; webhook integrity; 51/51 demo integration; production build;
+  dependency audit with zero high-severity findings; Python 117/117; golden
+  nightly; local compiled-browser interactions 3/3 with no console/error
+  overlay. Automatic rollback is false by default and the evaluator workflow is
+  manual-only. Blocked external gates: staging migrations/advisors and Supabase
+  integration, real-data nightly secrets/proof, Shopify test-store end-to-end,
+  registered compliance webhooks, Claude UI/App Bridge branch, Vercel preview,
+  preview browser smoke, and production log verification. Invite access remains
+  closed and no deployment or merge has been performed.
+
+## Current launch checklist
+
+- [x] Clean dependency install
+- [x] TypeScript, smoke, focused API/safety, demo integration, build and audit
+- [x] Python tests and offline golden nightly
+- [x] Session-token tenant isolation regressions
+- [x] Webhook HMAC, retry dedupe, cross-shop ownership and compliance purge regressions
+- [x] Zero-price, acknowledgement-loss, partial rollback, compare-at restore,
+  chained kill switch and external-edit regressions
+- [x] Automatic rollback disabled by default; scheduled evaluator disabled
+- [ ] Staging Supabase migration apply, advisors and Supabase integration suite
+- [ ] GitHub ML secrets and a proven real-store nightly ingest
+- [ ] Claude UI/App Bridge/onboarding branch and PR
+- [ ] Shopify webhook subscriptions deployed from the real Partner app config
+- [ ] Test-store end-to-end write, pause, rollback and journal exercise
+- [ ] Verified Vercel preview and production log scan
+- [ ] Zero open P0/P1 findings across the integrated candidate
 
 ## Cross-lane interface requests
 
-- None at coordination start.
+- `2026-08-04T04:52:22Z` — the Claude branch had not appeared on GitHub, so
+  Codex made safety-critical changes in the originally assigned platform paths:
+  `middleware.ts`, `lib/shopify/**`, authenticated sync/journal/webhook/health
+  routes, Shopify-write tests, and production workflows. Claude must rebase onto
+  the backend PR and preserve these contracts; do not overwrite them silently.
+  Claude still owns App Bridge token attachment, real-mode page data, Partner
+  app webhook registration/config, browser UX, and preview infrastructure.

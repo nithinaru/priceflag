@@ -22,7 +22,7 @@
 
 import type { DayString } from '../dates';
 import type { Cents } from '../money';
-import type { Confidence } from '../contracts';
+import type { Confidence, RolloutReport } from '../contracts';
 import type {
   ElasticityFitRow,
   ExpectedBandRow,
@@ -43,6 +43,7 @@ import type {
   RolloutPatch,
   RolloutReading,
   RolloutReadingUpsert,
+  RolloutReportRow,
   RolloutStatus,
   RolloutVariant,
   RolloutVariantCreate,
@@ -53,6 +54,44 @@ import type {
   WebhookEventCreate,
   WebhookEventRecord,
 } from '../types';
+
+export interface AtomicModelIngestInput {
+  shopId: string;
+  ingestKey: string;
+  run: Omit<ModelRun, 'id' | 'shop_id' | 'started_at' | 'created_at' | 'finished_at'>;
+  fits: readonly Omit<ElasticityFitRow, 'id'>[];
+  bands: readonly Omit<ExpectedBandRow, 'id'>[];
+  reports: readonly RolloutReport[];
+}
+
+export interface AtomicModelIngestResult {
+  model_run_id: string;
+  fits_written: number;
+  bands_written: number;
+  reports_written: number;
+  rows_written: number;
+  deduplicated: boolean;
+}
+
+export interface AtomicOrderWebhookInput {
+  event: WebhookEventCreate & { shop_id: string };
+  /** Additive per-variant deltas for exactly one distinct Shopify order. */
+  rows: readonly OrderDayUpsert[];
+}
+
+export interface AtomicOrderWebhookResult {
+  duplicate: boolean;
+  rows_written: number;
+  record: WebhookEventRecord;
+}
+
+export interface CompliancePurgeResult {
+  duplicate: boolean;
+  purged: boolean;
+  shop_id: string | null;
+  shop_domain: string;
+  webhook_id: string;
+}
 
 export type AdapterKind = 'demo' | 'supabase';
 
@@ -94,7 +133,13 @@ export interface StoreAdapter {
 
   // -- rollouts ------------------------------------------------------------
   createRollout(input: RolloutCreate): Promise<Rollout>;
+  /** Persist a draft, its frozen variant selection, and created event in one transaction. */
+  createDraftRollout(
+    input: RolloutCreate & Pick<Rollout, 'id'>,
+    variants: readonly RolloutVariantCreate[],
+  ): Promise<{ rollout: Rollout; variants: RolloutVariant[] }>;
   getRollout(rolloutId: string): Promise<Rollout | null>;
+  /** Newest first, with deterministic creation-order handling for timestamp ties. */
   listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]>;
   /** Active across every shop — what the evaluator cron iterates. */
   listActiveRollouts(): Promise<Rollout[]>;
@@ -129,6 +174,17 @@ export interface StoreAdapter {
   /** `duplicate: true` means this webhook id has been seen; do not process again. */
   recordWebhook(event: WebhookEventCreate): Promise<{ duplicate: boolean; record: WebhookEventRecord }>;
   markWebhookProcessed(webhookId: string, status: 'processed' | 'failed' | 'ignored', error?: string): Promise<void>;
+  /** CAS claim for a new or failed generic event; only one concurrent delivery wins. */
+  claimWebhook(webhookId: string): Promise<boolean>;
+  /** One transaction: dedupe event + add one order's daily deltas + mark processed. */
+  ingestOrderWebhook(input: AtomicOrderWebhookInput): Promise<AtomicOrderWebhookResult>;
+  /** HMAC-authenticated shop/redact cascade with a non-PII audit tombstone. */
+  purgeShopForCompliance(input: {
+    shopId: string | null;
+    shopDomain: string;
+    webhookId: string;
+    triggeredAt: string | null;
+  }): Promise<CompliancePurgeResult>;
 
   // -- sync ----------------------------------------------------------------
   createSyncRun(shopId: string, kind?: SyncRun['kind']): Promise<SyncRun>;
@@ -145,6 +201,9 @@ export interface StoreAdapter {
   /** R31: every model output is traceable to the run that produced it. */
   recordModelRun(input: Omit<ModelRun, 'id' | 'started_at' | 'created_at'> & { started_at?: string }): Promise<ModelRun>;
   updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun>;
+  /** One database transaction, idempotent on `ingestKey`. */
+  ingestModelRunAtomic(input: AtomicModelIngestInput): Promise<AtomicModelIngestResult>;
+  listRolloutReports(shopId: string, rolloutId?: string): Promise<RolloutReportRow[]>;
 
   /** Test/seed only: lets the demo adapter stand in for Lane C's writes. */
   upsertFits?(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number>;

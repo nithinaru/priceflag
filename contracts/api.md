@@ -56,7 +56,8 @@ Cross-cutting rules:
 | POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | B4 |
 | GET | `/api/rollouts` | List rollouts | B4 |
 | GET | `/api/rollouts/[id]` | Rollout with variants, readings and events | B4 |
-| POST | `/api/rollouts/[id]/start` | Go live (or schedule) | B4 |
+| POST | `/api/rollouts/[id]/confirm` | Explicitly confirm and start now or schedule | ✅ B4 |
+| POST | `/api/rollouts/[id]/pause` | Manually pause a running or scheduled rollout | ✅ B4 |
 | POST | `/api/rollouts/[id]/rollback` | One-click manual rollback | B4 |
 | POST | `/api/rollouts/[id]/cancel` | Cancel a draft or scheduled rollout | B4 |
 | POST | `/api/rollouts/[id]/resume` | Resume after an external-change pause | B4 |
@@ -144,6 +145,12 @@ prices, target prices, the compare-at decision, and cohort assignments. The
 forecast is stored on the rollout so the post-rollout report can compare against
 what was actually promised.
 
+The server assigns the rollout id before cohort planning, then persists the
+draft, every frozen variant, and the initial audit event through
+`pf_create_rollout_draft` in one database
+transaction. The RPC is callable only by the server's `service_role`; browser
+roles cannot bypass the authenticated, tenant-scoped route.
+
 ```json
 {
   "rollout": { "id": "…", "status": "draft", "stages": [ … ], "current_stage": -1 },
@@ -172,7 +179,7 @@ right now, and how do I undo it?" at a glance (R16).
   "events": [ { "type": "stage_advanced", "message": "…", "at": "…" } ],
   "health": "healthy",
   "health_sentence": "Orders are inside the range we expected.",
-  "can": { "rollback": true, "cancel": false, "resume": false }
+  "can": { "confirm": false, "rollback": true, "pause": true, "cancel": false, "resume": false }
 }
 ```
 
@@ -186,11 +193,42 @@ the machine did not act on.
 
 `can` exists so the UI does not have to re-derive the state machine.
 
+### `POST /api/rollouts/[id]/confirm` — B4
+
+Body: `{ "confirm": true, "scheduled_start_at": "optional future ISO timestamp or null" }`.
+The explicit confirmation is mandatory. The route authenticates the Shopify
+session, checks rollout ownership, then acquires the same rollout lease used by
+the evaluator. Under that lease it reloads the draft and verifies every frozen
+price and compare-at value against live Shopify.
+
+A future timestamp moves the draft to `scheduled` and performs no price write.
+`null` (or an omitted non-future draft schedule) starts stage 0 immediately. A
+start returns 200 only after every due price and compare-at value is verified at
+its target. Baseline drift or any partial/unverified write leaves the rollout in
+a recoverable `paused` state; no later stage can run. Lease contention returns
+409 `rollout_busy`. `auto_rollback: true` is rejected for the public beta.
+
+### `POST /api/rollouts/[id]/pause` — B4
+
+Body: `{ "confirm": true, "reason": "optional merchant note" }`. Authenticated,
+tenant-scoped, and serialized under the rollout lease. It changes only database
+state and the audit event stream; it never writes Shopify prices. It is available
+for `running` and `scheduled` rollouts and idempotent when already paused.
+
 ### `POST /api/rollouts/[id]/rollback` — B4
 
-Body: `{ "reason": "optional plain-language note" }`. Restores every variant this
+Body: `{ "confirm": true, "reason": "optional plain-language note" }`. The
+explicit confirmation is required; an authenticated request without it returns
+400 and cannot write a price. Restores every variant this
 rollout applied a price to, from the baselines captured at creation, and journals
 each write. Idempotent: calling it twice restores once.
+
+Rollback is serialized under the rollout lease. Before the Shopify mutation the
+route durably changes even a completed rollout to a nonterminal rollback-in-
+progress state. It reports success only after live Shopify verifies both the
+frozen price and frozen compare-at value for every non-excluded variant. A write
+failure, timeout, verification mismatch, or lease conflict never returns success;
+the rollout remains `paused`, visible, and retryable.
 
 ```json
 {
@@ -209,6 +247,11 @@ the confirm dialog and toast can be wired against it directly. `POST /api/kill-s
 returns the same three fields. On a partial failure `ok` is `false`, `failed` is
 non-zero, and `message` names what still needs attention — every attempt is
 journalled either way, so `/api/journal` is always the authority on what moved.
+
+The store-wide kill switch engages before taking per-rollout leases. If any
+evaluator still holds a lease, the response is 207 with `rollout_busy`, the kill
+switch remains engaged, and the route cannot claim the undo completed while a
+concurrent writer may still finish.
 
 ### `POST /api/cron/evaluate` — B5
 

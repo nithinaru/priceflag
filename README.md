@@ -3,8 +3,7 @@
 **Pricing change management for Shopify.** Connect your store, propose a new
 price, and see the predicted 90-day impact on profit, orders, and revenue before
 it goes live. Then roll the change out gradually — 25% of selected SKUs, 50%,
-everyone — with guardrails you set in advance and automatic rollback if the
-numbers drop.
+everyone — with guardrails that pause and alert when performance drops.
 
 *LaunchDarkly for pricing.* Not an A/B testing tool: **every visitor always sees
 the same price.** Priceflag stages changes by SKU cohort and by time, never by
@@ -23,8 +22,9 @@ mismatches, no price-discrimination trust problems.
 4. **Guardrails first** — decide the abort conditions before anything goes live.
 5. **Staged rollout** — new price on 25% of selected SKUs → 50% → all, each
    stage held while real orders are monitored against a model-calibrated band.
-6. **Auto-rollback** — a tripped guardrail restores every price within minutes.
-   One-click manual rollback and a store-level kill switch always available.
+6. **Safe recovery** — during the invite-only beta, a tripped guardrail pauses
+   and alerts; it never writes prices automatically. Confirmed manual rollback
+   and a store-level kill switch restore and verify frozen baseline prices.
 7. **Price journal** — every change (even ones made outside Priceflag), with
    before/after, who, when, why, and outcome. Shopify keeps no price audit
    trail; Priceflag does.
@@ -84,6 +84,7 @@ npm run dev
 | `APP_URL` | Public app URL (ngrok / Vercel) |
 | `ENCRYPTION_KEY` | Encrypts Shopify tokens at rest |
 | `CRON_SECRET` | Protects the evaluator endpoint |
+| `PRICEFLAG_SHOP_ALLOWLIST` | Optional exact shop IDs/domains the evaluator may touch; invalid values fail closed |
 
 ### ML lane (Python)
 
@@ -92,6 +93,23 @@ cd ml
 uv sync                      # Python 3.12, pinned deps
 pytest                       # golden-data recovery + backtest gates
 ```
+
+### Pull-request safety gates
+
+Every pull request runs the credential-free `production-gates` workflow. It
+installs the exact Node and Python lockfiles, then runs typechecking, smoke,
+merchant API, price-write, ML-ingest, and webhook tests, the demo integration
+suite, a dependency audit, the production build, Python tests, and the
+deterministic golden nightly model/drift gates. The workflow has
+read-only repository access; it receives no secrets, deploys nothing, and makes
+no production calls.
+
+The Supabase integration suite cannot run safely in untrusted pull-request CI
+without staging credentials. It is therefore an environment-required launch
+gate, not a skipped or mocked PR success: before preview promotion, an operator
+must run the suite against the dedicated staging Supabase project and record a
+green result. Never point this gate at production or expose its credentials to
+forked pull requests.
 
 ## Repo layout
 
@@ -112,9 +130,9 @@ PRD.md · BUILD_BRIEF.md · CLAUDE.md · PROMPTS.md
 Money is integer cents, always. Forecasts show their work — assumptions, ranges,
 confidence tiers, never a confident black box; no model ships unless it beats
 the incumbent on the eval harness. Every price write is journaled and
-reversible; band calibration is a safety property because it drives
-auto-rollback. And the invariant that names the product: **prices never vary by
-visitor.**
+reversible; band calibration is a safety property because it drives pause-and-alert
+guardrails. Automatic rollback remains disabled for the beta. And the invariant
+that names the product: **prices never vary by visitor.**
 
 ---
 

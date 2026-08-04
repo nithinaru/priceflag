@@ -119,6 +119,70 @@ class SupabaseSource:
         "had_stockout": "stockout",
     }
 
+    def _paged(self, view: str, params: dict) -> list[dict]:
+        """Read every visible row; never mistake PostgREST's page cap for EOF."""
+        client = self._get_client()
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            response = client.get(
+                f"{self._base}/{view}",
+                params={**params, "limit": str(_PAGE_SIZE), "offset": str(offset)},
+                headers=self._headers,
+            )
+            response.raise_for_status()
+            batch = response.json()
+            rows.extend(batch)
+            if len(batch) < _PAGE_SIZE:
+                return rows
+            offset += _PAGE_SIZE
+
+    def list_shops(self) -> list[str]:
+        rows = self._paged("ml_products", {"select": "shop_domain", "order": "shop_domain"})
+        return list(dict.fromkeys(row["shop_domain"] for row in rows if row.get("shop_domain")))
+
+    def rollout_windows(self, shop_domain: str, status: str | None = None) -> pd.DataFrame:
+        params = {"shop_domain": f"eq.{shop_domain}", "select": "*", "order": "started_at"}
+        if status is not None:
+            params["status"] = f"eq.{status}"
+        rows = self._paged("ml_rollout_windows", params)
+        if not rows:
+            return pd.DataFrame(
+                columns=["shop_domain", "rollout_id", "status", "start_day", "end_day", "variant_gids"]
+            )
+        frame = pd.DataFrame(rows)
+        for column in ("start_day", "end_day"):
+            if column in frame.columns:
+                frame[column] = pd.to_datetime(frame[column])
+        return frame
+
+    def price_history(self, shop_domain: str, rollout_id: str | None = None) -> pd.DataFrame:
+        params = {
+            "shop_domain": f"eq.{shop_domain}",
+            "select": "*",
+            "order": "variant_gid,applied_at",
+        }
+        if rollout_id is not None:
+            params["rollout_id"] = f"eq.{rollout_id}"
+        rows = self._paged("ml_price_history", params)
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "variant_gid", "applied_at", "before_price_cents", "after_price_cents",
+                    "source", "rollout_id", "stage_index",
+                ]
+            )
+        frame = pd.DataFrame(rows)
+        frame["applied_at"] = pd.to_datetime(frame["applied_at"], format="mixed", utc=True)
+        return frame
+
+    def products(self, shop_domain: str) -> pd.DataFrame:
+        rows = self._paged(
+            "ml_products",
+            {"shop_domain": f"eq.{shop_domain}", "select": "*", "order": "variant_gid"},
+        )
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["variant_gid", "cogs_cents", "price_cents"])
+
     def order_days(self, shop_domain: str) -> pd.DataFrame:
         client = self._get_client()
         pages: list[pd.DataFrame] = []

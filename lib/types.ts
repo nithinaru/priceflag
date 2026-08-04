@@ -20,6 +20,7 @@ import type {
   JournalActor,
   JournalSource,
   JournalStatus,
+  RolloutReport,
   StageSpec,
 } from './contracts';
 
@@ -394,7 +395,7 @@ export interface WebhookEventRecord {
   api_version: string | null;
   triggered_at: string | null;
   received_at: string;
-  status: 'received' | 'processed' | 'failed' | 'ignored' | 'duplicate';
+  status: 'received' | 'processing' | 'processed' | 'failed' | 'ignored' | 'duplicate';
   attempts: number;
   error: string | null;
   processed_at: string | null;
@@ -491,10 +492,22 @@ export interface ModelRun {
   incumbent_version: string | null;
   metrics: Record<string, unknown>;
   rows_written: number;
+  /** Deterministic digest of the accepted request; makes response-loss retries idempotent. */
+  ingest_key?: string | null;
+  fits_written?: number;
+  bands_written?: number;
+  reports_written?: number;
   notes: string | null;
   error: string | null;
   started_at: string;
   finished_at: string | null;
+  created_at?: string;
+}
+
+/** Database representation of a validated rollout report contract. */
+export interface RolloutReportRow extends RolloutReport {
+  id: string;
+  shop_id: string;
   created_at?: string;
 }
 

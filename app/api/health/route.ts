@@ -16,6 +16,12 @@ import { CONTRACT_VERSION } from '@/lib/contracts';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+function publicAdapterDetail(ok: boolean, detail?: string): string {
+  if (ok) return 'reachable';
+  if (detail !== undefined && /schema|migration/i.test(detail)) return 'reachable, but database migrations are missing';
+  return 'unreachable';
+}
+
 export async function GET(): Promise<NextResponse> {
   const environment = describeEnvironment();
 
@@ -23,12 +29,14 @@ export async function GET(): Promise<NextResponse> {
   try {
     const store = getAdapter();
     const ping = await store.ping();
-    adapter = { kind: store.kind, ok: ping.ok, detail: ping.detail };
-  } catch (cause) {
+    adapter = { kind: store.kind, ok: ping.ok, detail: publicAdapterDetail(ping.ok, ping.detail) };
+  } catch {
     adapter = {
       kind: getMode() === 'demo' ? 'demo' : 'supabase',
       ok: false,
-      detail: cause instanceof Error ? cause.message : String(cause),
+      // This route is deliberately public. Raw client/transport errors can
+      // contain internal hosts or paths, so never echo them to this response.
+      detail: publicAdapterDetail(false),
     };
   }
 

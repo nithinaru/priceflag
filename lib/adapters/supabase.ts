@@ -39,6 +39,7 @@ import type {
   RolloutPatch,
   RolloutReading,
   RolloutReadingUpsert,
+  RolloutReportRow,
   RolloutStatus,
   RolloutVariant,
   RolloutVariantCreate,
@@ -49,7 +50,16 @@ import type {
   WebhookEventCreate,
   WebhookEventRecord,
 } from '../types';
-import type { LockResult, Paged, StoreAdapter } from './types';
+import type {
+  AtomicModelIngestInput,
+  AtomicModelIngestResult,
+  AtomicOrderWebhookInput,
+  AtomicOrderWebhookResult,
+  CompliancePurgeResult,
+  LockResult,
+  Paged,
+  StoreAdapter,
+} from './types';
 
 type Row = Record<string, unknown>;
 
@@ -290,6 +300,24 @@ export class SupabaseAdapter implements StoreAdapter {
     return mapRollout(unwrap(result, 'createRollout') as Row);
   }
 
+  async createDraftRollout(
+    input: RolloutCreate & Pick<Rollout, 'id'>,
+    variants: readonly RolloutVariantCreate[],
+  ): Promise<{ rollout: Rollout; variants: RolloutVariant[] }> {
+    const result = await this.db.rpc('pf_create_rollout_draft', {
+      p_rollout: input,
+      p_variants: variants,
+    });
+    const payload = unwrap(result, 'createDraftRollout') as {
+      rollout: Row;
+      variants: Row[];
+    };
+    return {
+      rollout: mapRollout(payload.rollout),
+      variants: payload.variants.map(mapRolloutVariant),
+    };
+  }
+
   async getRollout(rolloutId: string): Promise<Rollout | null> {
     const result = await this.db.from('rollouts').select('*').eq('id', rolloutId).maybeSingle();
     const row = unwrapMaybe(result, `getRollout(${rolloutId})`);
@@ -299,7 +327,9 @@ export class SupabaseAdapter implements StoreAdapter {
   async listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]> {
     let builder = this.db.from('rollouts').select('*').eq('shop_id', shopId);
     if (statuses?.length) builder = builder.in('status', [...statuses]);
-    const result = await builder.order('created_at', { ascending: false });
+    const result = await builder
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
     return unwrap(result, `listRollouts(${shopId})`).map((row) => mapRollout(row as Row));
   }
 
@@ -469,7 +499,15 @@ export class SupabaseAdapter implements StoreAdapter {
           .select('*')
           .eq('webhook_id', event.webhook_id)
           .single();
-        return { duplicate: true, record: mapWebhook(unwrap(existing, 'recordWebhook(duplicate)') as Row) };
+        const record = mapWebhook(unwrap(existing, 'recordWebhook(duplicate)') as Row);
+        if (
+          record.shop_id !== (event.shop_id ?? null) ||
+          record.shop_domain !== event.shop_domain ||
+          record.topic !== event.topic
+        ) {
+          throw new Error('webhook id is already bound to a different shop or topic');
+        }
+        return { duplicate: true, record };
       }
       throw new Error(`recordWebhook(${event.topic}): ${insert.error.message}`);
     }
@@ -495,6 +533,63 @@ export class SupabaseAdapter implements StoreAdapter {
       .eq('webhook_id', webhookId)
       .select('id');
     unwrap(result, `markWebhookProcessed(${webhookId})`);
+  }
+
+  async claimWebhook(webhookId: string): Promise<boolean> {
+    const result = await this.db
+      .from('webhook_events')
+      .update({ status: 'processing', error: null, processed_at: null })
+      .eq('webhook_id', webhookId)
+      .in('status', ['received', 'failed'])
+      .select('id');
+    return unwrap(result, `claimWebhook(${webhookId})`).length === 1;
+  }
+
+  async ingestOrderWebhook(input: AtomicOrderWebhookInput): Promise<AtomicOrderWebhookResult> {
+    const result = await this.db.rpc('pf_ingest_order_webhook', {
+      p_shop_id: input.event.shop_id,
+      p_event: { ...input.event, payload: null },
+      p_rows: input.rows,
+    });
+    const raw = unwrap(result, `ingestOrderWebhook(${input.event.webhook_id})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_ingest_order_webhook returned an invalid result');
+    }
+    const row = raw as Row;
+    if (row.record === null || typeof row.record !== 'object' || Array.isArray(row.record)) {
+      throw new Error('pf_ingest_order_webhook returned no event record');
+    }
+    return {
+      duplicate: Boolean(row.duplicate),
+      rows_written: num(row.rows_written),
+      record: mapWebhook(row.record as Row),
+    };
+  }
+
+  async purgeShopForCompliance(input: {
+    shopId: string | null;
+    shopDomain: string;
+    webhookId: string;
+    triggeredAt: string | null;
+  }): Promise<CompliancePurgeResult> {
+    const result = await this.db.rpc('pf_purge_shop_for_compliance', {
+      p_shop_id: input.shopId,
+      p_shop_domain: input.shopDomain,
+      p_webhook_id: input.webhookId,
+      p_triggered_at: input.triggeredAt,
+    });
+    const raw = unwrap(result, `purgeShopForCompliance(${input.shopDomain})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_purge_shop_for_compliance returned an invalid result');
+    }
+    const row = raw as Row;
+    return {
+      duplicate: Boolean(row.duplicate),
+      purged: Boolean(row.purged),
+      shop_id: (row.shop_id as string | null) ?? null,
+      shop_domain: String(row.shop_domain),
+      webhook_id: String(row.webhook_id),
+    };
   }
 
   // -- sync ----------------------------------------------------------------
@@ -577,6 +672,37 @@ export class SupabaseAdapter implements StoreAdapter {
   async updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun> {
     const result = await this.db.from('model_runs').update(patch).eq('id', id).select('*').single();
     return mapModelRun(unwrap(result, `updateModelRun(${id})`) as Row);
+  }
+
+  async ingestModelRunAtomic(input: AtomicModelIngestInput): Promise<AtomicModelIngestResult> {
+    const result = await this.db.rpc('pf_ingest_model_run', {
+      p_shop_id: input.shopId,
+      p_ingest_key: input.ingestKey,
+      p_run: input.run,
+      p_fits: input.fits,
+      p_bands: input.bands,
+      p_reports: input.reports,
+    });
+    const raw = unwrap(result, `ingestModelRunAtomic(${input.shopId})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_ingest_model_run returned an invalid result');
+    }
+    const row = raw as Row;
+    return {
+      model_run_id: String(row.model_run_id),
+      fits_written: num(row.fits_written),
+      bands_written: num(row.bands_written),
+      reports_written: num(row.reports_written),
+      rows_written: num(row.rows_written),
+      deduplicated: Boolean(row.deduplicated),
+    };
+  }
+
+  async listRolloutReports(shopId: string, rolloutId?: string): Promise<RolloutReportRow[]> {
+    let builder = this.db.from('rollout_reports').select('*').eq('shop_id', shopId);
+    if (rolloutId !== undefined) builder = builder.eq('rollout_id', rolloutId);
+    const result = await builder.order('generated_at', { ascending: false });
+    return unwrap(result, `listRolloutReports(${shopId})`).map((row) => mapRolloutReport(row as Row));
   }
 
   async upsertFits(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number> {
@@ -944,10 +1070,46 @@ function mapModelRun(row: Row): ModelRun {
     incumbent_version: (row.incumbent_version as string | null) ?? null,
     metrics: (row.metrics as Record<string, unknown>) ?? {},
     rows_written: num(row.rows_written),
+    ingest_key: (row.ingest_key as string | null) ?? null,
+    fits_written: num(row.fits_written),
+    bands_written: num(row.bands_written),
+    reports_written: num(row.reports_written),
     notes: (row.notes as string | null) ?? null,
     error: (row.error as string | null) ?? null,
     started_at: String(row.started_at),
     finished_at: (row.finished_at as string | null) ?? null,
+    created_at: (row.created_at as string | undefined) ?? undefined,
+  };
+}
+
+function mapRolloutReport(row: Row): RolloutReportRow {
+  const update = (row.elasticity_update as RolloutReportRow['elasticity_update']) ?? (
+    row.elasticity_after === null || row.elasticity_after === undefined
+      ? null
+      : {
+          before: numOrNull(row.elasticity_before),
+          after: num(row.elasticity_after),
+        }
+  );
+  return {
+    id: String(row.id),
+    shop_id: String(row.shop_id),
+    contract_version: '1.0.0',
+    rollout_id: String(row.rollout_id),
+    generated_at: String(row.generated_at),
+    model_version: String(row.model_version),
+    model_run_id: (row.model_run_id as string | null) ?? null,
+    window: {
+      start_day: String(row.window_start),
+      end_day: String(row.window_end),
+      days: num(row.window_days),
+    },
+    predicted: row.predicted as RolloutReportRow['predicted'],
+    realized: row.realized as RolloutReportRow['realized'],
+    in_range: Boolean(row.in_range),
+    elasticity_update: update,
+    narrative: String(row.narrative),
+    per_variant: (row.per_variant as RolloutReportRow['per_variant']) ?? [],
     created_at: (row.created_at as string | undefined) ?? undefined,
   };
 }

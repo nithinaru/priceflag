@@ -160,7 +160,21 @@ export type FaultKind =
   /** Socket timeout before the store is touched. */
   | 'timeout_before_write'
   /** HTTP 200 carrying userErrors — the quiet lie. */
-  | 'user_errors';
+  | 'user_errors'
+  /** Shopify mutates the store but returns no mutation acknowledgement. */
+  | 'ack_null'
+  /** Shopify mutates the store but omits the mutation payload entirely. */
+  | 'ack_missing'
+  /** Shopify mutates the store but acknowledges only part of the request. */
+  | 'ack_partial'
+  /** Shopify mutates the store but acknowledges a different variant id. */
+  | 'ack_wrong_id'
+  /** Shopify mutates the store but acknowledges an unrequested extra variant. */
+  | 'ack_extra'
+  /** Shopify mutates the store but acknowledges a different price. */
+  | 'ack_wrong_price'
+  /** Shopify mutates the store but acknowledges a different compare-at value. */
+  | 'ack_wrong_compare_at';
 
 export interface FaultPlan {
   kind: FaultKind;
@@ -317,6 +331,12 @@ export class FakeShopify {
         }
       };
 
+      const acknowledgements = inputs.map((input) => ({
+        id: input.id,
+        price: input.price,
+        compareAtPrice: input.compareAtPrice ?? null,
+      }));
+
       switch (fault) {
         case 'throttle':
           this.writeLog.push({ productGid, variantGids, prices, outcome: 'throttle' });
@@ -340,6 +360,69 @@ export class FakeShopify {
               userErrors: [{ code: 'INVALID', field: ['price'], message: 'Price must be greater than or equal to 0' }],
             },
           };
+        case 'ack_null':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_null' });
+          return {
+            productVariantsBulkUpdate: { productVariants: null, userErrors: [] },
+          };
+        case 'ack_missing':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_missing' });
+          return {};
+        case 'ack_partial':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_partial' });
+          return {
+            productVariantsBulkUpdate: { productVariants: acknowledgements.slice(0, -1), userErrors: [] },
+          };
+        case 'ack_wrong_id':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_wrong_id' });
+          return {
+            productVariantsBulkUpdate: {
+              productVariants: acknowledgements.map((item, index) =>
+                index === 0 ? { ...item, id: `${item.id}-unexpected` } : item,
+              ),
+              userErrors: [],
+            },
+          };
+        case 'ack_extra':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_extra' });
+          return {
+            productVariantsBulkUpdate: {
+              productVariants: [
+                ...acknowledgements,
+                { id: 'gid://shopify/ProductVariant/unrequested', price: '12.34', compareAtPrice: null },
+              ],
+              userErrors: [],
+            },
+          };
+        case 'ack_wrong_price':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_wrong_price' });
+          return {
+            productVariantsBulkUpdate: {
+              productVariants: acknowledgements.map((item, index) =>
+                index === 0 ? { ...item, price: '0.01' } : item,
+              ),
+              userErrors: [],
+            },
+          };
+        case 'ack_wrong_compare_at':
+          apply();
+          this.writeLog.push({ productGid, variantGids, prices, outcome: 'ack_wrong_compare_at' });
+          return {
+            productVariantsBulkUpdate: {
+              productVariants: acknowledgements.map((item, index) =>
+                index === 0
+                  ? { ...item, compareAtPrice: item.compareAtPrice === null ? '999.99' : null }
+                  : item,
+              ),
+              userErrors: [],
+            },
+          };
         default:
           break;
       }
@@ -348,11 +431,7 @@ export class FakeShopify {
       this.writeLog.push({ productGid, variantGids, prices, outcome: 'applied' });
       return {
         productVariantsBulkUpdate: {
-          productVariants: inputs.map((input) => ({
-            id: input.id,
-            price: input.price,
-            compareAtPrice: input.compareAtPrice ?? null,
-          })),
+          productVariants: acknowledgements,
           userErrors: [],
         },
       };

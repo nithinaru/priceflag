@@ -38,7 +38,7 @@ export interface DailyObservation {
   expected_high: number;
   expected_revenue_cents: Cents;
   expected_profit_cents: Cents | null;
-  /** Lane C (C5). When present and calibrated, preferred over the raw threshold. */
+  /** Lane C (C5) probability for the units outcome. */
   breach_probability?: number | null;
 }
 
@@ -113,7 +113,9 @@ export function ruleConditionHolds(
 
   // A calibrated probability, when we have one, is strictly better evidence than
   // a threshold crossing — it already accounts for how noisy this SKU is.
-  const probability = observation.breach_probability;
+  // C5 currently models units. Reusing that probability for revenue or profit
+  // would fire a guardrail for a metric the model never measured.
+  const probability = rule.metric === 'units' ? observation.breach_probability : null;
   if (probability !== null && probability !== undefined) {
     const holds = probability >= BREACH_PROBABILITY_THRESHOLD;
     return {
@@ -146,7 +148,22 @@ export function ruleConditionHolds(
   }
 
   const thresholdPct = rule.threshold_pct ?? 0;
-  const limit = reading.expected * (1 - thresholdPct / 100);
+  const percentageLimit = reading.expected * (1 - thresholdPct / 100);
+  // A percentage miss inside the calibrated interval is ordinary noise. Require
+  // the observation to cross both the merchant's limit and the lower band edge.
+  // Revenue/profit derive from the units band, so scale that edge into the
+  // metric's units using today's expected value per unit.
+  const expectedLowForMetric =
+    observation.expected_units > 0
+      ? observation.expected_low * (reading.expected / observation.expected_units)
+      : 0;
+  // At a non-zero threshold, spend the merchant's tolerance from the cautious
+  // edge of the interval, not from its centre. A configured 0 retains its exact
+  // contract meaning: any shortfall at all is a breach.
+  const limit =
+    thresholdPct <= 0
+      ? percentageLimit
+      : expectedLowForMetric * (1 - thresholdPct / 100);
   const holds = reading.expected > 0 && reading.actual < limit;
   const shortfallPct = reading.expected > 0 ? ((reading.expected - reading.actual) / reading.expected) * 100 : 0;
 

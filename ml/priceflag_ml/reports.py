@@ -282,3 +282,47 @@ def calibration_summary(reports: list[dict]) -> dict:
         "n_rollouts": n,
         "pct_in_range": float(np.mean([r["in_range"] for r in reports])),
     }
+
+
+def plans_from_price_history(
+    history: pd.DataFrame,
+    rollout_id: str,
+    products: pd.DataFrame | None = None,
+) -> list[VariantPlan]:
+    """Recover prices actually written for a completed rollout from the journal."""
+    if history.empty or "rollout_id" not in history.columns:
+        return []
+    rows = history[history["rollout_id"] == rollout_id]
+    if "source" in rows.columns:
+        rows = rows[rows["source"] != "rollback"]
+    if rows.empty:
+        return []
+
+    cogs: dict[str, int | None] = {}
+    if products is not None and not products.empty and "cogs_cents" in products.columns:
+        for record in products.itertuples():
+            value = getattr(record, "cogs_cents", None)
+            cogs[str(record.variant_gid)] = None if value is None or pd.isna(value) else int(value)
+
+    plans: list[VariantPlan] = []
+    for gid, group in rows.sort_values("applied_at").groupby("variant_gid", sort=True):
+        old = group["before_price_cents"].iloc[0]
+        new = group["after_price_cents"].iloc[-1]
+        if pd.isna(old) or pd.isna(new):
+            continue
+        old, new = int(old), int(new)
+        if old <= 0 or new <= 0 or old == new:
+            continue
+        plans.append(
+            VariantPlan(
+                sku=str(gid),
+                old_price_cents=old,
+                new_price_cents=new,
+                cogs_cents=cogs.get(str(gid)),
+            )
+        )
+    return plans
+
+
+def reports_contract_rows(reports: list[dict]) -> list[dict]:
+    return sorted(reports, key=lambda report: (report.get("rollout_id", ""), report.get("generated_at", "")))

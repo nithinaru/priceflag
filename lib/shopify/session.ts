@@ -103,7 +103,8 @@ export function verifySessionToken(
   }
   // `iss` is `{dest}/admin`, so a token whose issuer is a different shop than its
   // destination is malformed or forged.
-  if (!claims.iss.startsWith(claims.dest)) {
+  const expectedIssuer = `${claims.dest.replace(/\/$/, '')}/admin`;
+  if (claims.iss !== expectedIssuer) {
     throw new ShopifyAuthError('invalid_hmac', 'session token iss and dest disagree');
   }
 

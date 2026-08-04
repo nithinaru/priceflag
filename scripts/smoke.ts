@@ -95,6 +95,7 @@ import {
   verifyOAuthState,
 } from '../lib/shopify/oauth';
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
+import { CredentialError, credentialsFromShop } from '../lib/shopify/credentials';
 import { AdminGraphqlClient } from '../lib/shopify/client';
 import { runSync, syncOrderDays, syncProducts, syncProgressFromRun } from '../lib/sync';
 import {
@@ -712,6 +713,24 @@ async function testShopifyAuth(): Promise<void> {
         ),
       'iss and dest disagree',
     );
+    // Prefix matching is not enough: the issuer must equal `{dest}/admin`
+    // exactly. Both of these passed the old startsWith(dest) check.
+    assertThrows(
+      () =>
+        verifySessionToken(
+          signSessionToken(validSessionClaims({ iss: 'https://acme-dev.myshopify.com.attacker.test/admin' })),
+          verifyOptions,
+        ),
+      'issuer with the destination as a hostname prefix is rejected',
+    );
+    assertThrows(
+      () =>
+        verifySessionToken(
+          signSessionToken(validSessionClaims({ iss: 'https://acme-dev.myshopify.com/admin/extra' })),
+          verifyOptions,
+        ),
+      'issuer with an extra path is rejected',
+    );
 
     // A little clock skew is tolerated, as Shopify's own libraries do.
     const session = verifySessionToken(
@@ -750,6 +769,75 @@ async function testShopifyAuth(): Promise<void> {
       () => resolveShopFromRequest(request, { allowQueryParam: false }),
       'refused without a session token',
     );
+  });
+
+  section('shopify auth — Admin API credentials');
+
+  await test('an uninstalled shop is rejected before a matching static token', async () => {
+    const names = ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_ADMIN_ACCESS_TOKEN', 'VERCEL_ENV'] as const;
+    const original = new Map(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.SHOPIFY_SHOP_DOMAIN = 'acme-dev.myshopify.com';
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = 'shpat_local_only';
+      process.env.VERCEL_ENV = 'preview';
+      const adapter = DemoAdapter.ephemeral();
+      const shop = await adapter.upsertShop({
+        shop_domain: 'acme-dev.myshopify.com',
+        mode: 'real',
+        uninstalled_at: NOW.toISOString(),
+      });
+
+      let error: unknown;
+      try {
+        credentialsFromShop(shop);
+      } catch (cause) {
+        error = cause;
+      }
+      assert(error instanceof CredentialError, 'credential rejection uses the typed error');
+      assertEqual((error as CredentialError).code, 'shop_uninstalled', 'static env cannot resurrect an uninstall');
+    } finally {
+      for (const name of names) {
+        const value = original.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  await test('a production runtime cannot turn static env credentials into write authority', async () => {
+    const names = ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_ADMIN_ACCESS_TOKEN', 'VERCEL_ENV'] as const;
+    const original = new Map(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.SHOPIFY_SHOP_DOMAIN = 'acme-dev.myshopify.com';
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = 'shpat_local_only';
+      process.env.VERCEL_ENV = 'production';
+      const adapter = DemoAdapter.ephemeral();
+      const shop = await adapter.upsertShop({
+        shop_domain: 'acme-dev.myshopify.com',
+        mode: 'real',
+        access_token_enc: null,
+        uninstalled_at: null,
+      });
+
+      let error: unknown;
+      try {
+        credentialsFromShop(shop);
+      } catch (cause) {
+        error = cause;
+      }
+      assert(error instanceof CredentialError, 'credential rejection uses the typed error');
+      assertEqual(
+        (error as CredentialError).code,
+        'static_credentials_forbidden',
+        'production requires the encrypted OAuth credential path',
+      );
+    } finally {
+      for (const name of names) {
+        const value = original.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 }
 
@@ -2366,9 +2454,11 @@ async function testGuardrails(): Promise<void> {
 
   const rules = defaultGuardrails();
 
-  await test('the default guardrail sentence avoids jargon (REQ-A-005)', () => {
-    const sentence = defaultGuardrails().rules[0]?.sentence ?? '';
-    assert(sentence.includes('put every price back'), `plain wording: ${sentence}`);
+  await test('the default guardrail is alert-only and avoids jargon (REQ-A-005)', () => {
+    const defaults = defaultGuardrails();
+    const sentence = defaults.rules[0]?.sentence ?? '';
+    assertEqual(defaults.auto_rollback, false, 'public beta defaults to merchant-controlled rollback');
+    assert(sentence.includes('pause') && sentence.includes('alert'), `plain wording: ${sentence}`);
     assert(!/revert/i.test(sentence), `"revert" is the one word a merchant may not use: ${sentence}`);
   });
 
@@ -2381,21 +2471,21 @@ async function testGuardrails(): Promise<void> {
   await test('one bad day is not enough for a two-day rule', () => {
     const assessment = evaluateGuardrails(rules, [
       observation({ day: '2026-07-27' }),
-      observation({ day: '2026-07-28', actual_units: 5 }),
+      observation({ day: '2026-07-28', actual_units: 4 }),
     ]);
     assertEqual(assessment.breach, true, 'today did cross the line');
     assertEqual(assessment.streak, 1, 'streak of one');
     assertEqual(assessment.action, null, 'but the rule needs two days');
   });
 
-  await test('two consecutive bad days trigger the rollback', () => {
+  await test('two consecutive bad days pause the default rollout', () => {
     const assessment = evaluateGuardrails(rules, [
       observation({ day: '2026-07-26' }),
-      observation({ day: '2026-07-27', actual_units: 5 }),
+      observation({ day: '2026-07-27', actual_units: 4 }),
       observation({ day: '2026-07-28', actual_units: 4 }),
     ]);
     assertEqual(assessment.streak, 2, 'streak of two');
-    assertEqual(assessment.action, 'rollback_all', 'and it fires');
+    assertEqual(assessment.action, 'pause', 'and it pauses without writing prices');
     assert((assessment.reason ?? '').includes('below'), `reason reads plainly: ${assessment.reason}`);
     // REQ-A-005: Lane A renders this verbatim, so no ISO dates on screen.
     assert(
@@ -2468,7 +2558,7 @@ async function testGuardrails(): Promise<void> {
       observation({ day: '2026-07-27', actual_units: 9, breach_probability: 0.91 }),
       observation({ day: '2026-07-28', actual_units: 9, breach_probability: 0.93 }),
     ]);
-    assertEqual(assessment.action, 'rollback_all', 'probability fires the rule');
+    assertEqual(assessment.action, 'pause', 'probability pauses the default rollout');
     assert((assessment.reason ?? '').includes('%'), 'and states the confidence');
   });
 
@@ -2636,7 +2726,9 @@ async function testRollout(): Promise<void> {
   });
 
   await test('advances once the hold is served', () => {
-    const rollout = makeRollout();
+    const rollout = makeRollout({
+      guardrails: { ...defaultGuardrails(), auto_rollback: true },
+    });
     const decision = decideNext({
       rollout,
       assessment: evaluateGuardrails(rollout.guardrails, [observation({ day: TODAY })]),
@@ -2661,16 +2753,16 @@ async function testRollout(): Promise<void> {
 
   await test('safety outranks advancing', () => {
     // The stage is ready to advance AND a guardrail has fired. Advancing a
-    // failing rollout is the worst possible outcome, so rollback wins.
+    // failing rollout is the worst possible outcome, so the beta-safe pause wins.
     const rollout = makeRollout();
     const assessment = evaluateGuardrails(rollout.guardrails, [
       observation({ day: addDays(TODAY, -1), actual_units: 4 }),
       observation({ day: TODAY, actual_units: 4 }),
     ]);
-    assertEqual(assessment.action, 'rollback_all', 'guardrail fired');
+    assertEqual(assessment.action, 'pause', 'guardrail fired in alert-only mode');
 
     const decision = decideNext({ rollout, assessment, asOf: TODAY, timezone: TZ });
-    assertEqual(decision.decision, 'rollback', 'rollback beats advance');
+    assertEqual(decision.decision, 'pause', 'pause beats advance');
   });
 
   await test('a rollout that is not running decides nothing', () => {
@@ -3001,7 +3093,11 @@ async function runAdapterSuite(label: string, adapter: StoreAdapter, shopId: str
     assert(all.length > 100, `expected months of history, got ${all.length} days`);
 
     const from = addDays(TODAY, -14);
-    const window = await adapter.getOrderDays(shopId, { variant_gids: [variantGid], from_day: from });
+    const window = await adapter.getOrderDays(shopId, {
+      variant_gids: [variantGid],
+      from_day: from,
+      to_day: TODAY,
+    });
     assert(window.length <= 15, 'window is respected');
     assert(
       window.every((row) => row.day >= from),

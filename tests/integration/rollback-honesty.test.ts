@@ -19,7 +19,7 @@ import { makeScenario, advanceTo } from './invariants.test';
 export async function runRollbackHonestySuite(adapter: StoreAdapter, shop: Shop, label: string): Promise<void> {
   section(`[${label}] rollback honesty`);
 
-  await test('a rollback skips variants Shopify repriced but never acknowledged', async () => {
+  await test('a rollback restores variants Shopify repriced but never acknowledged', async () => {
     // The crash window, on the way *back*. `applyStage` writes the price,
     // Shopify applies it, the socket dies, so `applied_at` stays null. That is
     // correct and `reconcile` heals it forward. But `rollbackRollout` selects on

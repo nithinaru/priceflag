@@ -63,3 +63,53 @@ def test_recorded_loser_stays_recorded():
     rows, ok = nightly.run_gates(checks)
     assert ok
     assert rows[0]["status"] == "rejected"
+
+
+def test_c1_incumbent_safety_bar_is_part_of_every_nightly():
+    assert any(check[1] == "c1_incumbents.json" for check in nightly.CHECKS)
+
+
+def test_required_real_ingest_rejects_zero_visible_shops(monkeypatch, tmp_path):
+    import priceflag_ml.data as data_module
+    import priceflag_ml.ingest as ingest_module
+
+    class EmptySource:
+        def list_shops(self):
+            return []
+
+    class ConfiguredIngest:
+        pass
+
+    monkeypatch.setattr(data_module.SupabaseSource, "from_env", classmethod(lambda cls: EmptySource()))
+    monkeypatch.setattr(
+        ingest_module.IngestClient,
+        "from_env_or_none",
+        classmethod(lambda cls, client=None: ConfiguredIngest()),
+    )
+    assert nightly.refit_real_stores(tmp_path, True, {}, require_ingest=True) is False
+
+
+def test_required_real_ingest_rejects_a_shop_with_no_acknowledged_rows(monkeypatch, tmp_path):
+    import pandas as pd
+
+    import priceflag_ml.data as data_module
+    import priceflag_ml.ingest as ingest_module
+    from priceflag_ml.data import CANONICAL_COLUMNS
+
+    class EmptyHistorySource:
+        def list_shops(self):
+            return ["empty.myshopify.com"]
+
+        def order_days(self, _shop):
+            return pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+    class ConfiguredIngest:
+        pass
+
+    monkeypatch.setattr(data_module.SupabaseSource, "from_env", classmethod(lambda cls: EmptyHistorySource()))
+    monkeypatch.setattr(
+        ingest_module.IngestClient,
+        "from_env_or_none",
+        classmethod(lambda cls, client=None: ConfiguredIngest()),
+    )
+    assert nightly.refit_real_stores(tmp_path, True, {}, require_ingest=True) is False

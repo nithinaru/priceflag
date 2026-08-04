@@ -6,16 +6,15 @@
  *   1. Read the **raw body**. Parsing first and re-serialising would change key
  *      order and whitespace, and the HMAC would never match.
  *   2. Verify the HMAC. An unverified body is attacker-controlled input, and this
- *      endpoint mutates order history that auto-rollback depends on.
+ *      endpoint mutates order history that rollout guardrails depend on.
  *   3. De-duplicate on `X-Shopify-Webhook-Id`. Shopify retries; retries are not
  *      rare. A duplicate `orders/create` would inflate a day's units and make a
  *      healthy rollout look like it was outperforming.
  *   4. Only then act.
  *
- * After a verified HMAC this always returns 2xx, even when handling fails. A
- * non-2xx makes Shopify retry for days and eventually disable the subscription;
- * the failure is recorded on the row instead, where it can be retried on our
- * terms.
+ * A handler failure returns a retriable non-2xx. Order ingestion is one
+ * transaction, and generic failures are explicitly claimable again, so a retry
+ * cannot be mistaken for a completed event or permanently acknowledged as lost.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -24,10 +23,11 @@ import { getAdapter } from '@/lib/adapters';
 import { env } from '@/lib/config';
 import { dayInTimeZone } from '@/lib/dates';
 import { buildExternalChangeEntry } from '@/lib/engine/journal';
-import { parseMoneyToCents, type Cents } from '@/lib/money';
+import { ROLLBACK_IN_PROGRESS_PREFIX } from '@/lib/engine/rollout';
+import { parseMoneyToCents, roundCents, type Cents } from '@/lib/money';
 import { verifyWebhookHmac } from '@/lib/shopify/hmac';
 import type { StoreAdapter } from '@/lib/adapters/types';
-import type { OrderDayUpsert, Shop } from '@/lib/types';
+import type { OrderDayUpsert, Shop, WebhookEventRecord } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,33 +57,118 @@ export async function POST(
   }
 
   const shopDomain = (request.headers.get('x-shopify-shop-domain') ?? '').toLowerCase();
-  const webhookId = request.headers.get('x-shopify-webhook-id') ?? `${topic}:${Date.now()}`;
+  const webhookId = request.headers.get('x-shopify-webhook-id');
+  if (shopDomain === '' || webhookId === null || webhookId.trim() === '') {
+    // Dedupe is part of order-count correctness. Inventing an id here would
+    // turn a retry into a second order, so reject malformed deliveries before
+    // recording or processing anything.
+    return NextResponse.json({ error: 'missing Shopify webhook identity headers' }, { status: 400 });
+  }
   const adapter = getAdapter();
+  const payload = safeParse(rawBody);
+  const shop = await adapter.getShopByDomain(shopDomain);
 
-  const { duplicate } = await adapter.recordWebhook({
-    shop_domain: shopDomain,
-    topic,
-    webhook_id: webhookId,
-    api_version: request.headers.get('x-shopify-api-version'),
-    triggered_at: request.headers.get('x-shopify-triggered-at'),
-    // GDPR payloads are never retained.
-    payload: GDPR_TOPICS.has(topic) ? null : safeParse(rawBody),
-  });
+  if (topic === 'shop/redact') {
+    try {
+      const result = await adapter.purgeShopForCompliance({
+        shopId: shop?.id ?? null,
+        shopDomain,
+        webhookId,
+        triggeredAt: request.headers.get('x-shopify-triggered-at'),
+      });
+      return NextResponse.json({ ok: true, ...result, audited: true });
+    } catch {
+      return NextResponse.json(
+        { ok: false, retryable: true, error: 'compliance purge could not be verified' },
+        { status: 500 },
+      );
+    }
+  }
 
-  if (duplicate) {
+  if (shop === null) {
+    return NextResponse.json({ ok: false, retryable: true, error: 'unknown Shopify shop' }, { status: 404 });
+  }
+
+  if (topic === 'orders/create') {
+    try {
+      const result = await adapter.ingestOrderWebhook({
+        event: {
+          shop_domain: shopDomain,
+          shop_id: shop.id,
+          topic,
+          webhook_id: webhookId,
+          api_version: request.headers.get('x-shopify-api-version'),
+          triggered_at: request.headers.get('x-shopify-triggered-at'),
+          payload: null,
+        },
+        rows: orderRows(shop, payload),
+      });
+      return NextResponse.json({ ok: true, deduplicated: result.duplicate, rows_written: result.rows_written });
+    } catch {
+      // The event row and order deltas share a transaction, so a 5xx leaves no
+      // partial count behind. Shopify can safely retry this same webhook ID.
+      return NextResponse.json(
+        { ok: false, retryable: true, error: 'order webhook was not committed' },
+        { status: 500 },
+      );
+    }
+  }
+
+  let record: WebhookEventRecord;
+  try {
+    ({ record } = await adapter.recordWebhook({
+      shop_domain: shopDomain,
+      shop_id: shop.id,
+      topic,
+      webhook_id: webhookId,
+      api_version: request.headers.get('x-shopify-api-version'),
+      triggered_at: request.headers.get('x-shopify-triggered-at'),
+      // Order and privacy payloads can contain customer identity. Product updates
+      // are the only payload retained because their variant prices are needed for
+      // conflict diagnosis and contain no customer fields.
+      payload: topic === 'products/update' ? payload : null,
+    }));
+  } catch {
+    return NextResponse.json(
+      { ok: false, retryable: true, error: 'webhook identity could not be recorded' },
+      { status: 500 },
+    );
+  }
+
+  if (record.status === 'processed' || record.status === 'ignored') {
     return NextResponse.json({ ok: true, deduplicated: true });
+  }
+  let claimed = false;
+  try {
+    claimed = await adapter.claimWebhook(webhookId);
+  } catch {
+    return NextResponse.json(
+      { ok: false, retryable: true, error: 'webhook processing could not be claimed' },
+      { status: 500 },
+    );
+  }
+  if (!claimed) {
+    // Another delivery owns the processing claim. A non-2xx asks Shopify to
+    // retry later; it must not race the in-flight handler.
+    return NextResponse.json({ ok: false, retryable: true, error: 'webhook is already processing' }, { status: 503 });
   }
 
   try {
-    await handle(adapter, topic, shopDomain, safeParse(rawBody));
-    await adapter.markWebhookProcessed(webhookId, 'processed');
+    const disposition = await handle(adapter, topic, shop, payload);
+    await adapter.markWebhookProcessed(webhookId, disposition);
+    return NextResponse.json({
+      ok: true,
+      ...(GDPR_TOPICS.has(topic)
+        ? { no_customer_identity_stored: true, evidence: 'order_days contains aggregate variant/day measures only' }
+        : {}),
+    });
   } catch (cause) {
     await adapter.markWebhookProcessed(webhookId, 'failed', cause instanceof Error ? cause.message : String(cause));
-    // Still 2xx — see the header comment.
-    return NextResponse.json({ ok: false, recorded: true });
+    return NextResponse.json(
+      { ok: false, retryable: true, error: 'webhook processing failed' },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json({ ok: true });
 }
 
 function safeParse(body: string): Record<string, unknown> | null {
@@ -97,53 +182,44 @@ function safeParse(body: string): Record<string, unknown> | null {
 async function handle(
   adapter: StoreAdapter,
   topic: string,
-  shopDomain: string,
+  shop: Shop,
   payload: Record<string, unknown> | null,
-): Promise<void> {
+): Promise<'processed' | 'ignored'> {
   if (GDPR_TOPICS.has(topic)) {
-    // Acknowledged and recorded. `shop/redact` is a manual, audited operation —
-    // it deletes a merchant's entire price history, so it is not something a
-    // webhook handler should do unattended.
-    return;
+    // Orders and these webhook payloads are never stored. There is therefore no
+    // customer identity to return or redact; the aggregate fact is audited.
+    return 'ignored';
   }
-
-  const shop = shopDomain === '' ? null : await adapter.getShopByDomain(shopDomain);
-  if (shop === null || payload === null) return;
+  if (payload === null) return 'ignored';
 
   switch (topic) {
-    case 'orders/create':
-    case 'orders/updated':
-      await applyOrder(adapter, shop, payload);
-      return;
     case 'products/update':
       await detectExternalPriceChange(adapter, shop, payload);
-      return;
+      return 'processed';
     case 'app/uninstalled':
       // Clear the token, keep the shop and its journal: a merchant who reinstalls
       // keeps their price history, and the journal is the recovery path.
       await adapter.updateShop(shop.id, { access_token_enc: null, uninstalled_at: new Date().toISOString() });
-      return;
+      return 'processed';
     default:
-      return;
+      // orders/updated is deliberately ignored: without storing order IDs, an
+      // update cannot be reconciled without double-counting the original.
+      return 'ignored';
   }
 }
 
-/** Fold one order into `order_days`, additively and in shop-local time. */
-async function applyOrder(
-  adapter: StoreAdapter,
-  shop: Shop,
-  payload: Record<string, unknown>,
-): Promise<void> {
+/** One Shopify order → one additive row per distinct variant. */
+function orderRows(shop: Shop, payload: Record<string, unknown> | null): OrderDayUpsert[] {
+  if (payload === null || payload.test === true) return [];
   const createdAt = typeof payload.created_at === 'string' ? payload.created_at : new Date().toISOString();
-  const day = dayInTimeZone(new Date(createdAt), shop.timezone);
+  const created = new Date(createdAt);
+  if (!Number.isFinite(created.getTime())) throw new Error('order created_at is invalid');
+  const day = dayInTimeZone(created, shop.timezone);
   const lineItems = Array.isArray(payload.line_items) ? (payload.line_items as Record<string, unknown>[]) : [];
-  if (lineItems.length === 0) return;
-
-  // Read-modify-write on the day's existing row. The REST webhook payload is one
-  // order, but the table's grain is the day.
-  const existing = await adapter.getOrderDays(shop.id, { from_day: day, to_day: day });
-  const byVariant = new Map(existing.map((row) => [row.variant_gid, row]));
-  const rows = new Map<string, OrderDayUpsert>();
+  const grouped = new Map<
+    string,
+    { units: number; gross: Cents; discount: Cents; product_gid: string | null }
+  >();
 
   for (const item of lineItems) {
     const variantId = item.variant_id;
@@ -151,60 +227,64 @@ async function applyOrder(
     const variantGid = `gid://shopify/ProductVariant/${String(variantId)}`;
 
     const quantity = Number(item.quantity ?? 0);
+    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error('order line quantity must be a positive integer');
     const price: Cents = parseMoneyToCents(String(item.price ?? '0'));
     const discount: Cents = Array.isArray(item.discount_allocations)
       ? (item.discount_allocations as Record<string, unknown>[]).reduce(
-          (sum, allocation) =>
-            sum + parseMoneyToCents(String((allocation.amount_set as Record<string, never> | undefined) ? '0' : (allocation.amount ?? '0'))),
+          (sum, allocation) => sum + discountAllocationCents(allocation),
           0,
         )
       : 0;
 
     const gross = price * quantity;
-    const previous = rows.get(variantGid) ?? toUpsert(byVariant.get(variantGid), variantGid, day);
-
+    if (discount > gross) throw new Error('order line discount exceeds its gross value');
+    const previous = grouped.get(variantGid) ?? {
+      units: 0,
+      gross: 0,
+      discount: 0,
+      product_gid:
+        item.product_id === null || item.product_id === undefined
+          ? null
+          : `gid://shopify/Product/${String(item.product_id)}`,
+    };
     previous.units += quantity;
-    previous.orders += 1;
-    previous.gross_revenue_cents += gross;
-    previous.discount_cents += discount;
-    previous.net_revenue_cents = previous.gross_revenue_cents - previous.discount_cents - previous.refund_cents;
-    const netUnits = Math.max(1, previous.units - previous.refund_units);
-    previous.realized_unit_price_cents = Math.round(previous.net_revenue_cents / netUnits);
-    previous.on_promo = previous.discount_cents > 0;
-    previous.source = 'webhook';
-
-    rows.set(variantGid, previous);
+    previous.gross += gross;
+    previous.discount += discount;
+    grouped.set(variantGid, previous);
   }
 
-  if (rows.size > 0) await adapter.upsertOrderDays(shop.id, [...rows.values()]);
+  return [...grouped].map(([variant_gid, aggregate]) => {
+    const net = aggregate.gross - aggregate.discount;
+    return {
+      variant_gid,
+      product_gid: aggregate.product_gid,
+      day,
+      units: aggregate.units,
+      // This is one order, even if Shopify split the same variant into several
+      // line items because of discount allocations or fulfillment grouping.
+      orders: 1,
+      gross_revenue_cents: aggregate.gross,
+      discount_cents: aggregate.discount,
+      refund_units: 0,
+      refund_cents: 0,
+      net_revenue_cents: net,
+      realized_unit_price_cents: roundCents(net / aggregate.units),
+      list_price_cents: roundCents(aggregate.gross / aggregate.units),
+      had_stockout: false,
+      on_promo: aggregate.discount > 0,
+      source: 'webhook',
+    };
+  });
 }
 
-function toUpsert(
-  existing: { variant_gid: string; day: string } | undefined,
-  variantGid: string,
-  day: string,
-): OrderDayUpsert {
-  if (existing !== undefined) {
-    const row = existing as unknown as OrderDayUpsert;
-    return { ...row };
+function discountAllocationCents(allocation: Record<string, unknown>): Cents {
+  if (allocation.amount !== null && allocation.amount !== undefined) {
+    return parseMoneyToCents(String(allocation.amount));
   }
-  return {
-    variant_gid: variantGid,
-    product_gid: null,
-    day,
-    units: 0,
-    orders: 0,
-    gross_revenue_cents: 0,
-    discount_cents: 0,
-    refund_units: 0,
-    refund_cents: 0,
-    net_revenue_cents: 0,
-    realized_unit_price_cents: null,
-    list_price_cents: null,
-    had_stockout: false,
-    on_promo: false,
-    source: 'webhook',
-  };
+  const amountSet = (allocation.amount_set ?? allocation.amountSet) as Record<string, unknown> | undefined;
+  const shopMoney = (amountSet?.shop_money ?? amountSet?.shopMoney) as Record<string, unknown> | undefined;
+  const amount = shopMoney?.amount;
+  return amount === null || amount === undefined ? 0 : parseMoneyToCents(String(amount));
 }
 
 /**
@@ -230,16 +310,45 @@ async function detectExternalPriceChange(
 
     const stored = await adapter.getProductsByVariantGids(shop.id, [variantGid]);
     const known = stored[0];
-    if (known === undefined || known.price_cents === livePrice) continue;
+    if (known === undefined) continue;
+    // Shopify normally includes compare_at_price in products/update. Preserve
+    // the stored value if a test/legacy payload omits the field entirely, but
+    // treat an explicit null as clearing it.
+    const hasCompareAt = Object.prototype.hasOwnProperty.call(variant, 'compare_at_price');
+    const compareAtValue = variant.compare_at_price;
+    const liveCompareAt = !hasCompareAt
+      ? known.compare_at_cents
+      : compareAtValue === null || compareAtValue === undefined
+        ? null
+        : parseMoneyToCents(String(compareAtValue));
+    if (known.price_cents === livePrice && known.compare_at_cents === liveCompareAt) continue;
 
     // Is this our own write landing back as a webhook? If the journal's newest
     // applied entry already says this price, it was us, and re-journalling it as
     // `external` would pause our own rollout.
     const last = await adapter.getLastJournaledPrice(shop.id, variantGid);
-    const ours = last !== null && last.after_price_cents === livePrice && last.source !== 'external';
+    const journalSaysOurs =
+      last !== null &&
+      last.after_price_cents === livePrice &&
+      last.after_compare_at_cents === liveCompareAt &&
+      last.source !== 'external';
+    // Shopify can deliver products/update before our post-mutation journal row
+    // is visible. A running rollout has already frozen the exact target and live
+    // cohort before applyStage calls Shopify, so that state is a safe second
+    // signal for a forward write. Baselines are accepted only while the rollout
+    // holds the explicit rollback-in-progress state, so a genuine merchant
+    // restore is not hidden.
+    const rolloutSaysOurs = await isExpectedPriceflagWrite(
+      adapter,
+      shop,
+      variantGid,
+      livePrice,
+      liveCompareAt,
+    );
+    const ours = journalSaysOurs || rolloutSaysOurs;
 
     await adapter.upsertProducts(shop.id, [
-      { ...known, price_cents: livePrice, compare_at_cents: known.compare_at_cents } as never,
+      { ...known, price_cents: livePrice, compare_at_cents: liveCompareAt } as never,
     ]);
 
     if (ours) continue;
@@ -253,7 +362,7 @@ async function detectExternalPriceChange(
         before_price_cents: known.price_cents,
         after_price_cents: livePrice,
         before_compare_at_cents: known.compare_at_cents,
-        after_compare_at_cents: known.compare_at_cents,
+        after_compare_at_cents: liveCompareAt,
         currency: shop.currency,
       }),
     ]);
@@ -267,16 +376,48 @@ async function detectExternalPriceChange(
 
       await adapter.updateRollout(rollout.id, {
         status: 'paused',
-        paused_reason: `The price of ${known.title} was changed outside Priceflag.`,
+        paused_reason: `The pricing of ${known.title} was changed outside Priceflag.`,
       });
       await adapter.appendRolloutEvent({
         rollout_id: rollout.id,
         shop_id: shop.id,
         type: 'paused_external_change',
         actor: 'shopify_admin',
-        message: `Paused: the price of ${known.title} was changed outside Priceflag, so results would no longer mean what we predicted.`,
-        data: { variant_gid: variantGid, found_price_cents: livePrice },
+        message: `Paused: the price or compare-at price of ${known.title} was changed outside Priceflag, so results would no longer mean what we predicted.`,
+        data: {
+          variant_gid: variantGid,
+          found_price_cents: livePrice,
+          found_compare_at_cents: liveCompareAt,
+        },
       });
     }
   }
+}
+
+async function isExpectedPriceflagWrite(
+  adapter: StoreAdapter,
+  shop: Shop,
+  variantGid: string,
+  livePrice: Cents,
+  liveCompareAt: Cents | null,
+): Promise<boolean> {
+  for (const rollout of await adapter.listRollouts(shop.id, ['running', 'paused'])) {
+    const planned = (await adapter.getRolloutVariants(rollout.id)).find(
+      (row) => !row.excluded && row.variant_gid === variantGid,
+    );
+    if (planned === undefined) continue;
+
+    const expectedForward =
+      rollout.status === 'running' &&
+      planned.cohort_stage <= rollout.current_stage &&
+      planned.target_price_cents === livePrice &&
+      planned.target_compare_at_cents === liveCompareAt;
+    const expectedRollback =
+      rollout.status === 'paused' &&
+      rollout.paused_reason?.startsWith(ROLLBACK_IN_PROGRESS_PREFIX) === true &&
+      planned.baseline_price_cents === livePrice &&
+      planned.baseline_compare_at_cents === liveCompareAt;
+    if (expectedForward || expectedRollback) return true;
+  }
+  return false;
 }

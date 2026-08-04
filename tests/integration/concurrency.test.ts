@@ -229,7 +229,7 @@ export async function runExternalChangeSuite(adapter: StoreAdapter, shop: Shop, 
     assertExactCents(scenario.shopify.priceOf((products[0] as Product).variant_gid), 800, "the merchant's price stands");
   });
 
-  await test("an admin edit AFTER the variant went live is silently overwritten by the next reconcile", async () => {
+  await test('an admin edit AFTER the variant went live is detected and preserved by reconcile', async () => {
     const products = [makeProduct(0, { priceCents: 1000, productIndex: 0 })];
     const scenario = await makeScenario(adapter, shop, products, { type: 'percent', percent: 10 });
     const gid = (products[0] as Product).variant_gid;
@@ -254,6 +254,28 @@ export async function runExternalChangeSuite(adapter: StoreAdapter, shop: Shop, 
         `external_changes=${reconciled.external_changes.length}, applied=${reconciled.applied}, ` +
         `merchant's 850 is now ${livePrice}`,
     );
+  });
+
+  await test('rollback preserves an admin edit made after activation', async () => {
+    const products = [makeProduct(0, { priceCents: 1000, productIndex: 0 })];
+    const scenario = await makeScenario(adapter, shop, products, { type: 'percent', percent: 10 });
+    const gid = (products[0] as Product).variant_gid;
+
+    scenario.rollout = await adapter.updateRollout(scenario.rollout.id, {
+      current_stage: 2,
+      stage_entered_at: nowIso(),
+    });
+    await applyStage(scenario.context as never, scenario.rollout, 2);
+    scenario.shopify.setPrice(gid, 850);
+
+    const undo = await rollbackRollout(scenario.context as never, scenario.rollout, {
+      reason: 'merchant requested rollback after editing Shopify',
+      actor: 'merchant',
+    });
+
+    assertEqual(undo.external_changes.length, 1, 'the rollback reports the conflicting merchant edit');
+    assertEqual(undo.applied, 0, 'the rollback does not overwrite the merchant');
+    assertExactCents(scenario.shopify.priceOf(gid), 850, "the merchant's live price remains authoritative");
   });
 }
 

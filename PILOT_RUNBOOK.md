@@ -8,6 +8,28 @@ true before-and-after of every price change Priceflag ever made. Whatever else i
 broken, that table can restore the store. Everything below is a faster path to the
 same answer.
 
+## Merchant API authentication
+
+Every merchant-facing API command below requires a **fresh Shopify App Bridge
+session token**. A deployment-access cookie or Vercel bypass only opens the site;
+it does not authorize a store. From the embedded app's browser console, obtain a
+new short-lived token immediately before running a command:
+
+```js
+await shopify.idToken()
+```
+
+Copy it only into the current shell (never a file, commit, ticket, or chat):
+
+```bash
+read -rs SHOPIFY_SESSION_TOKEN
+export SHOPIFY_SESSION_TOKEN
+```
+
+If a command returns 401, obtain a new token rather than reusing an expired one.
+The examples below assume any separate deployment-protection cookie is already
+present in the curl cookie jar.
+
 ---
 
 ## Fastest possible undo
@@ -16,6 +38,7 @@ The merchant wants everything back the way it was, now:
 
 ```bash
 curl -X POST "$APP_URL/api/kill-switch" \
+  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"reason":"Support request"}'
 ```
@@ -31,22 +54,25 @@ verifies each one against Shopify. Returns
 To let Priceflag write prices again (this resumes nothing):
 
 ```bash
-curl -X DELETE "$APP_URL/api/kill-switch"
+curl -X DELETE "$APP_URL/api/kill-switch" \
+  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN"
 ```
 
 ---
 
 ## "I get a 401 on every page"
 
-That is the access gate (`middleware.ts`), not a bug. Reach the app once with
-`?access=<APP_ACCESS_SECRET>` and it sets a 30-day HttpOnly cookie. For curl, use
-`-u priceflag:$APP_ACCESS_SECRET`.
+For a page request, that is usually the access gate (`middleware.ts`). Reach the
+app once with `?access=<APP_ACCESS_SECRET>` and it sets a 30-day HttpOnly cookie.
+For a merchant API request, a 401 after passing that gate means the short-lived
+Shopify session token is missing, forged, or expired; refresh it as described
+above.
 
-It is an **interim** measure: Vercel's Standard Protection exempts the production
-domain, so without it the dashboard and every mutating route are public. It is a
-shared secret, not a login — it cannot be handed to a merchant. Three paths are
-exempt because each authenticates itself: `/api/cron/evaluate`,
-`/api/webhooks/*`, `/api/health`.
+The access gate is an **interim** preview boundary, not tenant authorization. The
+merchant APIs independently require Shopify session tokens. Machine endpoints
+are exempt because they authenticate themselves, and health is deliberately
+non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/webhooks/*`,
+`/api/health`.
 
 If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
 everything returns 401. Set it in Vercel and redeploy.
@@ -101,8 +127,10 @@ curl -s "$APP_URL/api/health" | jq
 Then the rollout itself:
 
 ```bash
-curl -s "$APP_URL/api/rollouts/<id>" | jq '{status, live, can}'
-curl -s "$APP_URL/api/journal?rollout_id=<id>" | jq '.items[:5]'
+curl -s "$APP_URL/api/rollouts/<id>" \
+  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" | jq '{status, live, can}'
+curl -s "$APP_URL/api/journal?rollout_id=<id>" \
+  -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" | jq '.items[:5]'
 ```
 
 ---
@@ -112,7 +140,8 @@ curl -s "$APP_URL/api/journal?rollout_id=<id>" | jq '.items[:5]'
 1. **Find out who changed it.**
 
    ```bash
-   curl -s "$APP_URL/api/journal?variant_gid=gid://shopify/ProductVariant/123" | jq '.items[0]'
+   curl -s "$APP_URL/api/journal?variant_gid=gid://shopify/ProductVariant/123" \
+     -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" | jq '.items[0]'
    ```
 
    `source: 'external'` means it was changed outside Priceflag — we only observed
@@ -122,7 +151,10 @@ curl -s "$APP_URL/api/journal?rollout_id=<id>" | jq '.items[:5]'
    switch:
 
    ```bash
-   curl -X POST "$APP_URL/api/rollouts/<id>/rollback" -d '{"reason":"Wrong price reported"}'
+   curl -X POST "$APP_URL/api/rollouts/<id>/rollback" \
+     -H "Authorization: Bearer $SHOPIFY_SESSION_TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"confirm":true,"reason":"Wrong price reported"}'
    ```
 
 3. **If the journal shows no Priceflag write**, we did not cause it. The merchant

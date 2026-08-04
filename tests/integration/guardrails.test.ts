@@ -9,7 +9,15 @@
 import { DEFAULT_MIN_EXPECTED_UNITS, defaultGuardrails } from '../../lib/contracts';
 import type { GuardrailRule, Guardrails } from '../../lib/contracts';
 import { evaluateGuardrails, ruleConditionHolds, type DailyObservation } from '../../lib/engine/guardrails';
+import {
+  evaluatorAllowsShop,
+  forecastDemandMultiplier,
+  parseEvaluatorShopAllowlist,
+  selectExpectedBandsForRollout,
+  weightedUnitEconomics,
+} from '../../lib/evaluator';
 import type { DayString } from '../../lib/dates';
+import type { ExpectedBandRow, Rollout, RolloutVariant, Shop } from '../../lib/types';
 
 import { assert, assertEqual, section, test } from './_harness';
 
@@ -157,12 +165,10 @@ export async function runGuardrailSuite(): Promise<void> {
     );
   });
 
-  await test('one breach probability fires EVERY rule, whatever metric each rule watches', async () => {
-    // `breach_probability` is a property of the day, not of a metric. Lane C's C5
-    // monitor computes it from UNITS. `ruleConditionHolds` consults it before it
-    // ever looks at `rule.metric`, so a units-derived probability also fires a
-    // revenue rule and a profit rule — including a profit rule on a selection
-    // whose profit is unknown.
+  await test('a units breach probability cannot fire a revenue or unknown-profit rule', async () => {
+    // Lane C's C5 monitor currently computes breach probability from UNITS.
+    // Revenue and profit must fall back to their own observed values until they
+    // have independently calibrated probabilities.
     const day = observation({ breach_probability: 0.95, actual_profit_cents: null, expected_profit_cents: null });
 
     const units = ruleConditionHolds(rule({ metric: 'units' }), day);
@@ -185,5 +191,98 @@ export async function runGuardrailSuite(): Promise<void> {
     const profit = ruleConditionHolds(rule({ id: 'r3', metric: 'profit' }), day);
     assertEqual(profit.holds, false, 'unknown profit cannot breach');
     assertEqual(profit.known, false, 'and it is reported as unknowable, so the caller records a skip');
+  });
+
+  section('evaluator — model selection and production isolation');
+
+  await test('one latest band per variant is selected, preferring this rollout only', async () => {
+    const now = new Date('2026-07-20T12:00:00Z');
+    const base = (overrides: Partial<ExpectedBandRow>): ExpectedBandRow => ({
+      id: 'base',
+      shop_id: 'shop-1',
+      variant_gid: 'gid://shopify/ProductVariant/1',
+      day: '2026-07-20' as DayString,
+      expected_units: 10,
+      low: 7,
+      high: 13,
+      interval_nominal: 0.8,
+      band_kind: 'baseline',
+      rollout_id: null,
+      breach_probability: null,
+      is_floored: false,
+      model_version: 'v1',
+      model_run_id: null,
+      generated_at: '2026-07-19T10:00:00Z',
+      ...overrides,
+    });
+    const selected = selectExpectedBandsForRollout(
+      [
+        base({ id: 'old-base', expected_units: 10, model_version: 'v1' }),
+        base({ id: 'new-base', expected_units: 20, model_version: 'v2', generated_at: '2026-07-19T11:00:00Z' }),
+        base({ id: 'prior-cf', expected_units: 100, band_kind: 'counterfactual', rollout_id: 'prior-rollout' }),
+        base({ id: 'current-cf', expected_units: 7, band_kind: 'counterfactual', rollout_id: 'current-rollout', generated_at: '2026-07-19T09:00:00Z' }),
+        base({ id: 'variant-2-old', variant_gid: 'gid://shopify/ProductVariant/2', expected_units: 3 }),
+        base({ id: 'variant-2-new', variant_gid: 'gid://shopify/ProductVariant/2', expected_units: 5, model_version: 'v2', generated_at: '2026-07-19T11:00:00Z' }),
+      ],
+      'current-rollout',
+      now,
+    );
+    assertEqual(selected.length, 2, 'duplicates and prior-rollout bands do not add extra expectations');
+    assertEqual(selected.find((band) => band.variant_gid.endsWith('/1'))?.id, 'current-cf', 'current counterfactual wins');
+    assertEqual(selected.find((band) => band.variant_gid.endsWith('/2'))?.id, 'variant-2-new', 'latest baseline wins');
+    assertEqual(selected.reduce((sum, band) => sum + band.expected_units, 0), 12, 'aggregate cannot be inflated');
+  });
+
+  await test('the evaluator shop allowlist fails closed when configured badly', async () => {
+    const shop = {
+      id: '11111111-1111-4111-8111-111111111111',
+      shop_domain: 'allowed.myshopify.com',
+    } as Shop;
+    assertEqual(evaluatorAllowsShop(shop, parseEvaluatorShopAllowlist(undefined)), true, 'unset remains unrestricted');
+    assertEqual(evaluatorAllowsShop(shop, parseEvaluatorShopAllowlist('')), false, 'configured empty value blocks all shops');
+    assertEqual(evaluatorAllowsShop(shop, parseEvaluatorShopAllowlist('not a shop')), false, 'malformed value blocks all shops');
+    assertEqual(evaluatorAllowsShop(shop, parseEvaluatorShopAllowlist(shop.shop_domain)), true, 'exact domain is allowed');
+    assertEqual(evaluatorAllowsShop(shop, parseEvaluatorShopAllowlist(shop.id)), true, 'exact shop id is allowed');
+  });
+
+  await test('expected unit economics are weighted by baseline demand', async () => {
+    const variant = (price: number, cost: number, units: number): RolloutVariant => ({
+      target_price_cents: price,
+      cogs_cents_at_creation: cost,
+      baseline_units_per_day: units,
+    } as RolloutVariant);
+    const result = weightedUnitEconomics([
+      variant(1_000, 400, 9),
+      variant(10_000, 4_000, 1),
+    ]);
+    assertEqual(result.price, 1_900, 'a low-volume expensive SKU does not get equal weight');
+    assertEqual(result.cost, 760, 'cost uses the same units weights');
+  });
+
+  await test('assumption-tier forecasts use the -1.5 elasticity fallback', async () => {
+    const rollout = {
+      forecast: {
+        fitted: null,
+        products: [
+          {
+            excluded: false,
+            current_price_cents: 1_000,
+            target_price_cents: 1_100,
+            baseline_units_per_day: 9,
+          },
+          {
+            excluded: false,
+            current_price_cents: 1_000,
+            target_price_cents: 2_000,
+            baseline_units_per_day: 1,
+          },
+        ],
+      },
+    } as unknown as Rollout;
+    const expected = (9 * Math.pow(1.1, -1.5) + Math.pow(2, -1.5)) / 10;
+    assert(
+      Math.abs(forecastDemandMultiplier(rollout) - expected) < 1e-12,
+      'fallback response is SKU-level and baseline-units weighted',
+    );
   });
 }

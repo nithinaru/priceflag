@@ -23,7 +23,16 @@ import type {
 } from '../contracts';
 import { CONTRACT_VERSION } from '../contracts';
 import { addDays, diffDays, nowIso, today, type DayString } from '../dates';
-import { applyAbsolute, applyPercent, applyRounding, formatPct, roundCents, type Cents, type Rounding } from '../money';
+import {
+  applyAbsolute,
+  applyPercent,
+  applyRounding,
+  assertStorefrontPrice,
+  formatPct,
+  roundCents,
+  type Cents,
+  type Rounding,
+} from '../money';
 import type { ElasticityFitRow, OrderDay, Product } from '../types';
 import { exclusionReasonFor } from '../types';
 
@@ -111,14 +120,24 @@ export function computeTargetPrice(currentPriceCents: Cents, change: PriceChange
       throw new ForecastError('invalid_change', 'a percent change needs a finite `percent`');
     }
     if (change.percent === 0) throw new ForecastError('invalid_change', 'a 0% change is not a change');
-    return applyRounding(applyPercent(currentPriceCents, change.percent), rounding);
+    const target = applyRounding(applyPercent(currentPriceCents, change.percent), rounding);
+    try {
+      return assertStorefrontPrice(target, 'target price');
+    } catch {
+      throw new ForecastError('invalid_change', 'the target price must be at least 1 cent');
+    }
   }
 
   if (change.absolute_cents === undefined || !Number.isInteger(change.absolute_cents)) {
     throw new ForecastError('invalid_change', 'an absolute change needs an integer `absolute_cents`');
   }
   if (change.absolute_cents === 0) throw new ForecastError('invalid_change', 'a 0 cent change is not a change');
-  return applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding);
+  const target = applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding);
+  try {
+    return assertStorefrontPrice(target, 'target price');
+  } catch {
+    throw new ForecastError('invalid_change', 'the target price must be at least 1 cent');
+  }
 }
 
 // ---------------------------------------------------------------------------

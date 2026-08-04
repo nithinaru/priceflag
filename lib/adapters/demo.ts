@@ -39,6 +39,7 @@ import type {
   RolloutPatch,
   RolloutReading,
   RolloutReadingUpsert,
+  RolloutReportRow,
   RolloutStatus,
   RolloutVariant,
   RolloutVariantCreate,
@@ -51,7 +52,16 @@ import type {
 } from '../types';
 import { DEMO_SHOP_DOMAIN, generateDemoStore } from '../demo/generator';
 import DEMO_FITS from '../demo/elasticity-fits.json';
-import type { LockResult, Paged, StoreAdapter } from './types';
+import type {
+  AtomicModelIngestInput,
+  AtomicModelIngestResult,
+  AtomicOrderWebhookInput,
+  AtomicOrderWebhookResult,
+  CompliancePurgeResult,
+  LockResult,
+  Paged,
+  StoreAdapter,
+} from './types';
 
 const STATE_VERSION = 2;
 
@@ -70,6 +80,14 @@ interface DemoState {
   fits: ElasticityFitRow[];
   bands: ExpectedBandRow[];
   modelRuns: ModelRun[];
+  reports: RolloutReportRow[];
+  complianceAudits: {
+    webhook_id: string;
+    shop_id: string;
+    shop_domain: string;
+    triggered_at: string | null;
+    purged_at: string;
+  }[];
   locks: Record<string, { token: string; until: string }>;
 }
 
@@ -89,6 +107,8 @@ function emptyState(): DemoState {
     fits: [],
     bands: [],
     modelRuns: [],
+    reports: [],
+    complianceAudits: [],
     locks: {},
   };
 }
@@ -514,17 +534,108 @@ export class DemoAdapter implements StoreAdapter {
     return clone(rollout);
   }
 
+  async createDraftRollout(
+    input: RolloutCreate & Pick<Rollout, 'id'>,
+    variants: readonly RolloutVariantCreate[],
+  ): Promise<{ rollout: Rollout; variants: RolloutVariant[] }> {
+    if (input.status !== 'draft' || input.current_stage !== -1 || input.started_at !== null) {
+      throw new Error('createDraftRollout only accepts an unstarted draft');
+    }
+    if (variants.length === 0) throw new Error('createDraftRollout needs a frozen variant selection');
+    if (variants.some((variant) => variant.rollout_id !== input.id || variant.shop_id !== input.shop_id)) {
+      throw new Error('every frozen variant must belong to the draft rollout and shop');
+    }
+    for (const variant of variants) {
+      const product = this.state.products.find(
+        (candidate) =>
+          candidate.shop_id === input.shop_id &&
+          candidate.variant_gid === variant.variant_gid &&
+          candidate.product_gid === variant.product_gid,
+      );
+      if (!product) throw new Error('every frozen variant must be owned by the draft shop');
+      if (
+        product.price_cents !== variant.baseline_price_cents ||
+        product.compare_at_cents !== variant.baseline_compare_at_cents
+      ) {
+        throw new Error('a frozen baseline no longer matches the shop catalog');
+      }
+    }
+    if (variants.some((variant) => !variant.excluded && variant.target_price_cents < 1)) {
+      throw new Error('an included variant target must be at least one cent');
+    }
+    if (
+      variants.some(
+        (variant) =>
+          variant.applied_price_cents != null || variant.applied_at != null || variant.reverted_at != null,
+      )
+    ) {
+      throw new Error('a frozen draft variant cannot already be applied or reverted');
+    }
+    if (this.state.rollouts.some((row) => row.id === input.id)) {
+      throw new Error(`rollout ${input.id} already exists`);
+    }
+
+    const now = nowIso();
+    const rollout: Rollout = {
+      ...input,
+      stage_entered_at: input.stage_entered_at ?? null,
+      eval_lock_token: null,
+      eval_locked_until: null,
+      last_evaluated_at: null,
+      last_evaluated_day: null,
+      created_at: now,
+      updated_at: now,
+    };
+    const frozen: RolloutVariant[] = variants.map((variant) => ({
+      ...variant,
+      applied_price_cents: null,
+      applied_at: null,
+      reverted_at: null,
+      id: randomUUID(),
+      created_at: now,
+      updated_at: now,
+    }));
+    const event: RolloutEvent = {
+      id: randomUUID(),
+      rollout_id: rollout.id,
+      shop_id: rollout.shop_id,
+      type: 'created',
+      actor: 'merchant',
+      message: 'Draft created. No Shopify prices have changed.',
+      data: {
+        included: frozen.filter((variant) => !variant.excluded).length,
+        excluded: frozen.filter((variant) => variant.excluded).length,
+      },
+      at: now,
+      created_at: now,
+    };
+
+    // Validate the complete snapshot before mutating state, then save once.
+    // The file-backed adapter's atomic rename makes both sets visible together.
+    this.state.rollouts.push(rollout);
+    this.state.rolloutVariants.push(...frozen);
+    this.state.events.push(event);
+    this.save();
+
+    return { rollout: clone(rollout), variants: clone(frozen) };
+  }
+
   async getRollout(rolloutId: string): Promise<Rollout | null> {
     const rollout = this.state.rollouts.find((row) => row.id === rolloutId);
     return rollout ? clone(rollout) : null;
   }
 
   async listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]> {
-    const rows = this.state.rollouts.filter(
-      (row) => row.shop_id === shopId && (!statuses || statuses.includes(row.status)),
+    const rows = this.state.rollouts
+      .map((row, insertionIndex) => ({ row, insertionIndex }))
+      .filter(({ row }) => row.shop_id === shopId && (!statuses || statuses.includes(row.status)));
+    // random UUID order says nothing about creation order. When two records share
+    // a clock tick, the append index is the only deterministic newest-first key.
+    rows.sort(
+      (a, b) =>
+        b.row.created_at.localeCompare(a.row.created_at) || b.insertionIndex - a.insertionIndex,
     );
-    rows.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return clone(rows);
+    return clone(rows.map(({ row }) => row));
   }
 
   async listActiveRollouts(): Promise<Rollout[]> {
@@ -543,6 +654,9 @@ export class DemoAdapter implements StoreAdapter {
   async insertRolloutVariants(rows: readonly RolloutVariantCreate[]): Promise<number> {
     const now = nowIso();
     for (const input of rows) {
+      if (!input.excluded && input.target_price_cents < 1) {
+        throw new Error('an included rollout variant target must be at least one cent');
+      }
       const existing = this.state.rolloutVariants.find(
         (row) => row.rollout_id === input.rollout_id && row.variant_gid === input.variant_gid,
       );
@@ -575,7 +689,13 @@ export class DemoAdapter implements StoreAdapter {
   async updateRolloutVariant(id: string, patch: Partial<RolloutVariant>): Promise<RolloutVariant> {
     const row = this.state.rolloutVariants.find((candidate) => candidate.id === id);
     if (!row) throw new Error(`unknown rollout variant ${id}`);
-    Object.assign(row, stripUndefined(patch), { updated_at: nowIso() });
+    const update = stripUndefined(patch);
+    const excluded = update.excluded ?? row.excluded;
+    const targetPriceCents = update.target_price_cents ?? row.target_price_cents;
+    if (!excluded && targetPriceCents < 1) {
+      throw new Error('an included rollout variant target must be at least one cent');
+    }
+    Object.assign(row, update, { updated_at: nowIso() });
     this.save();
     return clone(row);
   }
@@ -697,7 +817,16 @@ export class DemoAdapter implements StoreAdapter {
     event: WebhookEventCreate,
   ): Promise<{ duplicate: boolean; record: WebhookEventRecord }> {
     const existing = this.state.webhooks.find((row) => row.webhook_id === event.webhook_id);
-    if (existing) return { duplicate: true, record: clone(existing) };
+    if (existing) {
+      if (
+        existing.shop_id !== (event.shop_id ?? null) ||
+        existing.shop_domain !== event.shop_domain ||
+        existing.topic !== event.topic
+      ) {
+        throw new Error('webhook id is already bound to a different shop or topic');
+      }
+      return { duplicate: true, record: clone(existing) };
+    }
 
     const record: WebhookEventRecord = {
       shop_id: null,
@@ -730,6 +859,155 @@ export class DemoAdapter implements StoreAdapter {
     record.attempts += 1;
     record.error = error ?? null;
     this.save();
+  }
+
+  async claimWebhook(webhookId: string): Promise<boolean> {
+    const record = this.state.webhooks.find(
+      (row) => row.webhook_id === webhookId && (row.status === 'received' || row.status === 'failed'),
+    );
+    if (!record) return false;
+    record.status = 'processing';
+    record.error = null;
+    record.processed_at = null;
+    this.save();
+    return true;
+  }
+
+  async ingestOrderWebhook(input: AtomicOrderWebhookInput): Promise<AtomicOrderWebhookResult> {
+    const existingEvent = this.state.webhooks.find((row) => row.webhook_id === input.event.webhook_id);
+    if (existingEvent?.status === 'processed') {
+      if (
+        existingEvent.shop_id !== input.event.shop_id ||
+        existingEvent.shop_domain !== input.event.shop_domain ||
+        existingEvent.topic !== input.event.topic
+      ) {
+        throw new Error('webhook id is already bound to a different shop or topic');
+      }
+      return { duplicate: true, rows_written: 0, record: clone(existingEvent) };
+    }
+
+    const shop = this.state.shops.find(
+      (candidate) => candidate.id === input.event.shop_id && candidate.shop_domain === input.event.shop_domain,
+    );
+    if (!shop) throw new Error(`unknown webhook shop ${input.event.shop_domain}`);
+
+    const snapshot = clone(this.state);
+    try {
+      for (const delta of input.rows) {
+        const current = this.state.orderDays.find(
+          (row) => row.shop_id === shop.id && row.variant_gid === delta.variant_gid && row.day === delta.day,
+        );
+        if (!current) {
+          this.state.orderDays.push({ ...delta, shop_id: shop.id, created_at: nowIso(), updated_at: nowIso() });
+          continue;
+        }
+        current.units += delta.units;
+        current.orders += delta.orders;
+        current.gross_revenue_cents += delta.gross_revenue_cents;
+        current.discount_cents += delta.discount_cents;
+        current.refund_units += delta.refund_units;
+        current.refund_cents += delta.refund_cents;
+        current.net_revenue_cents += delta.net_revenue_cents;
+        const netUnits = current.units - current.refund_units;
+        current.realized_unit_price_cents =
+          netUnits > 0 ? Math.round(current.net_revenue_cents / netUnits) : null;
+        current.product_gid = delta.product_gid ?? current.product_gid;
+        current.list_price_cents = delta.list_price_cents ?? current.list_price_cents;
+        current.had_stockout ||= delta.had_stockout;
+        current.on_promo ||= delta.on_promo;
+        current.source = 'webhook';
+        current.updated_at = nowIso();
+      }
+
+      const now = nowIso();
+      const event: WebhookEventRecord = existingEvent ?? {
+        id: randomUUID(),
+        shop_domain: input.event.shop_domain,
+        shop_id: shop.id,
+        topic: input.event.topic,
+        webhook_id: input.event.webhook_id,
+        api_version: input.event.api_version ?? null,
+        triggered_at: input.event.triggered_at ?? null,
+        received_at: now,
+        status: 'received',
+        attempts: 0,
+        error: null,
+        processed_at: null,
+        payload: null,
+        created_at: now,
+      };
+      Object.assign(event, {
+        shop_id: shop.id,
+        status: 'processed',
+        attempts: event.attempts + 1,
+        error: null,
+        processed_at: now,
+        payload: null,
+      });
+      if (!existingEvent) this.state.webhooks.push(event);
+      this.save();
+      return { duplicate: false, rows_written: input.rows.length, record: clone(event) };
+    } catch (cause) {
+      this.state = snapshot;
+      throw cause;
+    }
+  }
+
+  async purgeShopForCompliance(input: {
+    shopId: string | null;
+    shopDomain: string;
+    webhookId: string;
+    triggeredAt: string | null;
+  }): Promise<CompliancePurgeResult> {
+    const prior = this.state.complianceAudits.find((row) => row.webhook_id === input.webhookId);
+    if (prior) {
+      return {
+        duplicate: true,
+        purged: true,
+        shop_id: prior.shop_id,
+        shop_domain: prior.shop_domain,
+        webhook_id: prior.webhook_id,
+      };
+    }
+    const shop = this.state.shops.find(
+      (candidate) =>
+        candidate.shop_domain === input.shopDomain && (input.shopId === null || candidate.id === input.shopId),
+    );
+    if (!shop) throw new Error(`unknown shop for compliance purge: ${input.shopDomain}`);
+
+    const rolloutIds = new Set(this.state.rollouts.filter((row) => row.shop_id === shop.id).map((row) => row.id));
+    this.state.complianceAudits.push({
+      webhook_id: input.webhookId,
+      shop_id: shop.id,
+      shop_domain: shop.shop_domain,
+      triggered_at: input.triggeredAt,
+      purged_at: nowIso(),
+    });
+    this.state.shops = this.state.shops.filter((row) => row.id !== shop.id);
+    this.state.products = this.state.products.filter((row) => row.shop_id !== shop.id);
+    this.state.orderDays = this.state.orderDays.filter((row) => row.shop_id !== shop.id);
+    this.state.rollouts = this.state.rollouts.filter((row) => row.shop_id !== shop.id);
+    this.state.rolloutVariants = this.state.rolloutVariants.filter((row) => !rolloutIds.has(row.rollout_id));
+    this.state.readings = this.state.readings.filter((row) => !rolloutIds.has(row.rollout_id));
+    this.state.events = this.state.events.filter((row) => row.shop_id !== shop.id);
+    this.state.journal = this.state.journal.filter((row) => row.shop_id !== shop.id);
+    this.state.webhooks = this.state.webhooks.filter(
+      (row) => row.shop_id !== shop.id && row.shop_domain !== shop.shop_domain,
+    );
+    this.state.syncRuns = this.state.syncRuns.filter((row) => row.shop_id !== shop.id);
+    this.state.fits = this.state.fits.filter((row) => row.shop_id !== shop.id);
+    this.state.bands = this.state.bands.filter((row) => row.shop_id !== shop.id);
+    this.state.modelRuns = this.state.modelRuns.filter((row) => row.shop_id !== shop.id);
+    this.state.reports = this.state.reports.filter((row) => row.shop_id !== shop.id);
+    for (const rolloutId of rolloutIds) delete this.state.locks[rolloutId];
+    this.save();
+    return {
+      duplicate: false,
+      purged: true,
+      shop_id: shop.id,
+      shop_domain: shop.shop_domain,
+      webhook_id: input.webhookId,
+    };
   }
 
   // -- sync ----------------------------------------------------------------
@@ -858,6 +1136,128 @@ export class DemoAdapter implements StoreAdapter {
     Object.assign(row, stripUndefined(patch));
     this.save();
     return clone(row);
+  }
+
+  async ingestModelRunAtomic(input: AtomicModelIngestInput): Promise<AtomicModelIngestResult> {
+    const prior = this.state.modelRuns.find(
+      (row) => row.shop_id === input.shopId && row.ingest_key === input.ingestKey && row.status === 'succeeded',
+    );
+    if (prior) {
+      return {
+        model_run_id: prior.id,
+        fits_written: prior.fits_written ?? 0,
+        bands_written: prior.bands_written ?? 0,
+        reports_written: prior.reports_written ?? 0,
+        rows_written: prior.rows_written,
+        deduplicated: true,
+      };
+    }
+
+    const snapshot = clone(this.state);
+    try {
+      const runId = randomUUID();
+      for (const fit of input.fits) {
+        if (!this.state.products.some((product) => product.shop_id === input.shopId && product.variant_gid === fit.variant_gid)) {
+          throw new Error(`fit variant ${fit.variant_gid} is not owned by shop ${input.shopId}`);
+        }
+        const row = { ...fit, shop_id: input.shopId, model_run_id: runId };
+        const existing = this.state.fits.find(
+          (candidate) =>
+            candidate.shop_id === input.shopId &&
+            candidate.variant_gid === row.variant_gid &&
+            candidate.model_version === row.model_version,
+        );
+        if (existing) Object.assign(existing, row);
+        else this.state.fits.push({ ...row, id: randomUUID() });
+      }
+      for (const band of input.bands) {
+        if (!this.state.products.some((product) => product.shop_id === input.shopId && product.variant_gid === band.variant_gid)) {
+          throw new Error(`band variant ${band.variant_gid} is not owned by shop ${input.shopId}`);
+        }
+        if (band.band_kind === 'baseline' && band.rollout_id !== null) {
+          throw new Error('baseline band must not reference a rollout');
+        }
+        if (
+          band.band_kind === 'counterfactual' &&
+          !this.state.rollouts.some(
+            (rollout) => rollout.id === band.rollout_id && rollout.shop_id === input.shopId,
+          )
+        ) {
+          throw new Error(`counterfactual band rollout ${band.rollout_id ?? '(missing)'} is not owned by shop ${input.shopId}`);
+        }
+        const row = { ...band, shop_id: input.shopId, model_run_id: runId };
+        const existing = this.state.bands.find(
+          (candidate) =>
+            candidate.shop_id === input.shopId &&
+            candidate.variant_gid === row.variant_gid &&
+            candidate.day === row.day &&
+            candidate.band_kind === row.band_kind &&
+            candidate.model_version === row.model_version &&
+            (candidate.rollout_id ?? null) === (row.rollout_id ?? null),
+        );
+        if (existing) Object.assign(existing, row);
+        else this.state.bands.push({ ...row, id: randomUUID() });
+      }
+      for (const report of input.reports) {
+        const rollout = this.state.rollouts.find((candidate) => candidate.id === report.rollout_id);
+        if (!rollout || rollout.shop_id !== input.shopId) {
+          throw new Error(`report rollout ${report.rollout_id} is not owned by shop ${input.shopId}`);
+        }
+        const row: RolloutReportRow = {
+          ...report,
+          id: randomUUID(),
+          shop_id: input.shopId,
+          model_run_id: runId,
+          created_at: nowIso(),
+        };
+        const existing = this.state.reports.find(
+          (candidate) =>
+            candidate.shop_id === input.shopId &&
+            candidate.rollout_id === row.rollout_id &&
+            candidate.window.days === row.window.days &&
+            candidate.model_version === row.model_version,
+        );
+        if (existing) Object.assign(existing, row, { id: existing.id, created_at: existing.created_at });
+        else this.state.reports.push(row);
+      }
+
+      const now = nowIso();
+      const rowsWritten = input.fits.length + input.bands.length + input.reports.length;
+      this.state.modelRuns.push({
+        ...input.run,
+        id: runId,
+        shop_id: input.shopId,
+        ingest_key: input.ingestKey,
+        status: 'succeeded',
+        rows_written: rowsWritten,
+        fits_written: input.fits.length,
+        bands_written: input.bands.length,
+        reports_written: input.reports.length,
+        started_at: now,
+        finished_at: now,
+        created_at: now,
+      });
+      this.save();
+      return {
+        model_run_id: runId,
+        fits_written: input.fits.length,
+        bands_written: input.bands.length,
+        reports_written: input.reports.length,
+        rows_written: rowsWritten,
+        deduplicated: false,
+      };
+    } catch (cause) {
+      this.state = snapshot;
+      throw cause;
+    }
+  }
+
+  async listRolloutReports(shopId: string, rolloutId?: string): Promise<RolloutReportRow[]> {
+    return clone(
+      this.state.reports
+        .filter((row) => row.shop_id === shopId && (rolloutId === undefined || row.rollout_id === rolloutId))
+        .sort((a, b) => b.generated_at.localeCompare(a.generated_at)),
+    );
   }
 
   /** Stands in for Lane C's writes so the fitted path is testable without Python. */

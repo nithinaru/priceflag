@@ -62,7 +62,8 @@
   "allOf": [
     {
       "if": { "properties": { "band_kind": { "const": "counterfactual" } }, "required": ["band_kind"] },
-      "then": { "properties": { "rollout_id": { "type": "string", "format": "uuid" } }, "required": ["rollout_id"] }
+      "then": { "properties": { "rollout_id": { "type": "string", "format": "uuid" } }, "required": ["rollout_id"] },
+      "else": { "properties": { "rollout_id": { "type": "null" } } }
     }
   ]
 }
