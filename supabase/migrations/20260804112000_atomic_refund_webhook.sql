@@ -272,3 +272,26 @@ revoke all on function public.pf_commit_order_day_sync_snapshot(uuid, jsonb, tim
   from public, anon, authenticated, priceflag_ml_readonly;
 grant execute on function public.pf_commit_order_day_sync_snapshot(uuid, jsonb, timestamptz)
   to service_role;
+
+-- Recovery must have a durable order even when apply and rollback timestamps
+-- are equal. Existing rows remain null rather than inventing legacy chronology;
+-- every new journal write receives an unambiguous sequence.
+create sequence public.journal_creation_sequence_seq;
+
+alter table public.journal_entries
+  add column creation_sequence bigint unique;
+
+alter table public.journal_entries
+  alter column creation_sequence
+  set default nextval('public.journal_creation_sequence_seq'::regclass);
+
+alter sequence public.journal_creation_sequence_seq
+  owned by public.journal_entries.creation_sequence;
+
+revoke all on sequence public.journal_creation_sequence_seq
+  from public, anon, authenticated, priceflag_ml_readonly;
+grant usage, select on sequence public.journal_creation_sequence_seq
+  to service_role;
+
+comment on column public.journal_entries.creation_sequence is
+  'Durable total-order tie-breaker for price recovery. Null only on legacy rows.';

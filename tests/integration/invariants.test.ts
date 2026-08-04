@@ -234,7 +234,14 @@ async function rollbackCompletenessFuzz(adapter: StoreAdapter, shop: Shop, itera
  * for a variant is what it was before Priceflag ever touched it.
  */
 function reconstructPreRolloutPrices(entries: readonly JournalEntry[]): Map<string, Cents> {
-  const sorted = [...entries].sort((a, b) => a.applied_at.localeCompare(b.applied_at));
+  const sorted = [...entries].sort(
+    (a, b) =>
+      (a.creation_sequence ?? Number.POSITIVE_INFINITY) -
+        (b.creation_sequence ?? Number.POSITIVE_INFINITY) ||
+      a.applied_at.localeCompare(b.applied_at) ||
+      a.created_at.localeCompare(b.created_at) ||
+      a.id.localeCompare(b.id),
+  );
   const first = new Map<string, Cents>();
   for (const entry of sorted) {
     if (entry.status === 'failed') continue;

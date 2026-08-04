@@ -513,7 +513,11 @@ export class SupabaseAdapter implements StoreAdapter {
     if (filter.from_day) builder = builder.gte('applied_at', `${filter.from_day}T00:00:00Z`);
     if (filter.to_day) builder = builder.lte('applied_at', `${filter.to_day}T23:59:59.999Z`);
 
-    builder = builder.order('applied_at', { ascending: false });
+    builder = builder
+      .order('creation_sequence', { ascending: false, nullsFirst: false })
+      .order('applied_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
     const offset = filter.offset ?? 0;
     if (filter.limit !== undefined) builder = builder.range(offset, offset + filter.limit - 1);
 
@@ -529,7 +533,10 @@ export class SupabaseAdapter implements StoreAdapter {
       .eq('shop_id', shopId)
       .eq('variant_gid', variantGid)
       .eq('status', 'applied')
+      .order('creation_sequence', { ascending: false, nullsFirst: false })
       .order('applied_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(1)
       .maybeSingle();
     const row = unwrapMaybe(result, `getLastJournaledPrice(${variantGid})`);
@@ -1023,6 +1030,7 @@ function mapJournal(row: Row): JournalEntry {
     error: (row.error as string | null) ?? null,
     shopify_user_errors: row.shopify_user_errors ?? null,
     applied_at: String(row.applied_at),
+    creation_sequence: row.creation_sequence == null ? undefined : num(row.creation_sequence),
     created_at: String(row.created_at),
   };
 }

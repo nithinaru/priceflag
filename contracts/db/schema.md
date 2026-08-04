@@ -143,6 +143,10 @@ log grep.
 Shopify keeps none; this is it (R18). **Append-only**: a trigger rejects UPDATE
 outright, and DELETE only inside an explicit purge:
 
+`creation_sequence` supplies a durable recovery order when apply and rollback
+timestamps tie. It is null only on legacy rows; new writes receive it from a
+server-only sequence.
+
 ```sql
 begin;
 set local priceflag.purge = 'on';

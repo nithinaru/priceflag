@@ -804,7 +804,13 @@ export class DemoAdapter implements StoreAdapter {
         // Same intended write, already recorded. Skipping is the whole point.
         if (duplicate) continue;
       }
-      const row: JournalEntry = { ...entry, id: randomUUID(), shop_id: shopId, created_at: entry.created_at ?? now };
+      const row: JournalEntry = {
+        ...entry,
+        id: randomUUID(),
+        shop_id: shopId,
+        creation_sequence: this.state.journal.length + 1,
+        created_at: entry.created_at ?? now,
+      };
       this.state.journal.push(row);
       written.push(row);
     }
@@ -825,7 +831,14 @@ export class DemoAdapter implements StoreAdapter {
       return true;
     });
 
-    rows.sort((a, b) => b.applied_at.localeCompare(a.applied_at));
+    rows.sort(
+      (a, b) =>
+        (b.creation_sequence ?? Number.NEGATIVE_INFINITY) -
+          (a.creation_sequence ?? Number.NEGATIVE_INFINITY) ||
+        b.applied_at.localeCompare(a.applied_at) ||
+        b.created_at.localeCompare(a.created_at) ||
+        b.id.localeCompare(a.id),
+    );
     const total = rows.length;
     const offset = filter.offset ?? 0;
     rows = rows.slice(offset, offset + (filter.limit ?? rows.length));
@@ -835,7 +848,14 @@ export class DemoAdapter implements StoreAdapter {
   async getLastJournaledPrice(shopId: string, variantGid: string): Promise<JournalEntry | null> {
     const rows = this.state.journal
       .filter((row) => row.shop_id === shopId && row.variant_gid === variantGid && row.status === 'applied')
-      .sort((a, b) => b.applied_at.localeCompare(a.applied_at));
+      .sort(
+        (a, b) =>
+          (b.creation_sequence ?? Number.NEGATIVE_INFINITY) -
+            (a.creation_sequence ?? Number.NEGATIVE_INFINITY) ||
+          b.applied_at.localeCompare(a.applied_at) ||
+          b.created_at.localeCompare(a.created_at) ||
+          b.id.localeCompare(a.id),
+      );
     return rows.length > 0 ? clone(rows[0] as JournalEntry) : null;
   }
 

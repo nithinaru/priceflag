@@ -256,12 +256,21 @@ If `rollout_variants` is somehow unavailable, the journal alone is enough:
 ```sql
 -- The earliest price Priceflag ever saw for each variant.
 select distinct on (variant_gid)
-       variant_gid, before_price_cents, before_compare_at_cents, applied_at
+       variant_gid, before_price_cents, before_compare_at_cents,
+       applied_at, creation_sequence
   from journal_entries
  where shop_id = '<shop id>'
    and status = 'applied'
- order by variant_gid, applied_at asc;
+ order by variant_gid,
+          creation_sequence asc nulls first,
+          applied_at asc,
+          created_at asc,
+          id asc;
 ```
+
+`creation_sequence` is the durable order for every new journal entry. Legacy
+rows remain null and sort first; their timestamps and id are the deterministic
+fallback rather than an invented migration-time order.
 
 Apply those with `productVariantsBulkUpdate` in the Shopify admin's GraphiQL app,
 one product at a time:

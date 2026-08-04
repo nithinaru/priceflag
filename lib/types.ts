@@ -390,6 +390,8 @@ export interface JournalEntry {
   error: string | null;
   shopify_user_errors: unknown;
   applied_at: string;
+  /** Durable total order for recovery when timestamps tie; absent on legacy rows. */
+  creation_sequence?: number;
   created_at: string;
 }
 
