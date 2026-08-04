@@ -53,8 +53,13 @@ begin
   select exists (
     select 1
       from pg_auth_members link
-      join pg_roles role on role.oid in (link.roleid, link.member)
-     where role.rolname = 'priceflag_ml_readonly'
+      join pg_roles parent on parent.oid = link.roleid
+      join pg_roles member on member.oid = link.member
+     where (parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly')
+       and not (
+         parent.rolname = 'priceflag_ml_readonly'
+         and member.rolname = 'postgres'
+       )
   ) into memberships_exist;
 
   alter role priceflag_ml_readonly
@@ -92,3 +97,9 @@ alter role priceflag_ml_readonly set statement_timeout = '1s';
 
 comment on role priceflag_ml_readonly is
   'Retired identity: committed NOLOGIN boundary. Real ML reads use authenticated POST /api/ml/export.';
+
+-- PostgreSQL 16+ automatically gives the CREATEROLE identity ADMIN OPTION on a
+-- role it creates. Hosted `postgres` is not a superuser and needs that exact
+-- edge for every ALTER/SET/COMMENT above. Revoke it only as the final role
+-- administration action; the following migration proves zero memberships.
+revoke priceflag_ml_readonly from postgres;

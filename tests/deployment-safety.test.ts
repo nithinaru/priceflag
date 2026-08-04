@@ -250,8 +250,8 @@ const mlRoleHardening = readFileSync(
 assert.match(mlRoleHardening, /create role priceflag_ml_readonly nologin noinherit connection limit 0/);
 assert.match(mlRoleHardening, /alter role priceflag_ml_readonly nologin noinherit[\s\S]*connection limit 0/);
 assert.match(mlRoleHardening, /errcode = '42501'/);
-assert.match(mlRoleHardening, /revoke priceflag_ml_readonly from postgres/);
-assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*drain member sessions and remove memberships/);
+assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*member\.rolname = 'postgres'[\s\S]*drain member sessions and remove memberships/);
+assert.doesNotMatch(mlRoleHardening, /revoke priceflag_ml_readonly from postgres/);
 assert.match(mlRoleHardening, /Priceflag ML membership precheck v1 passed/);
 assert.match(mlRoleHardening, /drop policy if exists ml_readonly_select/);
 assert.match(mlRoleHardening, /revoke all privileges on all tables in schema public from priceflag_ml_readonly/);
@@ -280,6 +280,12 @@ assert.match(mlRoleLockout, /alter role priceflag_ml_readonly[\s\S]*nologin[\s\S
 assert.match(mlRoleLockout, /shobj_description[\s\S]*Priceflag ML membership precheck v1 passed/);
 assert.match(mlRoleLockout, /from pg_auth_members[\s\S]*memberships_exist/);
 assert.match(mlRoleLockout, /not fresh_membership_precheck or memberships_exist/);
+assert.match(mlRoleLockout, /comment on role priceflag_ml_readonly[\s\S]*revoke priceflag_ml_readonly from postgres/);
+assert.ok(
+  mlRoleLockout.lastIndexOf('revoke priceflag_ml_readonly from postgres') >
+    mlRoleLockout.lastIndexOf('comment on role priceflag_ml_readonly'),
+  'the creator ADMIN edge must be revoked only after the final hosted role-administration statement',
+);
 assert.doesNotMatch(mlRoleLockout, /pg_terminate_backend/);
 assert.match(mlRoleMemberships, /version = '20260804193400'/);
 assert.match(mlRoleMemberships, /from pg_auth_members[\s\S]*restart to drain member sessions/);
@@ -306,7 +312,7 @@ assert.ok(
   ].sort().join('\n'),
   'the committed lockout migration must sort before the drain migration',
 );
-passed += 19;
+passed += 21;
 
 async function verifyAttestation(): Promise<void> {
   const sanitizerUrl = pathToFileURL(

@@ -54,13 +54,6 @@ alter role priceflag_ml_readonly set statement_timeout = '1s';
 -- only that backend's session user. A fresh migration chain records this clean
 -- precondition in the role comment for the later lockout migration.
 --
--- PostgreSQL 16+ automatically gives the CREATEROLE identity ADMIN OPTION on a
--- role it creates. The original migration creates this role as `postgres`, so
--- remove exactly that creator-management edge. `postgres` already owns the
--- migration authority and gains no external-worker capability from SET ROLE;
--- every other relationship remains an incident and fails below.
-revoke priceflag_ml_readonly from postgres;
-
 do $$
 declare
   memberships integer;
@@ -68,8 +61,13 @@ begin
   select count(*)::integer
     into memberships
     from pg_auth_members link
-    join pg_roles role on role.oid in (link.roleid, link.member)
-   where role.rolname = 'priceflag_ml_readonly';
+    join pg_roles parent on parent.oid = link.roleid
+    join pg_roles member on member.oid = link.member
+   where (parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly')
+     and not (
+       parent.rolname = 'priceflag_ml_readonly'
+       and member.rolname = 'postgres'
+     );
   if memberships <> 0 then
     raise exception using
       errcode = '42501',

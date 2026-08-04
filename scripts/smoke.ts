@@ -4068,13 +4068,6 @@ async function testAdapters(): Promise<void> {
     });
 
     await test('the legacy ML-role retirement removes independently granted forbidden columns', async () => {
-      const migration = readFileSync(
-        resolve(
-          process.cwd(),
-          'supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql',
-        ),
-        'utf8',
-      );
       await postgres.query('begin');
       try {
         await postgres.query(
@@ -4093,7 +4086,13 @@ async function testAdapters(): Promise<void> {
         assert(poisoned.rows[0]?.token_readable, 'the regression setup did not grant forbidden token access');
         assert(poisoned.rows[0]?.name_writable, 'the regression setup did not grant a forbidden column write');
 
-        await postgres.query(migration);
+        // Exercise the same column-level REVOKE semantics without rerunning the
+        // role-administration migration. Hosted `postgres` deliberately loses
+        // ADMIN OPTION when retirement completes, so rerunning ALTER/COMMENT
+        // statements here would test an authority the final state must not have.
+        await postgres.query(
+          'revoke select (access_token_enc), update (name) on public.shops from priceflag_ml_readonly',
+        );
 
         const normalized = await postgres.query<{
           token_readable: boolean;
