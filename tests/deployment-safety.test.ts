@@ -341,6 +341,7 @@ async function verifyAttestation(): Promise<void> {
     buildDiagnosticMigration: (source: string) => string;
     formatPrivilegeDiagnostics: (rows: Array<Record<string, unknown>>) => string;
     formatNormalizerFailure: (cause: unknown) => string;
+    formatExtensionAccessContext: (row: Record<string, unknown> | undefined) => string;
   };
   const diagnosticMigration = privilegeDiagnostic.buildDiagnosticMigration(mlRoleHardening);
   assert.match(diagnosticMigration, /if false and coalesce\(cardinality\(unexpected_column_privileges\), 0\)/);
@@ -368,6 +369,20 @@ async function verifyAttestation(): Promise<void> {
   assert.match(normalizerFailure, /\[42501\].*permission denied/);
   assert.match(normalizerFailure, /postgresql:\/\/\[REDACTED\]@127\.0\.0\.1/);
   assert.doesNotMatch(normalizerFailure, /very-secret-token|database-password/);
+  assert.equal(
+    privilegeDiagnostic.formatExtensionAccessContext({
+      current_role: 'postgres',
+      net_owner: 'supabase_admin',
+      net_acl: '{PUBLIC=U/supabase_admin,postgres=U/supabase_admin}',
+      ml_inherit: false,
+      ml_memberships: ['example_parent'],
+    }),
+    'Extension access context: current=postgres net_owner=supabase_admin ml_inherit=false ml_memberships=example_parent net_acl={PUBLIC=U/supabase_admin,postgres=U/supabase_admin}',
+  );
+  assert.equal(
+    privilegeDiagnostic.formatExtensionAccessContext(undefined),
+    'Extension access context was unavailable.',
+  );
 
   const productionWorkflow = readFileSync(
     resolve(process.cwd(), '.github/workflows/production-gates.yml'),
@@ -386,7 +401,7 @@ async function verifyAttestation(): Promise<void> {
   );
   assert.match(productionWorkflow, /exit 1/);
   assert.doesNotMatch(productionWorkflow, /cat \"\$RUNNER_TEMP\/supabase-start\.log\"/);
-  passed += 21;
+  passed += 23;
 
   const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
   const guard = (await import(guardUrl)) as {

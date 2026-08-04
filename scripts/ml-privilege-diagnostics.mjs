@@ -55,6 +55,20 @@ export function formatNormalizerFailure(cause) {
   return `Extension privilege normalizer failed${code}: ${message}`;
 }
 
+export function formatExtensionAccessContext(row) {
+  if (!row) return 'Extension access context was unavailable.';
+  const memberships = Array.isArray(row.ml_memberships) && row.ml_memberships.length > 0
+    ? row.ml_memberships.join(',')
+    : 'none';
+  return [
+    `Extension access context: current=${sanitizeDiagnosticText(row.current_role) || 'unknown'}`,
+    `net_owner=${sanitizeDiagnosticText(row.net_owner) || 'unknown'}`,
+    `ml_inherit=${Boolean(row.ml_inherit)}`,
+    `ml_memberships=${sanitizeDiagnosticText(memberships)}`,
+    `net_acl=${sanitizeDiagnosticText(row.net_acl) || 'none'}`,
+  ].join(' ');
+}
+
 const UNEXPECTED_COLUMN_PRIVILEGES = `
   select namespace.nspname as schema_name,
          relation.relname as relation_name,
@@ -128,6 +142,26 @@ async function inspect() {
       await client.query(NORMALIZER_CALL);
     } catch (cause) {
       process.stdout.write(`${formatNormalizerFailure(cause)}\n`);
+      try {
+        const context = await client.query(`
+          select current_user as current_role,
+                 namespace.nspowner::regrole::text as net_owner,
+                 namespace.nspacl::text as net_acl,
+                 reader.rolinherit as ml_inherit,
+                 coalesce((
+                   select array_agg(parent.rolname order by parent.rolname)
+                     from pg_auth_members membership
+                     join pg_roles parent on parent.oid = membership.roleid
+                    where membership.member = reader.oid
+                 ), array[]::name[]) as ml_memberships
+            from pg_namespace namespace
+            join pg_roles reader on reader.rolname = 'priceflag_ml_readonly'
+           where namespace.nspname = 'net'
+        `);
+        process.stdout.write(`${formatExtensionAccessContext(context.rows[0])}\n`);
+      } catch {
+        process.stdout.write('Extension access context was unavailable.\n');
+      }
       return;
     }
     const result = await client.query(UNEXPECTED_COLUMN_PRIVILEGES);
