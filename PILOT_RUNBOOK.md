@@ -387,6 +387,67 @@ then promote that same staged URL. Never promote the public Preview directly:
 Vercel rebuilds a Preview when converting it to Production, so it would not be
 the exact artifact that was tested.
 
+### Real-store ML nightly gate
+
+Before pushing the release candidate, the owner must configure the protected
+GitHub Environment `priceflag-ml-release` with a required reviewer, prevent
+self-review and administrator bypass, and allow only the
+`codex/prod-integration` deployment branch. Store `SUPABASE_URL`,
+`SUPABASE_ML_READONLY_KEY`, `SUPABASE_ML_SENTINEL`, `ML_INGEST_SECRET`, and a
+Vercel token with deployment-read access as environment secrets. Never give the
+ML reader a service-role key. The database URL must be the percent-encoded
+libpq URL for `priceflag_ml_readonly` and include
+`sslmode=verify-full&sslrootcert=system`.
+
+Verify the configuration by name before pushing. The environment response must
+show a required reviewer with `prevent_self_review: true`, and the branch-policy
+response must contain exactly `codex/prod-integration`. The five ML credential
+names must appear under the release Environment and must not appear in the
+repository-level secret list:
+
+```bash
+gh api repos/nithinaru/priceflag/environments/priceflag-ml-release
+gh api repos/nithinaru/priceflag/environments/priceflag-ml-release/deployment-branch-policies
+gh secret list --env priceflag-ml-release --repo nithinaru/priceflag
+gh secret list --repo nithinaru/priceflag
+```
+
+The workflow independently repeats the reviewer/self-review,
+administrator-bypass and exact-branch checks against GitHub's API before any
+secret-bearing step.
+
+Before the first run, an owner must set the production database identity using
+a newly generated sentinel and store that same sentinel only in the protected
+environment:
+
+```sql
+alter database postgres set app.priceflag_environment = 'production';
+alter database postgres set app.priceflag_project_ref = 'vnyqevrdvfjsfhdnbfsz';
+alter database postgres set app.priceflag_ml_sentinel = '<random-secret>';
+```
+
+A push to `codex/prod-integration` automatically creates an
+`ml-release-gate` run. The reviewer must inspect the exact `GITHUB_SHA` before
+approving it. Do not manually dispatch `ml-nightly.yml` against a feature
+branch: the production nightly is schedule-only and runs only from `main`.
+
+The release run is evidence only when the verifier passes and the retained
+`ml-release-evidence-<sha>-<run>` artifact contains a successful
+`real_ingest_evidence.json`. The evidence positively attests the project,
+environment, dedicated database role, visible shops, shops with orders,
+acknowledged rows, and read-back model runs for the same commit. It contains no
+shop domains, variant identifiers, model-run IDs, order data, connection
+details, or credentials. The application target is also attested through
+Vercel before the ingest secret is sent. A missing approval, golden-only run,
+missing artifact, commit or database mismatch, zero acknowledged rows, failed
+write read-back, or failed verifier leaves invite access closed.
+
+After merge, configure `priceflag-ml-production` with the same secret names,
+restrict it to `main`, and do not require interactive review so the scheduled
+`ml-nightly` job can run. Its first green run must be retained before inviting
+merchants. The scheduled job also verifies the live exact-main branch policy
+before its secret-bearing step.
+
 ### Attested CP4 test-store chain
 
 `scripts/cp4-chain.ts` intentionally performs temporary Shopify price writes,
@@ -414,5 +475,5 @@ not replace the separate merchant-session API and browser end-to-end gate.
 | Vercel project | `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`). **`prj_gzNZ…` / `priceflag.vercel.app` is the company homepage — not this app, do not deploy to it.** |
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
-| Evaluator | `/api/cron/evaluate`, hourly via GitHub Actions `evaluator.yml`; needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass` |
+| Evaluator | `/api/cron/evaluate`; `evaluator.yml` is disabled for beta. If enabled after a later safety approval, it needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass`. |
 | ML role | `priceflag_ml_readonly` — SELECT only, cannot read `shops.access_token_enc` |

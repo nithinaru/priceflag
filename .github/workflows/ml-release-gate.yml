@@ -1,34 +1,47 @@
-name: ml-nightly
+name: ml-release-gate
 
 on:
-  schedule:
-    - cron: "0 7 * * *" # daily 07:00 UTC
+  push:
+    branches:
+      - codex/prod-integration
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: ml-nightly
-  cancel-in-progress: false
+  group: ml-release-gate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  refit-and-gate:
-    if: github.ref == 'refs/heads/main'
+  real-store-release-gate:
+    if: github.repository == 'nithinaru/priceflag' && github.ref == 'refs/heads/codex/prod-integration'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: priceflag-ml-production
+    # Repository owners must configure this environment with a required
+    # reviewer, prevent self-review and administrator bypass, and allow only
+    # the codex/prod-integration deployment branch. Secrets remain unavailable
+    # until the reviewer has inspected and approved this exact GITHUB_SHA.
+    environment: priceflag-ml-release
     defaults:
       run:
         working-directory: ml
     steps:
-      - name: Check out the default-branch nightly code
+      - name: Check out the exact reviewed integration commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - name: Verify the live production-nightly environment
-        run: node ../scripts/github-environment-guard.mjs priceflag-ml-production main optional
+      - name: Refuse any unexpected repository, branch, or checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "nithinaru/priceflag"
+          test "$GITHUB_REF" = "refs/heads/codex/prod-integration"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Verify the live protected release environment
+        run: node ../scripts/github-environment-guard.mjs priceflag-ml-release codex/prod-integration required
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -42,9 +55,6 @@ jobs:
       - name: Install exactly the locked Python environment
         run: uv sync --locked
 
-      # Full harness gates + drift check; exits 1 (red run) if any champion
-      # stops beating its incumbent or any committed verdict snapshot drifts.
-      # Production nightlies are not allowed to pass in golden-only mode.
       - name: Refit real stores, pass model gates, and ingest accepted outputs
         run: uv run --locked python nightly.py
         env:
@@ -66,11 +76,11 @@ jobs:
           PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
           PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
 
-      - name: Preserve the complete redacted nightly evidence
+      - name: Preserve only the redacted release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: ml-nightly-output-${{ github.sha }}-${{ github.run_id }}
+          name: ml-release-evidence-${{ github.sha }}-${{ github.run_id }}
           path: ml/out/real_ingest_evidence.json
           if-no-files-found: error
           retention-days: 30

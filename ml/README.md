@@ -27,7 +27,7 @@ auto-rollback (R29).
 | Path | What |
 |---|---|
 | `priceflag_ml/golden.py` | Synthetic golden store with known ground truth (elasticity, seasonality, promos with price confound, trend, stockouts, NB noise) |
-| `priceflag_ml/data.py` | Read-only data access: golden fixture or Supabase PostgREST (`SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`) |
+| `priceflag_ml/data.py` | Read-only data access: golden fixture or direct PostgreSQL through the narrow `priceflag_ml_readonly` role (`SUPABASE_ML_READONLY_KEY` is its libpq URL, not an API key) |
 | `priceflag_ml/baselines.py` | Incumbents: seasonal-naive forecaster (80% bands), bracket elasticity (v0 stand-in) |
 | `priceflag_ml/elasticity.py` | Champion elasticity: Poisson GLM + EB shrinkage, honest confidence tiers, `elasticity_fits` rows |
 | `priceflag_ml/forecaster.py` | Champion baseline forecaster: promo-clean dow-level model + calibrated 80% bands, `expected_bands` rows |
@@ -35,6 +35,36 @@ auto-rollback (R29).
 | `priceflag_ml/harness.py` | Rolling-origin backtests, golden recovery, champion-vs-challenger comparison |
 | `eval/` | Committed harness score snapshots (`c1_incumbents.json` = the bar) |
 | `tests/` | The harness itself is under test |
+
+## Real-store release safety
+
+Real reads use direct PostgreSQL through the dedicated
+`priceflag_ml_readonly` role. The connection URL must identify the same project
+as `SUPABASE_URL` and use `sslmode=verify-full&sslrootcert=system`. Before any
+merchant rows are read, the job verifies `current_user` plus protected database
+markers for the expected project, environment and random sentinel. Every query
+runs in an explicit read-only transaction with a timeout.
+
+Before the app ingest secret is used, the destination is verified through the
+Vercel API as a READY deployment in the pinned Priceflag app project and the
+expected Production or Preview target. Accepted model-run receipts are then
+read back through the attested database and must match the candidate commit,
+successful status and exact row count.
+
+The database attestation checks effective authority, not merely the role name:
+the login must be non-superuser, NOINHERIT, unable to create databases/roles or
+bypass RLS, have no memberships, writable relations, sequences, executable
+SECURITY DEFINER routines, creatable non-system schemas or readable columns
+outside the explicit ML surface,
+and it must not be able to read `shops.access_token_enc`. Migration
+`20260804180000_normalize_ml_readonly_privileges.sql` resets direct grants and
+role attributes before restoring that allowlist.
+
+GitHub uploads only `out/real_ingest_evidence.json`, whose strict allowlist
+contains aggregate counts and identities but no merchant domains, product or
+variant identifiers, model-run IDs, financial rows, URLs or credentials. Raw
+fit, band and report files remain ephemeral on the runner and are never
+uploaded.
 
 ## Reproduce the incumbent scores
 

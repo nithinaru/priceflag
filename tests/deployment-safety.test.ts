@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   attestLiveWriteTarget,
@@ -176,7 +177,127 @@ assert.doesNotMatch(
 );
 passed += 15;
 
+const workflowDirectory = resolve(process.cwd(), '.github/workflows');
+for (const workflow of [
+  'ml-ci.yml',
+  'ml-nightly.yml',
+  'ml-release-gate.yml',
+  'production-gates.yml',
+  'staging-launch-gates.yml',
+]) {
+  const source = readFileSync(resolve(workflowDirectory, workflow), 'utf8');
+  const uses = [...source.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
+  assert.ok(uses.length > 0, `${workflow} must contain at least one pinned action`);
+  for (const action of uses) {
+    assert.match(action ?? '', /@[0-9a-f]{40}$/, `${workflow} contains an unpinned action: ${action}`);
+  }
+}
+passed += 5;
+
+const mlNightlyWorkflow = readFileSync(resolve(workflowDirectory, 'ml-nightly.yml'), 'utf8');
+assert.match(mlNightlyWorkflow, /schedule:/);
+assert.doesNotMatch(mlNightlyWorkflow, /workflow_dispatch:|pull_request:/);
+assert.match(mlNightlyWorkflow, /permissions:[\s\S]*actions: read[\s\S]*contents: read/);
+assert.doesNotMatch(mlNightlyWorkflow, /permissions:[\s\S]*\bwrite\b/);
+assert.match(mlNightlyWorkflow, /if: github\.ref == 'refs\/heads\/main'/);
+assert.match(mlNightlyWorkflow, /environment: priceflag-ml-production/);
+assert.match(mlNightlyWorkflow, /github-environment-guard\.mjs priceflag-ml-production main optional/);
+assert.match(mlNightlyWorkflow, /REQUIRE_REAL_INGEST: "true"/);
+assert.match(mlNightlyWorkflow, /verify_nightly_evidence\.py out\/real_ingest_evidence\.json/);
+assert.match(mlNightlyWorkflow, /SUPABASE_ML_READONLY_KEY: \$\{\{ secrets\.SUPABASE_ML_READONLY_KEY \}\}/);
+assert.match(mlNightlyWorkflow, /SUPABASE_ML_SENTINEL: \$\{\{ secrets\.SUPABASE_ML_SENTINEL \}\}/);
+assert.match(mlNightlyWorkflow, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
+assert.match(mlNightlyWorkflow, /PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz/);
+assert.match(mlNightlyWorkflow, /path: ml\/out\/real_ingest_evidence\.json/);
+assert.doesNotMatch(mlNightlyWorkflow, /path:\s*ml\/out\/\s*$/m);
+assert.doesNotMatch(mlNightlyWorkflow, /SUPABASE_SERVICE_ROLE_KEY/);
+passed += 15;
+
+const mlReleaseWorkflow = readFileSync(resolve(workflowDirectory, 'ml-release-gate.yml'), 'utf8');
+assert.match(mlReleaseWorkflow, /push:[\s\S]*- codex\/prod-integration/);
+assert.doesNotMatch(mlReleaseWorkflow, /workflow_dispatch:|pull_request:|pull_request_target:/);
+assert.match(mlReleaseWorkflow, /permissions:[\s\S]*actions: read[\s\S]*contents: read/);
+assert.doesNotMatch(mlReleaseWorkflow, /permissions:[\s\S]*\bwrite\b/);
+assert.match(
+  mlReleaseWorkflow,
+  /if: github\.repository == 'nithinaru\/priceflag' && github\.ref == 'refs\/heads\/codex\/prod-integration'/,
+);
+assert.match(mlReleaseWorkflow, /environment: priceflag-ml-release/);
+assert.match(
+  mlReleaseWorkflow,
+  /github-environment-guard\.mjs priceflag-ml-release codex\/prod-integration required/,
+);
+assert.match(mlReleaseWorkflow, /test "\$GITHUB_REPOSITORY" = "nithinaru\/priceflag"/);
+assert.match(mlReleaseWorkflow, /test "\$GITHUB_REF" = "refs\/heads\/codex\/prod-integration"/);
+assert.match(mlReleaseWorkflow, /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"/);
+assert.match(mlReleaseWorkflow, /REQUIRE_REAL_INGEST: "true"/);
+assert.match(mlReleaseWorkflow, /SUPABASE_ML_READONLY_KEY: \$\{\{ secrets\.SUPABASE_ML_READONLY_KEY \}\}/);
+assert.match(mlReleaseWorkflow, /SUPABASE_ML_SENTINEL: \$\{\{ secrets\.SUPABASE_ML_SENTINEL \}\}/);
+assert.match(mlReleaseWorkflow, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
+assert.match(mlReleaseWorkflow, /PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz/);
+assert.match(mlReleaseWorkflow, /path: ml\/out\/real_ingest_evidence\.json/);
+assert.doesNotMatch(mlReleaseWorkflow, /path:\s*ml\/out\/\s*$/m);
+assert.doesNotMatch(mlReleaseWorkflow, /SUPABASE_SERVICE_ROLE_KEY/);
+passed += 18;
+
+const mlRoleHardening = readFileSync(
+  resolve(process.cwd(), 'supabase/migrations/20260804180000_normalize_ml_readonly_privileges.sql'),
+  'utf8',
+);
+assert.match(mlRoleHardening, /alter role priceflag_ml_readonly[\s\S]*nosuperuser[\s\S]*noinherit[\s\S]*nobypassrls/);
+assert.match(mlRoleHardening, /from pg_auth_members[\s\S]*revoke %I from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /revoke all privileges on all tables in schema public from priceflag_ml_readonly/);
+assert.match(mlRoleHardening, /attribute\.attacl[\s\S]*grantee\.rolname = 'priceflag_ml_readonly'/);
+assert.match(mlRoleHardening, /grant select \(id, shop_domain, name, currency, timezone, mode, created_at\)/);
+assert.doesNotMatch(mlRoleHardening, /grant select \([^)]*access_token_enc/);
+assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
+passed += 7;
+
 async function verifyAttestation(): Promise<void> {
+  const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
+  const guard = (await import(guardUrl)) as {
+    assertEnvironmentConfiguration: (
+      environment: Record<string, unknown>,
+      branchPolicies: Record<string, unknown>,
+      options: { environment: string; branches: string[]; requireReviewer: boolean },
+    ) => void;
+  };
+  const protectedEnvironment = {
+    name: 'priceflag-ml-release',
+    can_admins_bypass: false,
+    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+    protection_rules: [{
+      type: 'required_reviewers',
+      prevent_self_review: true,
+      reviewers: [{ type: 'User' }],
+    }],
+  };
+  const exactBranch = { branch_policies: [{ name: 'codex/prod-integration' }] };
+  assert.doesNotThrow(() => guard.assertEnvironmentConfiguration(
+    protectedEnvironment,
+    exactBranch,
+    { environment: 'priceflag-ml-release', branches: ['codex/prod-integration'], requireReviewer: true },
+  ));
+  assert.throws(() => guard.assertEnvironmentConfiguration(
+    { ...protectedEnvironment, can_admins_bypass: true },
+    exactBranch,
+    { environment: 'priceflag-ml-release', branches: ['codex/prod-integration'], requireReviewer: true },
+  ), /administrator bypass/);
+  assert.throws(() => guard.assertEnvironmentConfiguration(
+    {
+      ...protectedEnvironment,
+      protection_rules: [{ type: 'required_reviewers', prevent_self_review: false, reviewers: [{ type: 'User' }] }],
+    },
+    exactBranch,
+    { environment: 'priceflag-ml-release', branches: ['codex/prod-integration'], requireReviewer: true },
+  ), /self-review prevention/);
+  assert.throws(() => guard.assertEnvironmentConfiguration(
+    protectedEnvironment,
+    { branch_policies: [{ name: 'codex/prod-integration' }, { name: 'main' }] },
+    { environment: 'priceflag-ml-release', branches: ['codex/prod-integration'], requireReviewer: true },
+  ), /branch allowlist/);
+  passed += 4;
+
   let requested = '';
   let authorization = '';
   const validFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {

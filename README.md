@@ -80,7 +80,7 @@ npm run dev
 | `SHOPIFY_APP_HANDLE` | App-home slug from Shopify Dev Dashboard |
 | `SHOPIFY_SCOPES` | `read_products,write_products,read_orders,read_all_orders` |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Database |
-| `SUPABASE_ML_READONLY_KEY` | Read-only role for the ML lane |
+| `SUPABASE_ML_READONLY_KEY` | Percent-encoded PostgreSQL URL for the dedicated `priceflag_ml_readonly` role; never an API/service key |
 | `RESEND_API_KEY` | Email notifications |
 | `APP_URL` | Public app URL (ngrok / Vercel) |
 | `ENCRYPTION_KEY` | Encrypts Shopify tokens at rest |
@@ -94,6 +94,39 @@ cd ml
 uv sync                      # Python 3.12, pinned deps
 pytest                       # golden-data recovery + backtest gates
 ```
+
+The production nightly does not use a Supabase API or service-role key for
+reads. After applying the migrations, an owner sets a strong password on the
+`priceflag_ml_readonly` database role out of band and stores its complete,
+percent-encoded TLS libpq URL in the GitHub secret
+`SUPABASE_ML_READONLY_KEY`. The direct reader checks that the API origin and
+database URL identify the same 20-letter Supabase project, requires the exact
+read-only role, requires certificate and hostname verification, positively
+attests protected project/environment/sentinel database markers, disables
+prepared statements for transaction-pooler compatibility, and wraps every
+query in a read-only transaction. Never grant this role access to
+`shops.access_token_enc` and never substitute `SUPABASE_SERVICE_ROLE_KEY`.
+
+`ml-nightly.yml` fails closed unless it sees at least one real shop with order
+history and the application acknowledges at least one model-output row. Its
+target is verified against the pinned Vercel project and deployment class before
+the ingest secret is sent. Every accepted model-run receipt is then read back
+from the attested database with the exact commit, status and row count. The only
+uploaded file is `real_ingest_evidence.json`; it records the database identity,
+aggregate counts, commit and pass/fail state—never shop domains, products,
+variant IDs, model-run IDs, order data, connection details, or credentials. A
+green golden-only run is useful PR evidence but is not a production-nightly
+launch gate.
+
+Real-data release verification is a separate push-triggered
+`ml-release-gate.yml` job on `codex/prod-integration`. Its
+`priceflag-ml-release` Environment must require human approval of the exact SHA,
+prevent self-review/bypass and allow only that branch. The scheduled production
+job has no manual dispatch and uses a separate `priceflag-ml-production`
+Environment restricted to `main`. Both jobs query GitHub's Environment and
+deployment-branch-policy APIs before any secret-bearing step, including the
+release environment's administrator-bypass setting. The owner must still verify
+that the ML credentials exist only as Environment secrets.
 
 ### Pull-request safety gates
 

@@ -4085,6 +4085,123 @@ async function testAdapters(): Promise<void> {
       assert(!permission.token_readable, 'the ML role can read shops.access_token_enc');
       assert(permission.domain_readable, 'the ML role lost its documented non-sensitive shop-domain access');
     });
+
+    await test('the ML reader has no effective authority outside its approved read surface', async () => {
+      const { rows } = await postgres.query<{
+        is_superuser: boolean;
+        can_create_database: boolean;
+        can_create_role: boolean;
+        inherits_roles: boolean;
+        can_replicate: boolean;
+        bypasses_rls: boolean;
+        connection_limit: number;
+        role_memberships: number;
+        can_create_public_objects: boolean;
+        creatable_schemas: number;
+        writable_relations: number;
+        accessible_sequences: number;
+        executable_security_definers: number;
+        unexpected_read_columns: number;
+      }>(
+        `select role.rolsuper as is_superuser,
+                role.rolcreatedb as can_create_database,
+                role.rolcreaterole as can_create_role,
+                role.rolinherit as inherits_roles,
+                role.rolreplication as can_replicate,
+                role.rolbypassrls as bypasses_rls,
+                role.rolconnlimit as connection_limit,
+                (select count(*)::int
+                   from pg_auth_members membership
+                  where membership.member = role.oid) as role_memberships,
+                has_schema_privilege(
+                  'priceflag_ml_readonly', 'public', 'CREATE'
+                ) as can_create_public_objects,
+                (select count(*)::int
+                   from pg_namespace namespace
+                  where namespace.nspname <> 'information_schema'
+                    and namespace.nspname !~ '^pg_'
+                    and has_schema_privilege(
+                      'priceflag_ml_readonly', namespace.oid, 'CREATE'
+                    )) as creatable_schemas,
+                (select count(*)::int
+                   from pg_class relation
+                   join pg_namespace namespace on namespace.oid = relation.relnamespace
+                  where namespace.nspname <> 'information_schema'
+                    and namespace.nspname !~ '^pg_'
+                    and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+                    and has_table_privilege(
+                      'priceflag_ml_readonly', relation.oid,
+                      'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+                    )) as writable_relations,
+                (select count(*)::int
+                   from pg_class sequence
+                   join pg_namespace namespace on namespace.oid = sequence.relnamespace
+                  where namespace.nspname <> 'information_schema'
+                    and namespace.nspname !~ '^pg_'
+                    and sequence.relkind = 'S'
+                    and has_sequence_privilege(
+                      'priceflag_ml_readonly', sequence.oid, 'USAGE,SELECT,UPDATE'
+                    )) as accessible_sequences,
+                (select count(*)::int
+                   from pg_proc routine
+                   join pg_namespace namespace on namespace.oid = routine.pronamespace
+                  where namespace.nspname <> 'information_schema'
+                    and namespace.nspname !~ '^pg_'
+                    and routine.prosecdef
+                    and has_function_privilege(
+                      'priceflag_ml_readonly', routine.oid, 'EXECUTE'
+                    )) as executable_security_definers,
+                (select count(*)::int
+                   from pg_class relation
+                   join pg_namespace namespace on namespace.oid = relation.relnamespace
+                   join pg_attribute attribute on attribute.attrelid = relation.oid
+                  where namespace.nspname <> 'information_schema'
+                    and namespace.nspname !~ '^pg_'
+                    and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+                    and attribute.attnum > 0
+                    and not attribute.attisdropped
+                    and has_column_privilege(
+                      'priceflag_ml_readonly', relation.oid, attribute.attnum, 'SELECT'
+                    )
+                    and not (
+                      namespace.nspname = 'public'
+                      and (
+                        relation.relname = any(array[
+                          'ml_product_days', 'ml_products', 'ml_price_history',
+                          'ml_rollout_windows', 'order_days', 'products',
+                          'journal_entries', 'rollouts', 'rollout_variants',
+                          'elasticity_fits', 'expected_bands', 'model_runs',
+                          'rollout_reports'
+                        ])
+                        or (
+                          relation.relname = 'shops'
+                          and attribute.attname = any(array[
+                            'id', 'shop_domain', 'name', 'currency',
+                            'timezone', 'mode', 'created_at'
+                          ])
+                        )
+                      )
+                    )) as unexpected_read_columns
+           from pg_roles role
+          where role.rolname = 'priceflag_ml_readonly'`,
+      );
+      const authority = rows[0];
+      if (authority === undefined) throw new Error('Postgres did not return the ML role authority');
+      assert(!authority.is_superuser, 'the ML role is a superuser');
+      assert(!authority.can_create_database, 'the ML role can create databases');
+      assert(!authority.can_create_role, 'the ML role can create or alter roles');
+      assert(!authority.inherits_roles, 'the ML role can inherit memberships');
+      assert(!authority.can_replicate, 'the ML role has replication authority');
+      assert(!authority.bypasses_rls, 'the ML role bypasses row-level security');
+      assertEqual(authority.connection_limit, 5, 'the ML role connection limit');
+      assertEqual(authority.role_memberships, 0, 'the ML role membership count');
+      assert(!authority.can_create_public_objects, 'the ML role can create public-schema objects');
+      assertEqual(authority.creatable_schemas, 0, 'ML-creatable non-system schemas');
+      assertEqual(authority.writable_relations, 0, 'ML-writable non-system relations');
+      assertEqual(authority.accessible_sequences, 0, 'ML-accessible non-system sequences');
+      assertEqual(authority.executable_security_definers, 0, 'ML-executable SECURITY DEFINER routines');
+      assertEqual(authority.unexpected_read_columns, 0, 'ML-readable columns outside the approved surface');
+    });
   } finally {
     await postgres.end();
   }

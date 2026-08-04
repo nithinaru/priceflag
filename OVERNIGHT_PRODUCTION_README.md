@@ -350,6 +350,58 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   open launch gate rather than a claimed pass. No hosted database or production
   system was changed.
 
+- `2026-08-04T17:13:21Z` — launch-gate reconciliation found that the B6
+  migration and the Python reader disagreed about `SUPABASE_ML_READONLY_KEY`:
+  the migration creates a narrow direct-Postgres role/connection URL, while the
+  reader incorrectly sent that URL to PostgREST as an API bearer key. The real
+  nightly therefore could not have worked as documented. The reader now uses a
+  pinned Psycopg dependency, accepts only the exact `priceflag_ml_readonly`
+  direct/pooler identity for the same Supabase project as `SUPABASE_URL`,
+  requires TLS, parameterizes every shop filter, and runs every query inside an
+  explicit read-only transaction with a timeout. The nightly now emits a strict,
+  redacted evidence artifact and a separate verifier refuses a green result
+  unless at least one real shop had orders and the application acknowledged at
+  least one output row for the same commit. Merchant identifiers, data and
+  credentials are forbidden from the evidence schema. All active third-party
+  GitHub Actions are commit-pinned and regression-tested. Current local
+  evidence: 124/124 Python tests, all six golden model/drift gates, 73/73
+  deployment-safety assertions, TypeScript checks and workflow YAML validation.
+  The real-store nightly remains an open owner-only gate until its GitHub
+  secrets are configured and the retained evidence verifier passes. No hosted
+  database, deployment, or Shopify price was changed.
+
+- `2026-08-04T17:39:50Z` — independent adversarial review of the real-store ML
+  path found and closed five release-boundary defects before any credential was
+  configured: raw merchant artifacts/logs, arbitrary feature-branch secret
+  access, role-name-only database trust, an unpinned ingest destination, and
+  transaction-pooler/TLS ambiguity. The direct reader now requires verified
+  TLS, exact project/role/database identity, protected environment and sentinel
+  markers, and a normalized effective privilege surface: non-superuser,
+  NOINHERIT, no memberships/RLS bypass/schema creation/writable relations/
+  sequences/executable SECURITY DEFINER routines/unapproved readable columns,
+  and no Shopify token-column access. Every accepted model run is read back
+  from that attested database for the exact commit, status and row count. The
+  app destination is verified as the pinned READY Vercel Production deployment
+  before the ingest secret is sent. Workflows upload only strict redacted
+  evidence; production nightly is schedule-only on `main`; the separate
+  integration release gate requires a live GitHub Environment with an exact
+  branch allowlist, human reviewer, self-review prevention and administrator
+  bypass disabled before any secret-bearing step. Final independent review
+  reports no remaining code-level P0/P1. Local evidence includes a clean
+  dependency install, typecheck, production build, 144/144 smoke, 38/38
+  merchant API, 15/15 price-write safety, ML-ingest and webhook integrity,
+  63/63 demo adversarial integration, 137/137 Python, six green deterministic
+  model/drift gates, 114/114 deployment-safety assertions and zero dependency
+  vulnerabilities. This Mac has no Docker/Postgres runtime, so the new
+  migration and effective-role audit still require the isolated GitHub
+  Supabase job and hosted staging. GitHub currently has only repository-level
+  `CRON_SECRET`; neither `priceflag-ml-release` nor
+  `priceflag-ml-production` exists, and the existing staging Environment has no
+  secrets plus self-review/admin bypass still enabled. Those owner-only gates,
+  real-store evidence, Shopify test-store flow, protected preview and logs all
+  remain open. Invite access stays closed; no merge, promotion, hosted database
+  mutation or Shopify price write occurred.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
@@ -395,3 +447,13 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   to `claude/prod-ui-auth-infra`; its history remains an auditable input.
   Claude still owns App Bridge token attachment, real-mode page data, Partner
   app webhook registration/config, browser UX, and preview infrastructure.
+- `2026-08-04T17:39:50Z` — owner/Claude infrastructure handoff: create
+  `priceflag-ml-release` and `priceflag-ml-production` only as documented in
+  `PILOT_RUNBOOK.md`; keep all five ML credentials environment-scoped; require
+  a trusted reviewer, prevent self-review and administrator bypass, and allow
+  only `codex/prod-integration` for the release environment. Do not manually
+  dispatch the legacy default-branch `ml-nightly.yml`. A push of the verified
+  integration commit triggers `ml-release-gate`; approve only that exact SHA.
+  Also correct `priceflag-staging`, whose live settings currently allow
+  self-review/admin bypass and contain no secrets. Record only secret names and
+  run URLs here—never values.
