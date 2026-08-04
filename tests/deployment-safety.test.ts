@@ -289,6 +289,7 @@ assert.ok(
 assert.doesNotMatch(mlRoleLockout, /pg_terminate_backend/);
 assert.match(mlRoleMemberships, /version = '20260804193400'/);
 assert.match(mlRoleMemberships, /from pg_auth_members[\s\S]*restart to drain member sessions/);
+assert.match(mlRoleMemberships, /string_agg[\s\S]*member\.rolname[\s\S]*parent\.rolname/);
 assert.doesNotMatch(mlRoleMemberships, /alter role priceflag_ml_readonly[\s\S]*login/);
 assert.match(mlRoleDrain, /version = '20260804193500'/);
 assert.match(mlRoleDrain, /requires_restart[\s\S]*pg_postmaster_start_time\(\) <= retirement_state\.lockout_recorded_at/);

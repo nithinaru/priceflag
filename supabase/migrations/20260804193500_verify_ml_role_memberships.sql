@@ -6,7 +6,7 @@
 
 do $$
 declare
-  memberships integer;
+  membership_edges text;
 begin
   if not exists (
     select 1
@@ -37,15 +37,19 @@ begin
       message = 'the ML role retirement state was not committed with the login lockout';
   end if;
 
-  select count(*)::integer
-    into memberships
+  select string_agg(format('%I->%I', member.rolname, parent.rolname), ', ' order by member.rolname, parent.rolname)
+    into membership_edges
     from pg_auth_members link
-    join pg_roles role on role.oid in (link.roleid, link.member)
-   where role.rolname = 'priceflag_ml_readonly';
-  if memberships <> 0 then
+    join pg_roles parent on parent.oid = link.roleid
+    join pg_roles member on member.oid = link.member
+   where parent.rolname = 'priceflag_ml_readonly' or member.rolname = 'priceflag_ml_readonly';
+  if membership_edges is not null then
     raise exception using
       errcode = '42501',
-      message = 'legacy ML database role has memberships; restart to drain member sessions, remove every relationship, then retry';
+      message = format(
+        'legacy ML database role has memberships (%s); restart to drain member sessions, remove every relationship, then retry',
+        membership_edges
+      );
   end if;
 end
 $$;
