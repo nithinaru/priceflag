@@ -426,6 +426,22 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   Shopify price was changed, invite access remains closed, and automatic
   rollback remains disabled.
 
+- `2026-08-04T19:49:37Z` — Codex pushed reviewed integration commit `b8fbdfd`
+  to draft PR #3. Local evidence on that candidate: clean `npm ci`; TypeScript;
+  144/144 smoke; 38/38 authenticated merchant API; 15/15 price-write safety;
+  ML export/ingest; webhook integrity; 63/63 demo adversarial integration;
+  production build; 135/135 locked Python tests; six green offline nightly
+  model/drift gates; 153 deployment-safety assertions; workflow YAML; clean
+  diff; and zero dependency vulnerabilities. Independent adversarial review
+  reports no open P0/P1. The new isolated database job additionally opens a real
+  legacy-role session, commits the direct-login lockout, proves reconnect is
+  denied, preserves and detects a hidden `SET ROLE` member session, requires a
+  restart where history is ambiguous, drains the direct session, and runs final
+  attestation. That Docker/Postgres proof and all GitHub checks are currently
+  pending on the pushed SHA, so this is not a merge or launch approval. PR #3
+  stays draft; invite access is closed; no deployment, hosted database, or
+  Shopify price was changed; automatic rollback remains disabled.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
