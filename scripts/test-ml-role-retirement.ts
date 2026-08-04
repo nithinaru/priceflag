@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   let member: Client | null = null;
   let legacy: Client | null = null;
   let legacyPid: number | null = null;
+  const legacyConnectionErrors: Error[] = [];
   await admin.connect();
   try {
     await admin.query(`drop role if exists ${probeRole}`);
@@ -96,6 +97,13 @@ async function main(): Promise<void> {
       connectionString: roleUrl('priceflag_ml_readonly'),
       connectionTimeoutMillis: 2_000,
     });
+    // PostgreSQL reports an administrator-initiated backend termination through
+    // the Client's asynchronous error event as well as through pending/future
+    // queries. Capture it so the expected safety action cannot become an
+    // unhandled process error in CI.
+    legacy.on('error', (error: Error) => {
+      legacyConnectionErrors.push(error);
+    });
     await legacy.connect();
     const pidResult = await legacy.query<{ pid: number }>('select pg_backend_pid()::integer as pid');
     legacyPid = pidResult.rows[0]?.pid ?? null;
@@ -118,6 +126,13 @@ async function main(): Promise<void> {
     // The separately committed second file drains the old backend and attests
     // every role/grant/policy/session invariant before it can finish.
     await admin.query(drainSql);
+    await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+    assert.ok(
+      legacyConnectionErrors.some((error) =>
+        /terminating connection due to administrator command/i.test(error.message),
+      ),
+      'phase two did not report the expected administrator-initiated session termination',
+    );
     await rejected(legacy.query('select 1'), /terminating connection|connection terminated|not queryable/i);
     await admin.query('select priceflag_internal.pf_attest_ml_database_role_retired()');
     legacy = null;
