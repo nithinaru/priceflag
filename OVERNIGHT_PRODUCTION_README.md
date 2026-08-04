@@ -442,6 +442,31 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   stays draft; invite access is closed; no deployment, hosted database, or
   Shopify price was changed; automatic rollback remains disabled.
 
+- `2026-08-04T20:20:44Z` — repository-controlled gates are green on integration
+  commit `e3b32e3`. Production-gates run `30947244000` passed the Node 22
+  application job (including clean install, typecheck, all focused suites,
+  production build, compiled-browser verification and dependency audit), the
+  locked Python 3.12 suite plus offline nightly gates, and the fresh isolated
+  Supabase job. The database job replayed every migration, linted the schema,
+  proved the committed NOLOGIN/reconnect boundary against live legacy and
+  hidden `SET ROLE` sessions, drained and attested the retired role, then passed
+  the real adapter and adversarial Postgres suites. PostgreSQL's exact
+  platform-created `priceflag_ml_readonly` parent / `postgres` member edge is
+  the sole allowed membership; it lets the existing administrator shed
+  privileges and gives the retired identity no authority in the reverse
+  direction. Every other membership still fails closed. The drain now clears
+  PostgreSQL's transaction-local statistics snapshot before verifying that a
+  terminated backend disappeared. ML CI run `30947244016` and the Vercel build
+  are also green. The real-store release gate `30947243154` remains red by
+  design because GitHub returns 404 for the still-missing protected
+  `priceflag-ml-release` Environment; no secret-bearing ML step ran. Claude/owner
+  PR #4 remains based on an older integration commit and must be updated before
+  its checks are evidence for this candidate. Hosted staging, protected
+  real-store ML evidence, the Shopify Partner/test-store flow, authenticated
+  preview/browser verification and production logs remain open. PR #3 stays
+  draft; invite access is closed; automatic rollback remains disabled; no merge,
+  promotion, hosted database mutation or Shopify price write occurred.
+
 ## Current launch checklist
 
 - [x] Clean dependency install
@@ -452,9 +477,8 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
 - [x] Zero-price, acknowledgement-loss, partial rollback, compare-at restore,
   chained kill switch and external-edit regressions
 - [x] Automatic rollback disabled by default; scheduled evaluator disabled
-- [ ] Fresh isolated Supabase migration replay, schema lint, real adapter and
-  adversarial Postgres suites for the newest role-retirement migration (the
-  previously published migration chain passed; the current candidate has not)
+- [x] Fresh isolated Supabase migration replay, schema lint, live role-retirement
+  proof, real adapter and adversarial Postgres suites for the current candidate
 - [ ] Hosted staging migration apply, security/performance advisors and staging
   integration suite
 - [ ] GitHub ML secrets and a proven real-store nightly ingest
