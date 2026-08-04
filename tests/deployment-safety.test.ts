@@ -254,6 +254,33 @@ assert.match(mlRoleHardening, /grant execute on function public\.pf_shop_day/);
 passed += 7;
 
 async function verifyAttestation(): Promise<void> {
+  const sanitizerUrl = pathToFileURL(
+    resolve(process.cwd(), 'scripts/sanitize-supabase-start-log.mjs'),
+  ).href;
+  const sanitizer = (await import(sanitizerUrl)) as {
+    sanitizeSupabaseStartLog: (input: string) => string;
+  };
+  const sanitized = sanitizer.sanitizeSupabaseStartLog([
+    'API URL: http://127.0.0.1:54321',
+    'service_role key: eyJabcdefghijk.abcdefghijklmnop.qrstuvwxyz12345',
+    'ERROR: migration 20260804180000 failed: token=very-secret-token',
+    'could not connect to postgresql://postgres:database-password@127.0.0.1:54322/postgres',
+    `fatal container output ${'a'.repeat(100)}`,
+  ].join('\n'));
+  assert.match(sanitized, /migration 20260804180000 failed/);
+  assert.match(sanitized, /postgresql:\/\/\[REDACTED\]@127\.0\.0\.1/);
+  assert.doesNotMatch(sanitized, /very-secret-token|database-password|eyJabcdefghijk|a{80}/);
+  assert.doesNotMatch(sanitized, /API URL|service_role key/);
+
+  const productionWorkflow = readFileSync(
+    resolve(process.cwd(), '.github/workflows/production-gates.yml'),
+    'utf8',
+  );
+  assert.match(productionWorkflow, /supabase start --debug/);
+  assert.match(productionWorkflow, /sanitize-supabase-start-log\.mjs/);
+  assert.doesNotMatch(productionWorkflow, /cat \"\$RUNNER_TEMP\/supabase-start\.log\"/);
+  passed += 7;
+
   const guardUrl = pathToFileURL(resolve(process.cwd(), 'scripts/github-environment-guard.mjs')).href;
   const guard = (await import(guardUrl)) as {
     assertEnvironmentConfiguration: (
