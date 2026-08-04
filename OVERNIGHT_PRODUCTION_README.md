@@ -152,6 +152,16 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   framework overlays, console errors and non-benign failed requests as blocking;
   the compiled local artifact passes 6/6 browser assertions. Claude draft PR #1
   has not yet rebased or completed its documented real-mode page/browser work.
+- `2026-08-04T05:12:00Z` — Claude draft PR #1 advanced to `8b3f4ff` with a
+  shop-scoped real-mode read layer and green legacy app CI/Ready protected
+  preview. Integration remains blocked: its merchant forecast, rollout, cost and
+  settings operations still use cookie-authorized Server Actions; real rollout
+  creation explicitly returns unavailable; the App Bridge token failure path,
+  uninstall handling and automatic-undo copy remain unresolved; and the branch
+  has not rebased onto backend PR #2. Exact corrective guidance is recorded on
+  PR #1. The Supabase connector available to Codex exposes only an unrelated
+  inactive project, so no Priceflag database was touched and staging migration,
+  advisor and integration gates remain unverified. Invite access remains closed.
 
 ## Current launch checklist
 
