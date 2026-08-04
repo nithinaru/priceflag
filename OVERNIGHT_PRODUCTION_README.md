@@ -349,6 +349,47 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   owner approval are not available to this account; hosted staging remains an
   open launch gate rather than a claimed pass. No hosted database or production
   system was changed.
+- `2026-08-04T17:45Z` — `claude/owner-launch-gates` (from `39dbd65`) — owner-ops
+  lane external-gate execution. DONE: protected GitHub Environment
+  `priceflag-staging` created with required human reviewer (repo owner) and
+  deployment branches restricted to `main` + `codex/prod-integration` (variable
+  and secrets deliberately not yet set — see blocker). Preview identity
+  positively verified: deployment `dpl_GBGBCDNyhFA6brrrLdstgoJotDW3` is exactly
+  candidate `39dbd657fd0b55808ed28c87f109ec59352f3476` on project
+  `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm`, PR #3 branch; `/api/health` 200 real-mode
+  Supabase-reachable; authenticated browser verification 6/6 pages (200, zero
+  console errors, hydrated focus, no framework overlay); project runtime logs
+  clean over 24h (zero error/warning entries). Webhook security verified by
+  direct probe: preview `orders--create` rejects an invalid HMAC (401) and a
+  valid-HMAC delivery missing `x-shopify-webhook-id` (400); compiled candidate
+  locally rejects a missing/invalid `pf_topic_token` (401 "invalid webhook topic
+  capability"), a topic-header/endpoint mismatch, and an invalid HMAC carrying a
+  valid token (401); an identical signed retry deduplicates
+  (`deduplicated:true`, `rows_written:0`, three attempts). Dev store
+  `priceflag-test.myshopify.com` static app grants confirmed via Admin API:
+  `read_products, write_products, read_orders, write_orders,
+  write_draft_orders, read_draft_orders, read_all_orders`; no stale webhook
+  subscriptions on that app; store has no orders older than 60 days so history
+  depth is not a discriminating test there. BLOCKED (owner-only): (1) staging
+  Supabase project cannot be created or attested from this machine — no
+  SUPABASE_ACCESS_TOKEN is present and the available Supabase connector is
+  bound to an unrelated inactive org, so environment identity cannot be
+  positively verified; per the stop rule, no staging secrets/variable were set
+  and `staging-launch-gates` was not dispatched. (2) Shopify Partner dashboard
+  items (canonical URL, redirect URL, app handle, custom distribution,
+  protected-customer-data approval, GDPR compliance endpoints with
+  `pf_topic_token`) require an authenticated dashboard session this machine
+  does not have; `SHOPIFY_APP_HANDLE` is not present in the local environment.
+  (3) Per lane instruction, real ML nightly configuration is held until the
+  announced Codex ML-readiness commit lands (integration branch unchanged at
+  `39dbd65` as of this entry); noted for that step: the local ML read-only URL
+  has the correct dedicated role and direct TLS host but lacks
+  `sslmode=require` and percent-encoding and will be normalized at set-time,
+  never printed. (4) Test-store end-to-end chain requires an OAuth install of
+  the Partner app on the dev store (browser login) atop a staging-valued
+  preview, so it queues behind (1) and (2). Invite access remains closed;
+  nothing was merged or promoted; automatic rollback remains disabled; no
+  hosted database or production system was mutated.
 
 - `2026-08-04T17:13:21Z` — launch-gate reconciliation found that the B6
   migration and the Python reader disagreed about `SUPABASE_ML_READONLY_KEY`:
