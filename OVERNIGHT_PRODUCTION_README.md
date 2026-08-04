@@ -130,8 +130,8 @@ Before production promotion, also require:
 Agents append short entries here when a milestone changes. Include UTC timestamp, branch, commit, checks, and blockers. Never include credential values.
 
 - Coordination baseline: prepared from `716e762`; both implementation lanes pending.
-- `2026-08-04T04:52:22Z` — `codex/prod-backend-safety` at coordination commit
-  `94800d6` plus an uncommitted verified candidate. Local gates: clean `npm ci`;
+- `2026-08-04T04:52:22Z` — `codex/prod-backend-safety` implementation commit
+  `5fdfcb5`. Local gates: clean `npm ci`;
   typecheck; 138/138 smoke; 25/25 merchant API; 10/10 price-write safety;
   ML-ingest; webhook integrity; 51/51 demo integration; production build;
   dependency audit with zero high-severity findings; Python 117/117; golden
@@ -139,9 +139,12 @@ Agents append short entries here when a milestone changes. Include UTC timestamp
   overlay. Automatic rollback is false by default and the evaluator workflow is
   manual-only. Blocked external gates: staging migrations/advisors and Supabase
   integration, real-data nightly secrets/proof, Shopify test-store end-to-end,
-  registered compliance webhooks, Claude UI/App Bridge branch, Vercel preview,
-  preview browser smoke, and production log verification. Invite access remains
-  closed and no deployment or merge has been performed.
+  registered compliance webhooks, completed Claude real-mode pages, preview
+  browser smoke, and production log verification. Claude draft PR #1 now exists
+  with App Bridge/auth/webhook-install work, green app CI and a Ready Vercel
+  preview, but its own PR description still marks real-mode pages and browser
+  verification incomplete. Invite access remains closed and no merge or
+  production deployment has been performed.
 
 ## Current launch checklist
 
