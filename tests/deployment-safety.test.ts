@@ -166,7 +166,7 @@ assert.match(stagingWorkflow, /supabase-staging-gate\.ts attest/);
 assert.match(stagingWorkflow, /db push --db-url "\$SUPABASE_DB_URL" --dry-run/);
 assert.match(stagingWorkflow, /--type security[\s\S]*--fail-on warn --output-format json/);
 assert.match(stagingWorkflow, /--type performance[\s\S]*--fail-on error --output-format json/);
-assert.match(stagingWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
+assert.match(stagingWorkflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
 assert.match(stagingWorkflow, /SUPABASE_STAGING_SENTINEL: \$\{\{ secrets\.SUPABASE_STAGING_SENTINEL \}\}/);
 assert.match(stagingWorkflow, /SUPABASE_DB_URL: \$\{\{ secrets\.SUPABASE_DB_URL \}\}/);
 assert.doesNotMatch(stagingWorkflow, /SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD|supabase link|--linked/);

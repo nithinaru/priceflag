@@ -101,8 +101,26 @@ async function main(): Promise<void> {
   const unauthorized = await POST(request(payload, 'wrong'));
   assert.equal(unauthorized.status, 401);
 
+  const runsBeforeUninstall = (await adapter.listModelRuns(null)).length;
+  await adapter.updateShop(shop.id, { uninstalled_at: '2026-08-04T01:00:00Z' });
+  const afterUninstall = await POST(
+    request({
+      ...payload,
+      model_run: { kind: 'elasticity', model_version: 'test-fit-after-uninstall', gate_passed: true },
+      fits: [{ ...fit, model_version: 'test-fit-after-uninstall' }],
+    }),
+  );
+  assert.equal(afterUninstall.status, 404, 'an uninstalled store must reject new model output');
+  assert.equal(
+    (await adapter.listModelRuns(null)).length,
+    runsBeforeUninstall,
+    'the rejected ingest must not create a model run',
+  );
+
   setAdapter(null);
-  console.log('ML ingest API: atomic counts, retry idempotency, tenant metadata and secret checks passed.');
+  console.log(
+    'ML ingest API: atomic counts, retry idempotency, tenant metadata, uninstall state and secret checks passed.',
+  );
 }
 
 void main();

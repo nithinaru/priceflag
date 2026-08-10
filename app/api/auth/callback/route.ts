@@ -33,7 +33,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 // The `after()` work below (webhook registration + initial sync) shares this
 // budget with the redirect itself.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Does the latest run make an automatic post-install sync redundant?
@@ -47,7 +47,10 @@ const RECENT_SYNC_MS = 10 * 60 * 1000;
 function hasFreshSync(run: SyncRun | null, now: Date): boolean {
   if (run === null) return false;
   if (run.stage === 'error') return false;
-  if (run.stage !== 'done') return true; // queued/catalog/history/aggregating — already running
+  if (run.stage !== 'done') {
+    const updatedAt = new Date(run.updated_at).getTime();
+    return Number.isFinite(updatedAt) && now.getTime() - updatedAt < RECENT_SYNC_MS;
+  }
   const finishedAt = run.finished_at ?? run.updated_at;
   return now.getTime() - new Date(finishedAt).getTime() < RECENT_SYNC_MS;
 }
@@ -154,10 +157,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // sent — so a slow or failing Shopify call can never strand the merchant on
   // the callback URL. The install itself is already durable at this point.
   //
-  // Vercel constraint: `after()` shares this function's `maxDuration` (60s). A
-  // big store's history sync may not finish inside that budget, which is fine:
-  // the connect panel re-triggers `POST /api/sync`, and re-running converges
-  // (every sync write is an upsert).
+  // `after()` shares this function's duration budget. The queued run is created
+  // before the redirect, so the connect page can poll it immediately and a
+  // merchant closing the tab does not own the lifetime of the sync.
+  const latestSync = await adapter.getLatestSyncRun(installedShop.id);
+  const initialRun = hasFreshSync(latestSync, new Date())
+    ? null
+    : await adapter.createSyncRun(installedShop.id, 'full');
   after(async () => {
     // (a) Webhook subscriptions. Non-fatal: a shop without webhooks degrades to
     // sync-time freshness, which the merchant can live with; a failed install
@@ -176,11 +182,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // connect panel can show it; this catch is only for failures before the
     // run row exists.
     try {
-      const latest = await adapter.getLatestSyncRun(installedShop.id);
-      if (!hasFreshSync(latest, new Date())) {
-        await runSync(adapter, installedShop);
+      if (initialRun !== null) {
+        await runSync(adapter, installedShop, { initialRun });
       }
     } catch (cause) {
+      if (initialRun !== null) {
+        await adapter.updateSyncRun(initialRun.id, {
+          stage: 'error',
+          error_code: 'internal',
+          error_message: 'The initial sync stopped unexpectedly. Open Priceflag to try again.',
+          error_retryable: true,
+          finished_at: new Date().toISOString(),
+          message: 'The initial sync stopped unexpectedly. Open Priceflag to try again.',
+        }).catch(() => undefined);
+      }
       console.error(
         `[install] initial sync kickoff failed for ${shop}: ` +
           (cause instanceof Error ? cause.message : String(cause)),

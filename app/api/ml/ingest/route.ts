@@ -100,7 +100,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     shopDomain = shops.length === 1 ? shops[0]?.shop_domain : undefined;
   }
   const shop = shopDomain === undefined ? null : await adapter.getShopByDomain(shopDomain);
-  if (shop === null) {
+  if (shop === null || shop.uninstalled_at !== null) {
     return fail('shop_not_connected', `No connected store for ${shopDomain ?? '(unspecified)'}.`, 404);
   }
 

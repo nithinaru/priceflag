@@ -606,6 +606,12 @@ test('sync derives credentials from the token tenant, never ?shop or static env'
     throw new Error('cross-shop sync must not contact Shopify');
   }) as typeof fetch;
   try {
+    const invalidWindow = await sync(
+      request('/api/sync?days=not-a-number', {}, token(OTHER_SHOP)),
+    );
+    assert(invalidWindow.status === 400, `invalid sync window returned ${invalidWindow.status}`);
+    assert(!contacted, 'invalid sync input contacted Shopify before validation');
+
     const response = await sync(
       request(`/api/sync?shop=${DEMO_SHOP_DOMAIN}`, {}, token(OTHER_SHOP)),
     );

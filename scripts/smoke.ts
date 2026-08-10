@@ -1272,8 +1272,10 @@ async function testSync(): Promise<void> {
       }),
     });
 
-    const outcome = await runSync(adapter, shop, { client, historyDays: 180 });
+    const queued = await adapter.createSyncRun(shop.id, 'full');
+    const outcome = await runSync(adapter, shop, { client, historyDays: 180, initialRun: queued });
     assertEqual(outcome.error, null, 'an empty store is not an error');
+    assertEqual(outcome.syncRunId, queued.id, 'background kickoff continues the run exposed to the poller');
 
     const run = await adapter.getLatestSyncRun(shop.id);
     const progress = syncProgressFromRun(run);
