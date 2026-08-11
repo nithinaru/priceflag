@@ -138,6 +138,27 @@ const CHECKS: RouteCheck[] = [
     },
   },
   {
+    name: '/model-lab — edited founder inputs run through the live engine',
+    path: '/model-lab',
+    run: async (page) => {
+      await page.locator('#lab-price-change').fill('12');
+      await page.getByRole('button', { name: 'Run Priceflag' }).click();
+      const target = page.getByTestId('lab-target-price');
+      await target.waitFor({ state: 'visible', timeout: 10_000 });
+      await page.waitForFunction(
+        () => document.querySelector('[data-testid="lab-target-price"]')?.textContent?.includes('$53.99'),
+        undefined,
+        { timeout: 10_000 },
+      );
+      const text = (await target.textContent()) ?? '';
+      const noWrite = await page.getByText('No persistence', { exact: true }).count();
+      return {
+        ok: text.includes('$53.99') && noWrite === 1,
+        detail: `${text || '(no target)'} with no-persistence proof`,
+      };
+    },
+  },
+  {
     name: '/rollouts/ro_2043 — explicit confirmation shows prices and beta safety',
     path: '/rollouts/ro_2043',
     run: async (page) => {

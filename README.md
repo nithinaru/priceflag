@@ -60,6 +60,17 @@ npm run dev                  # http://localhost:3000 — simulated store, full l
 npx tsx scripts/smoke.ts     # engine smoke test
 ```
 
+Open `http://localhost:3000/model-lab` for the Founder Lab. It accepts editable
+price, cost, sales-volume, elasticity, uncertainty, history, horizon, rounding,
+and SKU-count inputs, then runs the shared production forecast engine and SKU
+rollout planner. The entered elasticity is visibly labelled as a simulated fit;
+the route stores nothing and is unavailable when `PRICEFLAG_MODE=real`.
+
+```bash
+npm run test:founder-lab     # focused engine + rollout-plan checks
+npm run smoke:browser        # includes the full interactive Founder Lab path
+```
+
 ### Real mode (free end to end)
 
 Prereqs — all free tiers: [Shopify Partner account](https://partners.shopify.com)
