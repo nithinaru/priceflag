@@ -20,6 +20,7 @@
     "test:webhooks": "tsx tests/webhooks.test.ts",
     "test:deployment-safety": "tsx tests/deployment-safety.test.ts",
     "test:founder-lab": "tsx tests/founder-lab.test.ts",
+    "test:shopify-journey": "tsx tests/shopify-journey.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",

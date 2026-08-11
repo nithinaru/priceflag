@@ -16,6 +16,7 @@ import { getAppUrl, getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@
 import { encryptSecret } from '@/lib/crypto';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
 import { verifyOAuthHmac } from '@/lib/shopify/hmac';
+import { schedulePostResponse } from '@/lib/shopify/post-response';
 import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 import { stopRolloutsForUninstall, UninstallCleanupBusyError } from '@/lib/shopify/uninstall';
 import { runSync } from '@/lib/sync';
@@ -164,7 +165,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const initialRun = hasFreshSync(latestSync, new Date())
     ? null
     : await adapter.createSyncRun(installedShop.id, 'full');
-  after(async () => {
+  schedulePostResponse(async () => {
     // (a) Webhook subscriptions. Non-fatal: a shop without webhooks degrades to
     // sync-time freshness, which the merchant can live with; a failed install
     // is the thing they cannot.
@@ -201,7 +202,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           (cause instanceof Error ? cause.message : String(cause)),
       );
     }
-  });
+  }, after);
 
   const response = NextResponse.redirect(postInstallUrl(shop));
   // The nonce is single-use.
