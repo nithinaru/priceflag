@@ -2,10 +2,10 @@
   "name": "priceflag",
   "version": "1.0.0",
   "private": true,
-  "description": "Pricing change management for Shopify — predict, stage, monitor, auto-rollback.",
+  "description": "Pricing change management for Shopify — predict, stage, monitor, and roll back safely.",
   "license": "MIT",
   "engines": {
-    "node": ">=20.11"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "next dev",
@@ -13,6 +13,14 @@
     "start": "next start",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.strict.json --noEmit",
     "smoke": "tsx scripts/smoke.ts",
+    "test:merchant-api": "tsx tests/merchant-api.test.ts",
+    "test:pricing-safety": "tsx tests/pricing-safety.test.ts",
+    "test:ml-ingest": "tsx tests/ml-ingest-api.test.ts && tsx tests/ml-export-api.test.ts",
+    "test:ml-role-retirement": "tsx scripts/test-ml-role-retirement.ts",
+    "test:webhooks": "tsx tests/webhooks.test.ts",
+    "test:deployment-safety": "tsx tests/deployment-safety.test.ts",
+    "test:founder-lab": "tsx tests/founder-lab.test.ts",
+    "test:shopify-journey": "tsx tests/shopify-journey.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
@@ -27,6 +35,7 @@
     "react-dom": "19.2.8"
   },
   "overrides": {
+    "fast-uri": "^3.1.5",
     "sharp": "^0.35.3",
     "postcss": "^8.5.25"
   },

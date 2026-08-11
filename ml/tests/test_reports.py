@@ -10,7 +10,7 @@ import pytest
 
 import priceflag_ml.elasticity as E
 from priceflag_ml.harness import _c6_scenario, run_c6
-from priceflag_ml.reports import VariantPlan, build_report, calibration_summary
+from priceflag_ml.reports import VariantPlan, build_report, calibration_summary, plans_from_price_history
 
 
 @pytest.fixture(scope="module")
@@ -99,6 +99,36 @@ def test_calibration_summary():
     out = calibration_summary([{"in_range": True}, {"in_range": False}, {"in_range": True}])
     assert out["n_rollouts"] == 3
     assert out["pct_in_range"] == pytest.approx(2 / 3)
+
+
+def test_plan_uses_first_live_price_and_ignores_rollback_entries():
+    import pandas as pd
+
+    rollout_id = "123e4567-e89b-42d3-a456-426614174000"
+    history = pd.DataFrame(
+        [
+            {
+                "variant_gid": "gid://shopify/ProductVariant/1",
+                "rollout_id": rollout_id,
+                "source": "rollout",
+                "before_price_cents": 1000,
+                "after_price_cents": 1100,
+                "applied_at": "2026-07-01T00:00:00Z",
+            },
+            {
+                "variant_gid": "gid://shopify/ProductVariant/1",
+                "rollout_id": rollout_id,
+                "source": "rollback",
+                "before_price_cents": 1100,
+                "after_price_cents": 1000,
+                "applied_at": "2026-07-20T00:00:00Z",
+            },
+        ]
+    )
+    products = pd.DataFrame([{"variant_gid": "gid://shopify/ProductVariant/1", "cogs_cents": 400}])
+    plans = plans_from_price_history(history, rollout_id, products)
+    assert len(plans) == 1
+    assert (plans[0].old_price_cents, plans[0].new_price_cents, plans[0].cogs_cents) == (1000, 1100, 400)
 
 
 def test_r30_gate_reduced(monkeypatch):

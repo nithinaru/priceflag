@@ -1,11 +1,9 @@
 /**
  * Lane D — can Priceflag write a $0.00 price to a real storefront?
  *
- * `applyPercent` and `applyAbsolute` both clamp with `Math.max(0, …)`.
- * `computeTargetPrice` rejects a 0% change and a 0-cent change, but nothing
- * anywhere rejects a change that takes the price *to* zero. This file answers
- * the question end to end: plan a rollout, apply it against the fake Shopify,
- * and read back what the storefront now shows.
+ * The low-level arithmetic deliberately clamps over-cuts to zero. The public
+ * planning boundary must reject that result, and the final Shopify writer must
+ * repeat the check in case corrupt persisted intent bypasses planning.
  */
 
 import { applyAbsolute, applyPercent } from '../../lib/money';
@@ -14,9 +12,20 @@ import { normalizeStages, planRolloutVariants } from '../../lib/engine/rollout';
 import { applyStage } from '../../lib/pricing/writer';
 import { nowIso } from '../../lib/dates';
 import type { StoreAdapter } from '../../lib/adapters/types';
-import type { Shop } from '../../lib/types';
+import type { RolloutVariant, Shop } from '../../lib/types';
 
-import { FakeShopify, assert, assertEqual, makeGuardrails, makeProduct, makeRolloutCreate, section, test, uniqueId } from './_harness';
+import {
+  FakeShopify,
+  assert,
+  assertEqual,
+  assertThrows,
+  makeGuardrails,
+  makeProduct,
+  makeRolloutCreate,
+  section,
+  test,
+  uniqueId,
+} from './_harness';
 
 export async function runZeroPriceSuite(adapter: StoreAdapter, shop: Shop, label: string): Promise<void> {
   section(`[${label}] can a $0.00 price reach the storefront?`);
@@ -28,24 +37,22 @@ export async function runZeroPriceSuite(adapter: StoreAdapter, shop: Shop, label
     assertEqual(applyAbsolute(1000, -5000), 0, 'an over-cut clamps to 0 rather than going negative');
   });
 
-  await test('computeTargetPrice rejects a no-op change but accepts a change to zero', async () => {
-    let rejectedNoop = false;
-    try {
-      computeTargetPrice(1000, { type: 'percent', percent: 0 });
-    } catch {
-      rejectedNoop = true;
-    }
-    assert(rejectedNoop, 'a 0% change is correctly rejected as "not a change"');
-
-    // The asymmetry: "no change" is an error, "change it to free" is not.
-    assertEqual(
-      computeTargetPrice(1000, { type: 'percent', percent: -100 }),
-      0,
-      'a -100% change is accepted and returns a $0.00 target price',
+  await test('computeTargetPrice rejects any change that lands below one cent', async () => {
+    await assertThrows(
+      () => computeTargetPrice(1000, { type: 'percent', percent: 0 }),
+      'a 0% change is rejected as a no-op',
+    );
+    await assertThrows(
+      () => computeTargetPrice(1000, { type: 'percent', percent: -100 }),
+      'a -100% change must be rejected before planning',
+    );
+    await assertThrows(
+      () => computeTargetPrice(1000, { type: 'absolute', absolute_cents: -5000 }),
+      'an absolute over-cut must be rejected before planning',
     );
   });
 
-  await test('a -100% rollout writes $0.00 to the storefront', async () => {
+  await test('planning, storage, and the writer all enforce the included-variant minimum honestly', async () => {
     const products = [0, 1, 2].map((i) => makeProduct(i, { priceCents: 1000 + i * 500, productIndex: i }));
     const stages = normalizeStages(undefined, products.length);
 
@@ -60,22 +67,52 @@ export async function runZeroPriceSuite(adapter: StoreAdapter, shop: Shop, label
       }),
     );
 
+    await assertThrows(
+      () =>
+        planRolloutVariants({
+          rolloutId: rollout.id,
+          shopId: shop.id,
+          products,
+          change: { type: 'percent', percent: -100 },
+          stages,
+        }),
+      'rollout planning must reject a free target',
+    );
+
+    // Simulate a corrupt persisted row or a caller that bypassed planning. The
+    // final Shopify boundary must still refuse the write.
     const planned = planRolloutVariants({
       rolloutId: rollout.id,
       shopId: shop.id,
       products,
-      change: { type: 'percent', percent: -100 },
+      change: { type: 'percent', percent: 10 },
       stages,
     });
     await adapter.insertRolloutVariants(planned);
+    const stored = await adapter.getRolloutVariants(rollout.id);
 
-    assert(
-      planned.every((row) => row.excluded || row.target_price_cents === 0),
-      'every planned target price is $0.00',
+    await assertThrows(
+      () => adapter.updateRolloutVariant((stored[0] as RolloutVariant).id, { target_price_cents: 0 }),
+      'the adapter must reject an included zero-price target at rest',
     );
 
+    // The final boundary still treats persisted state as untrusted. Inject a
+    // corrupt read without weakening either adapter's real storage invariant.
+    const corruptAdapter = new Proxy(adapter, {
+      get(target, property, receiver) {
+        if (property === 'getRolloutVariants') {
+          return async (rolloutId: string): Promise<RolloutVariant[]> => {
+            const rows = await target.getRolloutVariants(rolloutId);
+            return rows.map((row) => ({ ...row, excluded: false, target_price_cents: 0 }));
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
     const shopify = new FakeShopify().seed(products);
-    const context = { adapter, client: shopify.asClient(), shop };
+    const context = { adapter: corruptAdapter, client: shopify.asClient(), shop };
     const running = await adapter.updateRollout(rollout.id, {
       status: 'running',
       current_stage: stages.length - 1,
@@ -86,11 +123,21 @@ export async function runZeroPriceSuite(adapter: StoreAdapter, shop: Shop, label
 
     const live = products.map((product) => shopify.priceOf(product.variant_gid));
     assert(
-      live.every((price) => price !== 0),
-      `Priceflag wrote $0.00 to the storefront for ${live.filter((p) => p === 0).length}/${products.length} ` +
-        `variants (applied=${result.applied}). Nothing in the money layer, the forecast, the rollout planner ` +
-        `or the price writer floors a target price above zero, so a merchant who types -100 — or an absolute ` +
-        `cut larger than the price — gives every selected product away for free.`,
+      live.every((price) => price !== null && price >= 1),
+      'the storefront must retain valid non-zero prices',
     );
+    assertEqual(result.applied, 0, 'the writer applies no corrupt zero-price intent');
+    assertEqual(result.failed, products.length, 'every corrupt target is reported as failed');
+    assertEqual(shopify.writeLog.length, 0, 'no Shopify mutation is attempted');
+
+    // A zero-price Shopify variant is valid historical/input data when excluded;
+    // the database constraint must not make legitimate catalog sync impossible.
+    const excluded = await adapter.updateRolloutVariant((stored[0] as RolloutVariant).id, {
+      excluded: true,
+      exclusion_reason: 'zero_price',
+      target_price_cents: 0,
+    });
+    assertEqual(excluded.target_price_cents, 0, 'excluded zero-price target is retained honestly');
+    assertEqual(excluded.excluded, true, 'zero-price row remains excluded from every write');
   });
 }

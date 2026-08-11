@@ -64,8 +64,20 @@ export function bracketBand(
   const interval = options.interval ?? 0.8;
   const minExpected = options.minExpectedUnits ?? DEFAULT_MIN_EXPECTED_UNITS;
 
-  const windowStart = addDays(targetDay, -windowDays);
-  const window = history.filter((row) => row.day >= windowStart && row.day < targetDay);
+  const eligible = history.filter((row) => row.day < targetDay);
+  const latestHistoricalDay = eligible.reduce<DayString | null>(
+    (latest, row) => (latest === null || row.day > latest ? row.day : latest),
+    null,
+  );
+
+  // Monitoring deliberately receives pre-change history only. Once targetDay
+  // moves beyond that history, keep the window anchored to its latest day;
+  // otherwise a long or paused rollout eventually slides past every observation
+  // and silently disables its guardrails.
+  const lastPossibleEnd = latestHistoricalDay === null ? targetDay : addDays(latestHistoricalDay, 1);
+  const windowEnd = lastPossibleEnd < targetDay ? lastPossibleEnd : targetDay;
+  const windowStart = addDays(windowEnd, -windowDays);
+  const window = eligible.filter((row) => row.day >= windowStart && row.day < windowEnd);
 
   if (window.length === 0) {
     // No history at all: an honest band is an infinitely wide one, which in
@@ -111,6 +123,17 @@ export function bracketBand(
     floored,
     source: 'bracket',
     n_obs: window.length,
+  };
+}
+
+/** Move a no-change interval to "expected given the approved price change". */
+export function conditionBandOnDemandEffect(band: BandEstimate, demandMultiplier: number): BandEstimate {
+  const multiplier = Number.isFinite(demandMultiplier) ? Math.max(0, demandMultiplier) : 1;
+  return {
+    ...band,
+    expected_units: round4(band.expected_units * multiplier),
+    low: round4(band.low * multiplier),
+    high: round4(band.high * multiplier),
   };
 }
 

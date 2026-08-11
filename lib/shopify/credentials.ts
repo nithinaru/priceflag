@@ -41,6 +41,7 @@ export class CredentialError extends Error {
       | 'no_credentials'
       | 'shop_not_connected'
       | 'shop_uninstalled'
+      | 'static_credentials_forbidden'
       | 'token_undecryptable'
       | 'kill_switch_engaged',
     message: string,
@@ -55,6 +56,25 @@ export function staticShopDomain(): string | null {
   if (!hasStaticShopifyToken()) return null;
   const domain = getStaticShopDomain();
   return domain === undefined ? null : normalizeShopDomain(domain);
+}
+
+function isProductionRuntime(): boolean {
+  return env('VERCEL_ENV') === 'production' || env('NODE_ENV') === 'production';
+}
+
+function staticCredentialsFor(shopDomain: string, apiVersion: string): ShopCredentials {
+  if (isProductionRuntime()) {
+    throw new CredentialError(
+      'static_credentials_forbidden',
+      'SHOPIFY_ADMIN_ACCESS_TOKEN is restricted to local development and cannot authorize a production Shopify operation. Install the OAuth app for this store.',
+    );
+  }
+  return {
+    shopDomain,
+    accessToken: env('SHOPIFY_ADMIN_ACCESS_TOKEN') as string,
+    apiVersion,
+    source: 'static_env',
+  };
 }
 
 /**
@@ -80,41 +100,40 @@ export async function resolveShopCredentials(
     );
   }
 
-  if (staticDomain !== null && staticDomain === wanted) {
-    return {
-      shopDomain: wanted,
-      accessToken: env('SHOPIFY_ADMIN_ACCESS_TOKEN') as string,
-      apiVersion: getShopifyApiVersion(),
-      source: 'static_env',
-    };
-  }
-
   const shop = await adapter.getShopByDomain(wanted);
-  if (shop === null) {
-    throw new CredentialError('shop_not_connected', `${wanted} has not been connected to Priceflag.`);
+  if (shop !== null) return credentialsFromShop(shop);
+  if (staticDomain !== null && staticDomain === wanted) {
+    return staticCredentialsFor(wanted, getShopifyApiVersion());
   }
-  return credentialsFromShop(shop);
+  throw new CredentialError('shop_not_connected', `${wanted} has not been connected to Priceflag.`);
 }
 
 /** Same resolution from an already-loaded shop row. */
 export function credentialsFromShop(shop: Shop): ShopCredentials {
-  const staticDomain = staticShopDomain();
-  if (staticDomain !== null && staticDomain === shop.shop_domain) {
-    return {
-      shopDomain: shop.shop_domain,
-      accessToken: env('SHOPIFY_ADMIN_ACCESS_TOKEN') as string,
-      apiVersion: shop.api_version || getShopifyApiVersion(),
-      source: 'static_env',
-    };
-  }
-
+  // This check must precede every credential source. In particular, a matching
+  // local static token must never resurrect a shop after app/uninstalled.
   if (shop.uninstalled_at !== null) {
     throw new CredentialError(
       'shop_uninstalled',
       `${shop.shop_domain} uninstalled Priceflag on ${shop.uninstalled_at}. Reinstall to reconnect.`,
     );
   }
+
+  const staticDomain = staticShopDomain();
+  if (staticDomain !== null && staticDomain === shop.shop_domain) {
+    // Production falls through to the encrypted OAuth token when one exists;
+    // the static environment token is never a production capability.
+    if (!isProductionRuntime()) {
+      return staticCredentialsFor(shop.shop_domain, shop.api_version || getShopifyApiVersion());
+    }
+  }
   if (shop.access_token_enc === null || shop.access_token_enc === '') {
+    if (staticDomain !== null && staticDomain === shop.shop_domain && isProductionRuntime()) {
+      throw new CredentialError(
+        'static_credentials_forbidden',
+        'SHOPIFY_ADMIN_ACCESS_TOKEN is restricted to local development and cannot authorize a production Shopify operation. Install the OAuth app for this store.',
+      );
+    }
     throw new CredentialError(
       'shop_not_connected',
       `${shop.shop_domain} has no stored Shopify token. Reinstall the app.`,

@@ -5,6 +5,7 @@ import { cn } from "@/components/cn";
 import { Button, ButtonLink, Notice } from "@/components/ui";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf, formatUnits } from "@/components/format";
+import { authenticatedFetch } from "@/components/lib/shopify-fetch";
 import type { SyncProgress } from "@/lib/contracts";
 
 /**
@@ -24,10 +25,16 @@ export function SyncProgressPanel({
   /** Poll the real endpoint. Off in demo mode, which plays a scripted sync. */
   poll = true,
   onCatalogReady,
+  onProgress,
+  onRetry,
 }: {
   initial: SyncProgress;
   poll?: boolean;
   onCatalogReady?: () => void;
+  /** Called with each polled update, so a parent can mirror the stage. */
+  onProgress?: (progress: SyncProgress) => void;
+  /** When set, the error state's retry button calls this instead of reloading. */
+  onRetry?: () => void;
 }) {
   const [progress, setProgress] = useState(initial);
   const announced = useRef(false);
@@ -44,10 +51,13 @@ export function SyncProgressPanel({
     if (progress.stage === "done" || progress.stage === "error") return;
 
     const timer = window.setInterval(() => {
-      void fetch("/api/sync/status")
+      void authenticatedFetch("/api/sync/status")
         .then((response) => (response.ok ? response.json() : null))
         .then((body: SyncProgress | null) => {
-          if (body) setProgress(body);
+          if (body) {
+            setProgress(body);
+            onProgress?.(body);
+          }
         })
         .catch(() => {
           // A failed poll is not a failed sync. The sync runs server-side; we
@@ -57,7 +67,7 @@ export function SyncProgressPanel({
     }, 2000);
 
     return () => window.clearInterval(timer);
-  }, [poll, progress.stage]);
+  }, [poll, progress.stage, onProgress]);
 
   if (progress.stage === "error" && progress.error) {
     return (
@@ -65,7 +75,11 @@ export function SyncProgressPanel({
         tone="breach"
         title="We could not finish loading your store"
         action={
-          progress.error.retryable ? (
+          onRetry ? (
+            <Button variant="secondary" size="sm" onClick={onRetry}>
+              Try again
+            </Button>
+          ) : progress.error.retryable ? (
             <Button variant="secondary" size="sm" onClick={() => window.location.reload()}>
               Try again
             </Button>

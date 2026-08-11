@@ -8,15 +8,14 @@
  *
  * Two separate questions, and they have different answers:
  *
- *   1. Pure noise. Demand is unchanged; only Poisson variation. How often does
- *      the shipped default guardrail fire?
+ *   1. Pure noise. Demand is unchanged; only Poisson variation. If a merchant
+ *      opts into automatic rollback, how often would the guardrail fire?
  *   2. A correctly-forecast price rise. The merchant raises price, demand falls
- *      by exactly the amount the forecast predicted. The bracket band is built
- *      from PRE-CHANGE history — it is a no-change baseline (R29) — so the
- *      predicted drop is scored as a shortfall against it.
+ *      by exactly the predicted amount, and the no-change bracket is first
+ *      conditioned on that approved forecast before outcomes are judged.
  */
 
-import { bracketBand, combineBands } from '../../lib/engine/bands';
+import { bracketBand, combineBands, conditionBandOnDemandEffect } from '../../lib/engine/bands';
 import { defaultGuardrails, BASELINE_WINDOW_DAYS } from '../../lib/contracts';
 import type { GuardrailRule, Guardrails } from '../../lib/contracts';
 import { evaluateGuardrails, type DailyObservation } from '../../lib/engine/guardrails';
@@ -68,10 +67,10 @@ function simulate(
   for (let d = 0; d < rolloutDays; d += 1) {
     const day = addDays(START, d);
 
-    // The evaluator's band: per-variant bracket bands over pre-change history,
-    // combined at rollout scope.
+    // Build the no-change baseline, then condition it on the demand effect the
+    // merchant approved in the forecast.
     const perVariant = history.map((rows) => bracketBand(rows, day));
-    const band = combineBands(perVariant);
+    const band = conditionBandOnDemandEffect(combineBands(perVariant), effect);
 
     // What actually sold. `effect` is the true, correctly-forecast change.
     let actual = 0;
@@ -103,6 +102,7 @@ function withThreshold(pct: number, consecutiveDays: number): Guardrails {
   const rule = base.rules[0] as GuardrailRule;
   return {
     ...base,
+    auto_rollback: true,
     rules: [{ ...rule, threshold_pct: pct, consecutive_days: consecutiveDays }],
   } as Guardrails;
 }
@@ -117,11 +117,11 @@ export async function runFalseRollbackSuite(): Promise<void> {
   const RUNS = 200;
   const ROLLOUT_DAYS = 12; // default plan: 25/50/100 with 3-4 day holds
 
-  await test('the shipped default guardrail on pure noise', async () => {
-    const defaults = defaultGuardrails();
+  await test('the opt-in auto-rollback guardrail stays below its pure-noise budget', async () => {
+    const defaults = { ...defaultGuardrails(), auto_rollback: true } as Guardrails;
     const rule = defaults.rules[0] as GuardrailRule;
     process.stdout.write(
-      `    \x1b[2mshipped default: ${rule.threshold_pct}% below expected for ${rule.consecutive_days} day(s), ` +
+      `    \x1b[2mopt-in auto-rollback: ${rule.threshold_pct}% below expected for ${rule.consecutive_days} day(s), ` +
         `action=${rule.action}, auto_rollback=${defaults.auto_rollback}\x1b[0m\n`,
     );
 
@@ -148,17 +148,17 @@ export async function runFalseRollbackSuite(): Promise<void> {
     assert(
       worst <= 5,
       `a HEALTHY rollout (demand unchanged, pure Poisson noise) auto-rolls back in up to ${worst}% of runs ` +
-        `at the SHIPPED default guardrail. Every one of those is a merchant whose prices were reverted for ` +
+        `with automatic rollback explicitly enabled. Every one of those is a merchant whose prices were reverted for ` +
         `nothing. Budget for a 12-day rollout should be well under 5%.`,
     );
   });
 
-  await test('a correctly-forecast price rise is scored against a NO-CHANGE band', async () => {
+  await test('a correctly-forecast price rise is scored against its conditioned band', async () => {
     // The merchant raises price. The forecast predicts orders fall 12%. Orders
     // fall exactly 12% — the forecast was right and the rollout is a success.
-    // The bracket band is built from pre-change history (R29: expected units with
-    // NO price change), so the guardrail sees a 12% shortfall every single day.
-    const defaults = defaultGuardrails();
+    // The bracket starts as a no-change baseline and is conditioned on the
+    // predicted 12% before actual demand is judged.
+    const defaults = { ...defaultGuardrails(), auto_rollback: true } as Guardrails;
     const rule = defaults.rules[0] as GuardrailRule;
     const threshold = rule.threshold_pct ?? 30;
 
@@ -182,19 +182,17 @@ export async function runFalseRollbackSuite(): Promise<void> {
       firstBadDrop === null,
       `A price rise whose demand effect was predicted EXACTLY still auto-rolls back once the predicted drop ` +
         `approaches the guardrail threshold (first majority-failure at a ${firstBadDrop}% drop, threshold ${threshold}%). ` +
-        `The band is a no-change baseline, so the merchant's own forecast eats the rollback budget: a change ` +
+        `The conditioned band must preserve the rollback budget: a change ` +
         `forecast to cost ${firstBadDrop}% of orders cannot be run under a ${threshold}% guardrail even when the ` +
         `forecast is perfect. The guardrail sentence promises "below expected", and the merchant reads "expected" ` +
         `as "expected given this change".`,
     );
   });
 
-  await test('the bracket band goes blind once the rollout outlives its history window', async () => {
-    // The evaluator loads history [start-60, start-1] and calls
-    // bracketBand(history, day) which looks at [day-28, day). Once
-    // day >= start + BASELINE_WINDOW_DAYS the two ranges stop overlapping, the
-    // window is empty, and the band returns expected_units: 0, floored: true.
-    // A floored units rule can never hold, so no guardrail can fire.
+  await test('the bracket band remains active after the rollout outlives its history window', async () => {
+    // The evaluator loads history [start-60, start-1]. The fallback must remain
+    // anchored to that pre-change history after day 28 rather than sliding past
+    // it and silently disabling monitoring.
     const history: { day: DayString; units: number }[] = [];
     for (let d = -60; d <= -1; d += 1) history.push({ day: addDays(START, d), units: 10 });
 
@@ -205,7 +203,7 @@ export async function runFalseRollbackSuite(): Promise<void> {
     const after = bracketBand(history, dayAfter);
 
     assert(before.expected_units > 0, `day ${BASELINE_WINDOW_DAYS - 1} still has a band (${before.expected_units})`);
-    assertEqual(after.n_obs, 0, `day ${BASELINE_WINDOW_DAYS}: the window no longer overlaps the loaded history`);
+    assert(after.n_obs > 0, `day ${BASELINE_WINDOW_DAYS}: the band remains anchored to loaded history`);
 
     // Now prove the safety consequence rather than just the arithmetic.
     const observations: DailyObservation[] = [];
@@ -226,15 +224,16 @@ export async function runFalseRollbackSuite(): Promise<void> {
         breach_probability: null,
       });
     }
-    const assessment = evaluateGuardrails(defaultGuardrails(), observations);
+    const assessment = evaluateGuardrails(
+      { ...defaultGuardrails(), auto_rollback: true } as Guardrails,
+      observations,
+    );
 
     assertEqual(
       assessment.action,
       'rollback_all',
-      `From rollout day ${BASELINE_WINDOW_DAYS} onward the bracket band's window no longer overlaps the ` +
-        `history the evaluator loads, so expected_units is 0, every day is "floored", and a TOTAL collapse ` +
-        `to zero units for three days straight cannot fire the guardrail. The safety system goes silently ` +
-        `blind on any rollout that runs longer than ${BASELINE_WINDOW_DAYS} days (a paused-and-resumed ` +
+      `The bracket band must remain anchored to the history the evaluator loaded, so a TOTAL collapse ` +
+        `to zero units for three days straight still fires after ${BASELINE_WINDOW_DAYS} days (a paused-and-resumed ` +
         `rollout, a long canary, or any plan with long holds).`,
     );
   });

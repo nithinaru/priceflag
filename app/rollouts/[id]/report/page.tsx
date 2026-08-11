@@ -18,19 +18,32 @@ import { RangeBar } from "@/components/propose/range-bar";
 import { changeWords, countOf, rolloutStatusMeta, RolloutStatusBadge } from "@/components/domain/status";
 import { formatDay, formatMoneyDelta, formatPctDelta, formatUnits } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
-import { getRolloutBundle, getRollouts } from "@/components/demo/rollouts";
-import { buildDemoReport, hadPredictedRange } from "@/components/demo/report";
+import { getRolloutBundle } from "@/components/demo/rollouts";
+import {
+  buildDemoReport,
+  buildReportFromBundle,
+  bundleHadPredictedRange,
+  hadPredictedRange,
+} from "@/components/demo/report";
+import { NotConnected } from "@/components/shell/not-connected";
+import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { getRealRolloutBundle } from "@/app/lib/store-data";
+import { getMode } from "@/lib/config";
 
-type PageProps = { params: Promise<{ id: string }> };
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<PageSearchParams>;
+};
+
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
+  // Real mode stays generic: naming another shop's rollout in a tab title would
+  // be a cross-shop leak for the price of a guessed id.
+  if (getMode() !== "demo") return { title: "Results" };
   const bundle = getRolloutBundle(id);
   return { title: bundle ? `${bundle.rollout.name} — results` : "Results" };
-}
-
-export function generateStaticParams() {
-  return getRollouts().map((rollout) => ({ id: rollout.id }));
 }
 
 /**
@@ -42,16 +55,20 @@ export function generateStaticParams() {
  * grading itself against a prediction nobody made. Getting that wrong once buys a
  * flattering screenshot and costs the whole product's credibility.
  */
-export default async function ReportPage({ params }: PageProps) {
+export default async function ReportPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const bundle = getRolloutBundle(id);
+  const ctx = await resolveShopForPage(await searchParams);
+  if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
+
+  const demoMode = ctx.mode === "demo";
+  const bundle = demoMode ? getRolloutBundle(id) : await getRealRolloutBundle(ctx.shop!, id);
   if (!bundle) notFound();
 
-  const report = buildDemoReport(id);
+  const report = demoMode ? buildDemoReport(id) : buildReportFromBundle(bundle);
   const { rollout } = bundle;
-  const { shop } = getDemoStore();
-  const scored = hadPredictedRange(id);
-  const money = (cents: number) => formatMoneyDelta(cents, { currency: shop.currency, showCents: false });
+  const currency = demoMode ? getDemoStore().shop.currency : ctx.shop!.currency;
+  const scored = demoMode ? hadPredictedRange(id) : bundleHadPredictedRange(bundle);
+  const money = (cents: number) => formatMoneyDelta(cents, { currency, showCents: false });
 
   if (!report) {
     return (
@@ -119,7 +136,7 @@ export default async function ReportPage({ params }: PageProps) {
               note="Revenue can fall while profit rises — that is often the point."
             />
             <Stat
-              label="Orders"
+              label="Unit sales"
               value={formatPctDelta(report.realized.units_change_pct, 0)}
               note="Against what we expected those days to do without a price change."
             />
@@ -129,7 +146,7 @@ export default async function ReportPage({ params }: PageProps) {
           <span>
             {scored
               ? "Every forecast Priceflag makes is checked against what happened, including the ones we got wrong."
-              : "There was not enough sales history to predict a range when this change was created, so we did not make one."}
+              : "There was not enough usable sales volume to predict a range when this change was created, so we did not make one."}
           </span>
         </CardFooter>
       </Card>
@@ -153,7 +170,7 @@ export default async function ReportPage({ params }: PageProps) {
               />
             ) : null}
             <PredictedVsRealized
-              label="Orders"
+              label="Unit sales"
               low={report.predicted.low.units_change_pct}
               high={report.predicted.high.units_change_pct}
               predicted={report.predicted.expected.units_change_pct}
@@ -164,11 +181,11 @@ export default async function ReportPage({ params }: PageProps) {
         </Card>
       ) : (
         <Notice tone="info" title="Why there is no score here">
-          When this change was created, these products had not sold at more than one price, so there
-          was nothing in your own history to predict from. We said so at the time rather than
-          guessing, and we are not going to invent a prediction now just to grade ourselves against
-          it. As your store builds up more selling history, these reports start carrying a real
-          prediction to check.
+          When this change was created, these products did not have enough usable sales volume to
+          support even a broad forecast range. We said so at the time, and we are not going to
+          invent a prediction now just to grade ourselves against it. Once there is enough volume,
+          Priceflag will show either a store-specific range or a clearly labelled category-default
+          range.
         </Notice>
       )}
 
@@ -194,12 +211,12 @@ export default async function ReportPage({ params }: PageProps) {
         <CardHeader title="The change itself" description="For the record." />
         <CardBody>
           <DetailList>
-            <DetailRow label="What changed">{changeWords(rollout, shop.currency)}</DetailRow>
+            <DetailRow label="What changed">{changeWords(rollout, currency)}</DetailRow>
             <DetailRow label="Products">
               {countOf(bundle.variants.filter((variant) => !variant.excluded).length, "product")}
             </DetailRow>
             <DetailRow label="How it ended">{rolloutStatusMeta(rollout.status).sentence}</DetailRow>
-            <DetailRow label="Days of orders behind this">
+            <DetailRow label="Days of sales behind this">
               {countOf(report.window.days, "day")}
             </DetailRow>
             <DetailRow label="Units sold while live">

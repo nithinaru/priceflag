@@ -63,6 +63,7 @@ export function CatalogTable({
   units,
   liveGids,
   currency,
+  demoMode = true,
 }: {
   products: Product[];
   productTypes: string[];
@@ -71,6 +72,8 @@ export function CatalogTable({
   /** Variants currently holding a price Priceflag set. */
   liveGids: string[];
   currency: string;
+  /** Threaded to the cost cells so their toasts tell the truth about persistence. */
+  demoMode?: boolean;
 }) {
   const router = useRouter();
 
@@ -376,6 +379,7 @@ export function CatalogTable({
                     selected={selectedGids.has(product.variant_gid)}
                     onToggle={toggleOne}
                     onCostSaved={onCostSaved}
+                    demoMode={demoMode}
                   />
                 ))
               )}
@@ -482,6 +486,7 @@ function CatalogRow({
   selected,
   onToggle,
   onCostSaved,
+  demoMode,
 }: {
   product: Product;
   units: number;
@@ -490,6 +495,7 @@ function CatalogRow({
   selected: boolean;
   onToggle: (variantGid: string) => void;
   onCostSaved: (variantGid: string, cogsCents: Cents | null) => void;
+  demoMode: boolean;
 }) {
   const exclusion = exclusionReasonFor(product);
   const selectable = exclusion === null;
@@ -547,6 +553,7 @@ function CatalogRow({
             cogsSource={product.cogs_source}
             currency={currency}
             onSaved={(cogsCents) => onCostSaved(product.variant_gid, cogsCents)}
+            demoMode={demoMode}
           />
         ) : product.cogs_cents === null ? (
           <span className="text-ink-subtle">—</span>

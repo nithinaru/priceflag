@@ -6,56 +6,46 @@
  * branch on a 404 to decide what to render.
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getMode } from '@/lib/config';
+import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
 import { CONTRACT_VERSION, DEFAULT_HISTORY_DAYS } from '@/lib/contracts';
-import { staticShopDomain } from '@/lib/shopify/credentials';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
 import { syncProgressFromRun } from '@/lib/sync';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(request: NextRequest): Promise<NextResponse> {
-  const adapter = getAdapter();
-
-  let shopDomain: string | null = null;
+export async function GET(request: Request): Promise<NextResponse> {
   try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
-  } catch {
-    shopDomain = staticShopDomain();
-  }
+    const adapter = getAdapter();
+    const { shop } = await resolveAuthenticatedShop(request, adapter);
 
-  if (shopDomain === null && getMode() === 'demo') {
-    const shops = await adapter.listShops();
-    shopDomain = shops[0]?.shop_domain ?? null;
-  }
+    const run = await adapter.getLatestSyncRun(shop.id);
+    if (run === null) {
+      const nowIso = new Date().toISOString();
+      return NextResponse.json({
+        contract_version: CONTRACT_VERSION,
+        stage: 'queued',
+        message: 'No sync has started yet.',
+        catalog: { ready: false, products_synced: 0, products_total: null, ready_at: null },
+        history: {
+          ready: false,
+          days_synced: 0,
+          days_target: DEFAULT_HISTORY_DAYS,
+          orders_processed: 0,
+          ready_at: null,
+        },
+        eta_seconds: null,
+        error: null,
+        started_at: nowIso,
+        updated_at: nowIso,
+        finished_at: null,
+      }, { headers: { 'Cache-Control': 'no-store' } });
+    }
 
-  const shop = shopDomain === null ? null : await adapter.getShopByDomain(shopDomain);
-  if (shop === null) {
-    const nowIso = new Date().toISOString();
-    return NextResponse.json({
-      contract_version: CONTRACT_VERSION,
-      stage: 'queued',
-      message: 'No store is connected yet.',
-      catalog: { ready: false, products_synced: 0, products_total: null, ready_at: null },
-      history: {
-        ready: false,
-        days_synced: 0,
-        days_target: DEFAULT_HISTORY_DAYS,
-        orders_processed: 0,
-        ready_at: null,
-      },
-      eta_seconds: null,
-      error: null,
-      started_at: nowIso,
-      updated_at: nowIso,
-      finished_at: null,
-    });
+    return NextResponse.json(syncProgressFromRun(run), { headers: { 'Cache-Control': 'no-store' } });
+  } catch (cause) {
+    return merchantErrorResponse(cause);
   }
-
-  const run = await adapter.getLatestSyncRun(shop.id);
-  return NextResponse.json(syncProgressFromRun(run));
 }

@@ -16,6 +16,7 @@ import addFormats from 'ajv-formats';
 
 import elasticityFitSchema from '../../contracts/elasticity_fit.schema.json';
 import expectedBandSchema from '../../contracts/expected_band.schema.json';
+import rolloutReportSchema from '../../contracts/rollout_report.schema.json';
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
@@ -64,6 +65,10 @@ function validateAll<T>(rows: readonly unknown[], key: string, schema: object): 
 
 export function validateElasticityFits<T>(rows: readonly unknown[]): ValidationOutcome<T> {
   return validateAll<T>(rows, 'elasticity_fit', elasticityFitSchema);
+}
+
+export function validateRolloutReports<T>(rows: readonly unknown[]): ValidationOutcome<T> {
+  return validateAll<T>(rows, 'rollout_report', rolloutReportSchema);
 }
 
 /**

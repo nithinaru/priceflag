@@ -101,6 +101,16 @@ export function IconBook(props: IconProps) {
   );
 }
 
+export function IconBeaker(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 3.5h6" />
+      <path d="M10 3.5v5.2l-5.2 8.5A2.2 2.2 0 0 0 6.7 20.5h10.6a2.2 2.2 0 0 0 1.9-3.3L14 8.7V3.5" />
+      <path d="M7.2 15h9.6" />
+    </Icon>
+  );
+}
+
 export function IconCheck(props: IconProps) {
   return (
     <Icon {...props}>

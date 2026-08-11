@@ -7,7 +7,7 @@ import { readingSentence, verdictForReading } from "@/lib/engine/readings";
 import type { RolloutReading } from "@/lib/types";
 
 /**
- * Orders against the range we expected, over the life of the rollout (R16).
+ * Units sold against the range we expected, over the life of the rollout (R16).
  *
  * Hand-authored SVG — no chart dependency, on a page merchants open on phones.
  * Conventions from the repo dataviz rules:
@@ -24,7 +24,7 @@ import type { RolloutReading } from "@/lib/types";
  *   data cannot support.
  * - One axis. Units only; the price change is a stage annotation, not a series.
  */
-export function OrdersChart({
+export function UnitsChart({
   readings,
   stageCount,
 }: {
@@ -48,7 +48,7 @@ export function OrdersChart({
           width="100%"
           className="block h-[13rem] touch-none select-none sm:h-[15rem]"
           role="img"
-          aria-label={`Daily orders against the expected range, ${formatDay(
+          aria-label={`Daily units sold against the expected range, ${formatDay(
             points[0]!.reading.day,
           )} to ${formatDay(points[points.length - 1]!.reading.day)}. ${readings.length} days. The table below has the same numbers.`}
           onMouseLeave={() => setHover(null)}
@@ -240,7 +240,7 @@ export function OrdersChart({
           </li>
           <li className="flex items-center gap-1.5">
             <span className="h-0 w-6 border-t-2 border-ink" aria-hidden="true" />
-            Orders you got
+            Units sold
           </li>
           <li className="flex items-center gap-1.5">
             <span className="size-2.5 rounded-full bg-breach ring-2 ring-surface" aria-hidden="true" />
@@ -332,7 +332,7 @@ function build(readings: readonly RolloutReading[]) {
       segment.map((point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.yExpected}`).join(""),
     );
 
-  // The actual line spans every day, including floored ones — orders happened
+  // The actual line spans every day, including floored ones — unit sales happened
   // even on days the band cannot judge.
   const actualSegments =
     points.length > 1

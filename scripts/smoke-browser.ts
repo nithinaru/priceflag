@@ -69,6 +69,7 @@ async function coldLoad(page: Page, path: string): Promise<void> {
 interface RouteCheck {
   name: string;
   path: string;
+  setup?: (page: Page) => Promise<void>;
   run: (page: Page) => Promise<{ ok: boolean; detail: string }>;
 }
 
@@ -110,6 +111,88 @@ const CHECKS: RouteCheck[] = [
         .catch(() => {});
       const after = await rows.count();
       return { ok: after !== before, detail: `rows ${before} -> ${after}` };
+    },
+  },
+  {
+    name: '/propose — forecast creates a no-write draft',
+    path: '/propose',
+    setup: async (page) => {
+      await page.addInitScript(() => {
+        window.sessionStorage.setItem(
+          'priceflag:selection:v1',
+          JSON.stringify(['gid://shopify/ProductVariant/46100000000']),
+        );
+      });
+    },
+    run: async (page) => {
+      const create = page.getByRole('button', { name: 'Create draft' });
+      await create.waitFor({ state: 'visible', timeout: 15_000 });
+      await create.click();
+      const created = page.getByText('Draft created', { exact: true });
+      await created.waitFor({ state: 'visible', timeout: 10_000 });
+      const noWrite = await page.getByText('No Shopify price was changed.', { exact: true }).count();
+      return {
+        ok: noWrite === 1,
+        detail: noWrite === 1 ? 'forecast rendered and draft stayed no-write' : 'missing no-write confirmation',
+      };
+    },
+  },
+  {
+    name: '/model-lab — edited founder inputs run through the live engine',
+    path: '/model-lab',
+    run: async (page) => {
+      await page.locator('#lab-price-change').fill('12');
+      await page.getByRole('button', { name: 'Run Priceflag' }).click();
+      const target = page.getByTestId('lab-target-price');
+      await target.waitFor({ state: 'visible', timeout: 10_000 });
+      await page.waitForFunction(
+        () => document.querySelector('[data-testid="lab-target-price"]')?.textContent?.includes('$53.99'),
+        undefined,
+        { timeout: 10_000 },
+      );
+      const text = (await target.textContent()) ?? '';
+      const noWrite = await page.getByText('No persistence', { exact: true }).count();
+      return {
+        ok: text.includes('$53.99') && noWrite === 1,
+        detail: `${text || '(no target)'} with no-persistence proof`,
+      };
+    },
+  },
+  {
+    name: '/rollouts/ro_2043 — explicit confirmation shows prices and beta safety',
+    path: '/rollouts/ro_2043',
+    run: async (page) => {
+      const review = page.getByRole('button', { name: 'Review and start' });
+      await review.waitFor({ state: 'visible', timeout: 10_000 });
+      await review.click();
+      const modal = page.getByRole('dialog');
+      await modal.waitFor({ state: 'visible', timeout: 5_000 });
+      const safety = await modal.getByText('Automatic rollback is off', { exact: true }).count();
+      const confirmation = modal.getByRole('button', { name: 'Confirm first stage' });
+      return {
+        ok: safety === 1 && (await confirmation.isDisabled()),
+        detail: 'old/new prices shown and confirmation stays locked until acknowledged',
+      };
+    },
+  },
+  {
+    name: '/ — store-wide undo requires explicit acknowledgement',
+    path: '/',
+    run: async (page) => {
+      const open = page.getByRole('button', { name: 'Put every price back', exact: true });
+      await open.waitFor({ state: 'visible', timeout: 10_000 });
+      await open.click();
+      const modal = page.getByRole('dialog');
+      await modal.waitFor({ state: 'visible', timeout: 5_000 });
+      const confirm = modal.getByRole('button', { name: 'Yes, put everything back' });
+      const lockedBeforeAcknowledgement = await confirm.isDisabled();
+      await modal
+        .getByLabel('I understand this undoes every price change, not just one')
+        .check();
+      return {
+        ok: lockedBeforeAcknowledgement && !(await confirm.isDisabled()),
+        detail: 'global undo stays locked until the merchant acknowledges its scope',
+      };
     },
   },
   {
@@ -157,20 +240,39 @@ async function main(): Promise<void> {
     for (const check of CHECKS) {
       const page = await context.newPage();
       const consoleErrors: string[] = [];
+      const requestFailures: string[] = [];
       page.on('console', (message) => {
         if (message.type() === 'error') consoleErrors.push(message.text());
       });
       page.on('pageerror', (error) => consoleErrors.push(String(error.message)));
+      page.on('requestfailed', (request) => {
+        const error = request.failure()?.errorText ?? 'request failed';
+        // Next can cancel an RSC prefetch when a navigation or page close makes
+        // it irrelevant. That is expected browser behavior, not a broken request.
+        if (error === 'net::ERR_ABORTED' && request.url().includes('_rsc=')) return;
+        requestFailures.push(`${request.method()} ${request.url()} (${error})`);
+      });
 
       try {
+        await check.setup?.(page);
         await coldLoad(page, check.path);
         const outcome = await check.run(page);
         record(check.name, outcome.ok, outcome.detail);
 
-        // A hydration failure often shows here even when the DOM check passes.
-        if (consoleErrors.length > 0) {
-          process.stdout.write(`      \x1b[33mconsole: ${consoleErrors[0]?.slice(0, 140)}\x1b[0m\n`);
-        }
+        const overlayCount = await page
+          .locator('[data-nextjs-dialog], .vite-error-overlay, #webpack-dev-server-client-overlay')
+          .count();
+        const runtimeOk = consoleErrors.length === 0 && requestFailures.length === 0 && overlayCount === 0;
+        const detail = runtimeOk
+          ? 'no console errors, failed requests, or framework overlay'
+          : [
+              consoleErrors[0] ? `console: ${consoleErrors[0].slice(0, 140)}` : null,
+              requestFailures[0] ? `request: ${requestFailures[0].slice(0, 180)}` : null,
+              overlayCount > 0 ? `${overlayCount} framework error overlay(s)` : null,
+            ]
+              .filter((item): item is string => item !== null)
+              .join('; ');
+        record(`${check.path} — no blocking browser errors`, runtimeOk, detail);
       } catch (cause) {
         record(check.name, false, cause instanceof Error ? cause.message : String(cause));
       } finally {

@@ -1,36 +1,12 @@
-"""C7: the nightly production loop.
-
-    pull -> refit -> validate on the harness -> emit fits/bands/model_runs
-    -> FAIL LOUDLY (never write worse-than-incumbent fits)
-
-Run:  cd ml && uv run python nightly.py
-
-Behavior by environment:
-
-- **Always** (golden mode): re-run every champion's gate (C2 elasticity, C3
-  bands, C5 monitor, C6 reports) and the drift check (current verdict
-  summaries must match the committed `eval/*.json` snapshots exactly — the
-  golden universe is deterministic, so ANY drift means code/dependency
-  changes silently altered model behavior). Exit code 1 on any failure: a
-  red nightly is the alarm, not a log line.
-
-- **With `SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`** (once Lane B's B6
-  lands): additionally pull every shop's `ml_product_days`, refit the
-  champions on real data, and emit contract rows to `out/` as JSON artifacts
-  (`elasticity_fits.json`, `expected_bands.json`, `model_runs.json`).
-  Writing them INTO the tables needs a write-scoped key from Lane B
-  (requested in contracts/requests-lane-c.md); until then the GitHub Action
-  uploads the artifacts and Lane B can load them.
-
-The model_runs rows record gate results for CHALLENGERS TOO — R28 wants
-failed challengers recorded, not discarded (status='rejected').
-"""
+"""Nightly quality gates, real-store refits, completed-rollout reports and ingest."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -38,18 +14,33 @@ sys.path.insert(0, str(HERE))
 
 from priceflag_ml import harness  # noqa: E402
 
+BAND_HORIZON_DAYS = 14
+REAL_INGEST_EVIDENCE_FILE = "real_ingest_evidence.json"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
 
 def _approx_equal(a, b, tol=1e-9) -> bool:
     if isinstance(a, float) and isinstance(b, float):
         return abs(a - b) <= tol
     if isinstance(a, dict) and isinstance(b, dict):
-        return set(a) == set(b) and all(_approx_equal(a[k], b[k], tol) for k in a)
+        return set(a) == set(b) and all(_approx_equal(a[key], b[key], tol) for key in a)
     if isinstance(a, list) and isinstance(b, list):
         return len(a) == len(b) and all(_approx_equal(x, y, tol) for x, y in zip(a, b))
     return a == b
 
 
+def _incumbent_bands_stay_calibrated(incumbents: dict) -> bool:
+    return all(
+        0.70 <= incumbents[key]["pooled_coverage_80"] <= 0.90
+        for key in ("seasonal_naive_backtest", "bracket_band_backtest")
+    )
+
+
 CHECKS = [
+    ("incumbents-c1", "c1_incumbents.json", harness.run_c1, _incumbent_bands_stay_calibrated, "incumbents"),
     ("elasticity-poisson-eb-1.0", "c2_elasticity.json", harness.run_c2, lambda s: s["verdict"] == "challenger wins"),
     ("baseline-cleanlevel-1.0", "c3_baseline.json", harness.run_c3, lambda s: s["verdict"] == "challenger wins"),
     ("counterfactual-cleanlevel-1.0", "c5_counterfactual.json", harness.run_c5, lambda s: s["verdict"] == "challenger wins"),
@@ -59,12 +50,12 @@ CHECKS = [
 
 
 def run_gates(checks=None) -> tuple[list[dict], bool]:
-    """Every champion re-validated + drift-checked against its committed
-    snapshot. Returns (model_run_rows, all_ok)."""
     rows, all_ok = [], True
-    for name, snapshot_file, fn, passes in checks if checks is not None else CHECKS:
-        current = fn()["summary"]
-        snapshot = json.loads((HERE / "eval" / snapshot_file).read_text())["summary"]
+    for check in checks if checks is not None else CHECKS:
+        name, snapshot_file, runner, passes = check[:4]
+        key = check[4] if len(check) > 4 else "summary"
+        current = runner()[key]
+        snapshot = json.loads((HERE / "eval" / snapshot_file).read_text())[key]
         gate_ok = bool(passes(current))
         drift_ok = _approx_equal(current, snapshot)
         ok = gate_ok and drift_ok
@@ -82,37 +73,314 @@ def run_gates(checks=None) -> tuple[list[dict], bool]:
             }
         )
         print(f"[{'ok' if ok else 'FAIL'}] {name}: gate={'pass' if gate_ok else 'FAIL'} drift={'none' if drift_ok else 'DETECTED'}")
-        if not drift_ok:
-            print(f"       snapshot {snapshot_file} no longer matches — a code/dep change altered model behavior.")
-            print("       If intentional: regenerate the snapshot in the same commit. If not: that's the alarm firing.")
     return rows, all_ok
 
 
-def refit_real_stores(out_dir: Path) -> None:
-    """Real-data leg — runs only when read credentials exist (B6)."""
-    from priceflag_ml.data import SupabaseSource  # noqa: PLC0415
+def _forecast_one(forecaster, history):
+    try:
+        return forecaster.CleanLevelBaseline().fit(history.sort_values("date")).forecast(BAND_HORIZON_DAYS)
+    except (ValueError, IndexError, KeyError) as error:
+        print(f"    (one variant produced no band: {type(error).__name__})")
+        return None
 
-    src = SupabaseSource.from_env()
-    print("real-data refit: credentials found, but shop enumeration needs Lane B's")
-    print("shops listing surface — recorded in contracts/requests-lane-c.md; skipping.")
-    # Wire per-shop refit + gate here when ml_products/shops enumeration is
-    # readable by the ML role (B6). The single-shop path is:
-    #   orders = src.order_days(shop_domain)
-    #   fits   = elasticity.fit_store(orders)  -> fits_contract_rows(...)
-    #   bands  = forecaster.CleanLevelBaseline per SKU -> bands_contract_rows(...)
-    # gated by run_c2/run_c3 style comparisons before anything is emitted.
-    _ = src, out_dir
+
+def _validate_report(report: dict) -> None:
+    from jsonschema import Draft202012Validator, FormatChecker  # noqa: PLC0415
+
+    schema = json.loads((HERE.parent / "contracts" / "rollout_report.schema.json").read_text())
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(report)
+
+
+def _write_real_ingest_evidence(out_dir: Path, evidence: dict) -> None:
+    """Persist redacted proof of the real-data leg for CI/release review.
+
+    The allowlist is deliberately small: merchant domains, product identifiers,
+    connection details, and payloads must never enter a workflow artifact.
+    """
+    allowed = {
+        "schema_version",
+        "source_transport",
+        "source_authority",
+        "project_ref",
+        "environment",
+        "required_real_ingest",
+        "shops_visible",
+        "shops_with_orders",
+        "fits_generated",
+        "bands_generated",
+        "reports_generated",
+        "rows_acknowledged",
+        "runs_verified",
+        "success",
+        "failure_code",
+        "generated_at",
+        "github_sha",
+    }
+    unexpected = set(evidence) - allowed
+    if unexpected:
+        raise ValueError(f"real-ingest evidence contains forbidden fields: {sorted(unexpected)}")
+    (out_dir / REAL_INGEST_EVIDENCE_FILE).write_text(json.dumps(evidence, indent=2, sort_keys=True))
+
+
+def _close_source(source) -> None:
+    close = getattr(source, "close", None)
+    if callable(close):
+        close()
+
+
+def _reports_for_shop(source, client, shop_domain, orders, generated_at, gates_ok, sink, receipts) -> bool:
+    from priceflag_ml import elasticity, reports as report_model  # noqa: PLC0415
+
+    windows = source.rollout_windows(shop_domain, status="completed")
+    if windows.empty:
+        return True
+    history = source.price_history(shop_domain)
+    products = source.products(shop_domain)
+    built: list[dict] = []
+    ok = True
+    for report_index, window in enumerate(windows.itertuples(), start=1):
+        rollout_id = str(window.rollout_id)
+        plans = report_model.plans_from_price_history(history, rollout_id, products)
+        if not plans:
+            print(f"    (report {report_index} skipped: no applied price changes journaled)")
+            continue
+        pre = orders[orders["date"] < window.start_day]
+        during = orders[(orders["date"] >= window.start_day) & (orders["date"] <= window.end_day)]
+        # Fit only data available before activation; using the full nightly fit
+        # would leak the realized rollout outcome into its own prediction.
+        fits_before = elasticity.fit_store(pre) if not pre.empty else []
+        fit_by_sku = {fit.sku: fit for fit in fits_before}
+        try:
+            report = report_model.build_report(
+                rollout_id=rollout_id,
+                plans=plans,
+                pre_history=pre,
+                during_actuals=during,
+                fits_before={plan.sku: fit_by_sku.get(plan.sku) for plan in plans},
+                generated_at=generated_at,
+            )
+            _validate_report(report)
+        except (ValueError, RuntimeError) as error:
+            print(f"    (report {report_index} skipped: {type(error).__name__})")
+            continue
+        except Exception as error:  # schema violations must make the nightly red
+            print(f"    (report {report_index} invalid: {type(error).__name__})")
+            ok = False
+            continue
+        built.append(report)
+
+    rows = report_model.reports_contract_rows(built)
+    sink.extend(rows)
+    if not rows or client is None:
+        return ok
+    result = client.post_run(
+        shop_domain=shop_domain,
+        kind="report",
+        model_version=report_model.MODEL_VERSION,
+        gate_passed=gates_ok,
+        reports=rows,
+        notes="completed-rollout reports; prediction fit used pre-activation data only",
+    )
+    print(f"    -> report: {result.describe()}")
+    if result.accepted:
+        if result.model_run_id is None:
+            return False
+        receipts.append((shop_domain, result.model_run_id, result.rows_written))
+    return ok and not result.is_error
+
+
+def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require_ingest: bool = False) -> bool:
+    from priceflag_ml import elasticity, forecaster, reports  # noqa: PLC0415
+    from priceflag_ml.data import PriceflagApiSource  # noqa: PLC0415
+    from priceflag_ml.ingest import IngestClient  # noqa: PLC0415
+
+    generated_at = _utc_now_iso()
+    evidence = {
+        "schema_version": 1,
+        "source_transport": "https",
+        "source_authority": None,
+        "project_ref": None,
+        "environment": None,
+        "required_real_ingest": require_ingest,
+        "shops_visible": 0,
+        "shops_with_orders": 0,
+        "fits_generated": 0,
+        "bands_generated": 0,
+        "reports_generated": 0,
+        "rows_acknowledged": 0,
+        "runs_verified": 0,
+        "success": False,
+        "failure_code": None,
+        "generated_at": generated_at,
+        "github_sha": os.environ.get("GITHUB_SHA"),
+    }
+    expected_project_ref = os.environ.get("PRICEFLAG_ML_EXPECTED_PROJECT_REF", "")
+    expected_environment = os.environ.get("PRICEFLAG_ML_EXPECTED_ENVIRONMENT", "")
+    commit_sha = os.environ.get("GITHUB_SHA", "")
+    if require_ingest and (
+        not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
+        or not expected_project_ref
+        or not expected_environment
+    ):
+        evidence["failure_code"] = "missing_attestation_configuration"
+        _write_real_ingest_evidence(out_dir, evidence)
+        print("real-data refit: required commit/database attestation configuration is incomplete")
+        return False
+    source = PriceflagApiSource.from_env()
+    identity = source.attest(expected_project_ref, expected_environment)
+    evidence["source_authority"] = identity.source_authority
+    evidence["project_ref"] = identity.project_ref
+    evidence["environment"] = identity.environment
+    client = IngestClient.from_env_or_none()
+    if require_ingest and client is None:
+        print("real-data refit: ingest is required but PRICEFLAG_APP_URL/ML_INGEST_SECRET are missing")
+        evidence["failure_code"] = "missing_ingest_client"
+        _write_real_ingest_evidence(out_dir, evidence)
+        _close_source(source)
+        return False
+    shops = source.list_shops()
+    evidence["shops_visible"] = len(shops)
+    if require_ingest and not shops:
+        print("real-data refit: zero shops are visible; refusing to pass a real-ingest nightly")
+        evidence["failure_code"] = "zero_visible_shops"
+        _write_real_ingest_evidence(out_dir, evidence)
+        _close_source(source)
+        return False
+    print(f"real-data refit: {len(shops)} shop(s) readable")
+
+    all_fits: list[dict] = []
+    all_bands: list[dict] = []
+    all_reports: list[dict] = []
+    receipts: list[tuple[str, str, int]] = []
+    ok = True
+    for shop_index, shop_domain in enumerate(shops, start=1):
+        orders = source.order_days(shop_domain)
+        if orders.empty:
+            print(f"  shop {shop_index}/{len(shops)}: no order history readable")
+            continue
+        evidence["shops_with_orders"] += 1
+        fits = elasticity.fit_store(orders)
+        window_start, window_end = str(orders["date"].min().date()), str(orders["date"].max().date())
+        fit_rows = elasticity.fits_contract_rows(
+            fits,
+            shop_domain=shop_domain,
+            fitted_at=generated_at,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        band_rows: list[dict] = []
+        for sku, history in orders.groupby("sku", sort=True):
+            forecast = _forecast_one(forecaster, history)
+            if forecast is not None:
+                band_rows.extend(
+                    forecaster.bands_contract_rows(
+                        forecast, shop_domain=shop_domain, variant_gid=str(sku), generated_at=generated_at
+                    )
+                )
+        all_fits.extend(fit_rows)
+        all_bands.extend(band_rows)
+        print(f"  shop {shop_index}/{len(shops)}: {len(fit_rows)} fit(s), {len(band_rows)} band row(s)")
+
+        if client is not None:
+            for kind, version, incumbent, fit_payload, band_payload in (
+                ("elasticity", elasticity.MODEL_VERSION, "bracket-elasticity", fit_rows, []),
+                ("baseline", forecaster.MODEL_VERSION, "bracket-band", [], band_rows),
+            ):
+                if not fit_payload and not band_payload and gates_ok:
+                    continue
+                result = client.post_run(
+                    shop_domain=shop_domain,
+                    kind=kind,
+                    model_version=version,
+                    gate_passed=gates_ok,
+                    incumbent_version=incumbent,
+                    metrics=gate_metrics.get(version, {}),
+                    fits=fit_payload,
+                    bands=band_payload,
+                    notes=f"nightly refit over {window_start}..{window_end}",
+                )
+                print(f"    -> {kind}: {result.describe()}")
+                ok &= not result.is_error
+                if result.accepted:
+                    if result.model_run_id is None:
+                        ok = False
+                    else:
+                        receipts.append((shop_domain, result.model_run_id, result.rows_written))
+        ok &= _reports_for_shop(
+            source,
+            client,
+            shop_domain,
+            orders,
+            generated_at,
+            gates_ok,
+            all_reports,
+            receipts,
+        )
+
+    (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
+    (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
+    (out_dir / "rollout_reports.json").write_text(json.dumps(all_reports, indent=2, default=str))
+    (out_dir / "calibration_summary.json").write_text(json.dumps(reports.calibration_summary(all_reports), indent=2))
+    evidence["fits_generated"] = len(all_fits)
+    evidence["bands_generated"] = len(all_bands)
+    evidence["reports_generated"] = len(all_reports)
+    evidence["rows_acknowledged"] = sum(rows_written for _, _, rows_written in receipts)
+    if require_ingest and evidence["rows_acknowledged"] == 0:
+        print("real-data refit: no model rows were acknowledged; refusing a green production nightly")
+        ok = False
+        evidence["failure_code"] = "zero_acknowledged_rows"
+    if require_ingest and ok:
+        try:
+            evidence["runs_verified"] = source.verify_ingest_receipts(receipts, commit_sha)
+        except (RuntimeError, ValueError):
+            ok = False
+            evidence["failure_code"] = "ingest_readback_failed"
+            print("real-data refit: acknowledged model runs failed attested database read-back")
+    _close_source(source)
+    evidence["success"] = ok
+    _write_real_ingest_evidence(out_dir, evidence)
+    return ok
 
 
 def main() -> int:
     out_dir = HERE / "out"
     out_dir.mkdir(exist_ok=True)
+    # A failed attempt must never leave an older green proof available for a
+    # later verifier or artifact step.
+    (out_dir / REAL_INGEST_EVIDENCE_FILE).unlink(missing_ok=True)
     rows, ok = run_gates()
     (out_dir / "model_runs.json").write_text(json.dumps(rows, indent=2, default=str))
-    if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ML_READONLY_KEY"):
-        refit_real_stores(out_dir)
+
+    require_real = os.environ.get("REQUIRE_REAL_INGEST", "").lower() in {"1", "true", "yes"}
+    identity_keys = (
+        "PRICEFLAG_ML_EXPECTED_PROJECT_REF",
+        "PRICEFLAG_ML_EXPECTED_ENVIRONMENT",
+    )
+    write_keys = (
+        "ML_INGEST_SECRET",
+        "PRICEFLAG_EXPECTED_APP_URL",
+        "PRICEFLAG_EXPECTED_VERCEL_TARGET",
+        "VERCEL_TOKEN",
+    )
+    identity_configured = all(os.environ.get(key) for key in identity_keys)
+    write_configured = bool(os.environ.get("PRICEFLAG_APP_URL") or os.environ.get("APP_URL")) and all(
+        os.environ.get(key) for key in write_keys
+    )
+    any_configured = any(
+        os.environ.get(key)
+        for key in (*identity_keys, "PRICEFLAG_APP_URL", "APP_URL", *write_keys)
+    )
+    if any_configured and not (identity_configured and write_configured):
+        print("real-data refit: partial configuration is unsafe; all source and ingest settings are required")
+        ok = False
+    elif identity_configured and write_configured:
+        metrics = {row["model_version"]: row["metrics"] for row in rows}
+        ok &= refit_real_stores(out_dir, gates_ok=ok, gate_metrics=metrics, require_ingest=require_real)
+    elif require_real:
+        print("REQUIRE_REAL_INGEST=true but real Supabase and ingest configuration is absent")
+        ok = False
     else:
-        print("no Supabase credentials: golden-mode gates only (expected until B6).")
+        print("no real-data configuration: golden-mode gates only")
     print(f"nightly {'GREEN' if ok else 'RED'}; model_runs -> {out_dir / 'model_runs.json'}")
     return 0 if ok else 1
 

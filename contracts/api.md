@@ -10,9 +10,9 @@ Cross-cutting rules:
 - Request and response bodies are JSON, `Content-Type: application/json`.
 - Money is integer cents; percentages are plain numbers (`12.5` = 12.5%). See
   `contracts/README.md`.
-- The shop is resolved server-side from the embedded session token (Sprint B2).
-  Until then routes accept `?shop=<domain>` in development only. **No route ever
-  takes a shop id from the client as authorisation.**
+- Merchant routes require a short-lived Shopify App Bridge session token and
+  resolve the shop only from its verified `dest` claim. Query parameters and
+  static fallback shop domains are never tenant authorization.
 - Errors always use the shape below. `message` is safe to show a merchant; `code`
   is what the UI branches on.
 
@@ -44,27 +44,29 @@ Cross-cutting rules:
 | GET | `/api/health` | Config and reachability | ✅ B1 |
 | GET | `/api/auth` | Start Shopify OAuth (redirects) | B2 |
 | GET | `/api/auth/callback` | OAuth callback; stores the encrypted token | B2 |
-| POST | `/api/webhooks/[topic]` | HMAC-verified, deduped webhook sink | B4 |
-| GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | B4 |
-| GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | B2 |
-| PATCH | `/api/shop` | Update notification addresses / engage the kill switch | B5 |
+| POST | `/api/webhooks/[topic]` | HMAC-verified, topic-bound, deduped webhook sink | ✅ beta |
+| POST | `/api/webhook-subscriptions` | Bearer-authenticated repair of required Shopify webhook subscriptions | ✅ beta |
+| GET | `/api/live` | Store-wide "what is live right now?" (REQ-A-003) | ✅ beta |
+| GET | `/api/shop` | Shop settings, kill-switch state, notification addresses | ✅ beta |
+| PATCH | `/api/shop` | Update notification addresses | ✅ beta |
 | POST | `/api/sync` | Start (or resume) a sync | B3 |
 | GET | `/api/sync/status` | `sync_progress.schema.json` | B3 |
-| GET | `/api/products` | Paged catalog with search and filters | B3 |
-| PATCH | `/api/products/[variantId]/cogs` | Set or clear a unit cost | B3 |
-| POST | `/api/forecast` | Dry-run forecast; writes nothing | B3 |
-| POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | B4 |
-| GET | `/api/rollouts` | List rollouts | B4 |
-| GET | `/api/rollouts/[id]` | Rollout with variants, readings and events | B4 |
-| POST | `/api/rollouts/[id]/start` | Go live (or schedule) | B4 |
-| POST | `/api/rollouts/[id]/rollback` | One-click manual rollback | B4 |
-| POST | `/api/rollouts/[id]/cancel` | Cancel a draft or scheduled rollout | B4 |
-| POST | `/api/rollouts/[id]/resume` | Resume after an external-change pause | B4 |
+| GET | `/api/products` | Paged catalog with search and filters | ✅ beta |
+| PATCH | `/api/products/[variantId]/cogs` | Set or clear a unit cost | ✅ beta |
+| POST | `/api/forecast` | Dry-run forecast; writes nothing | ✅ beta |
+| POST | `/api/rollouts` | Create a draft rollout, freezing baselines and guardrails | ✅ beta |
+| GET | `/api/rollouts` | List rollouts | ✅ beta |
+| GET | `/api/rollouts/[id]` | Rollout with variants, readings and events | ✅ beta |
+| POST | `/api/rollouts/[id]/confirm` | Explicitly confirm and start now or schedule | ✅ beta |
+| POST | `/api/rollouts/[id]/pause` | Manually pause a running or scheduled rollout | ✅ beta |
+| POST | `/api/rollouts/[id]/rollback` | One-click manual rollback | ✅ beta |
+| POST | `/api/rollouts/[id]/cancel` | Cancel a draft or scheduled rollout | ✅ beta |
+| POST | `/api/rollouts/[id]/resume` | Resume after an external-change pause | — disabled for beta |
 | GET | `/api/journal` | Filterable price journal | B4 |
 | GET | `/api/journal.csv` | CSV export | B7 |
 | POST | `/api/kill-switch` | Revert everything Priceflag ever changed (R21) | B5 |
 | POST | `/api/cron/evaluate` | Evaluator tick. `Authorization: Bearer $CRON_SECRET` | B5 |
-| GET | `/api/rollouts/[id]/report` | `rollout_report.schema.json` | B6 |
+| GET | `/api/rollouts/[id]/report` | `rollout_report.schema.json` | ✅ beta |
 
 ### `GET /api/health` ✅
 
@@ -107,7 +109,7 @@ Requested by Lane A as REQ-A-003.
       "variants_live": 21,
       "variants_total": 42,
       "health": "healthy",
-      "health_sentence": "Orders are inside the range we expected.",
+      "health_sentence": "Unit sales are inside the range we expected.",
       "next_decision_day": "2026-07-31",
       "can": { "rollback": true, "cancel": false, "resume": false }
     }
@@ -144,6 +146,12 @@ prices, target prices, the compare-at decision, and cohort assignments. The
 forecast is stored on the rollout so the post-rollout report can compare against
 what was actually promised.
 
+The server assigns the rollout id before cohort planning, then persists the
+draft, every frozen variant, and the initial audit event through
+`pf_create_rollout_draft` in one database
+transaction. The RPC is callable only by the server's `service_role`; browser
+roles cannot bypass the authenticated, tenant-scoped route.
+
 ```json
 {
   "rollout": { "id": "…", "status": "draft", "stages": [ … ], "current_stage": -1 },
@@ -165,18 +173,35 @@ right now, and how do I undo it?" at a glance (R16).
                   "target_price_cents": 3520, "applied_at": "…", "excluded": false } ],
   "readings": [ { "day": "2026-07-28", "actual_units": 12, "expected_units": 13.4,
                   "expected_low": 8.1, "expected_high": 18.9, "expected_source": "model",
+                  "counterfactual_units": 15.0,
+                  "counterfactual_revenue_cents": 48000,
+                  "counterfactual_profit_cents": 21000,
+                  "expected_revenue_cents": 47168,
+                  "expected_profit_cents": 22340,
+                  "expected_revenue_low_cents": 35210,
+                  "expected_revenue_high_cents": 60140,
+                  "expected_profit_low_cents": 15102,
+                  "expected_profit_high_cents": 29620,
                   "band_stale": false, "band_floored": false, "breach": false,
                   "breach_streak": 0, "decision": "hold",
                   "verdict": "within",
                   "sentence": "12 units sold against 13.4 expected — inside the range we expected." } ],
   "events": [ { "type": "stage_advanced", "message": "…", "at": "…" } ],
   "health": "healthy",
-  "health_sentence": "Orders are inside the range we expected.",
-  "can": { "rollback": true, "cancel": false, "resume": false }
+  "health_sentence": "Unit sales are inside the range we expected.",
+  "can": { "confirm": false, "rollback": true, "pause": true, "cancel": false, "resume": false }
 }
 ```
 
 `readings[]` is the actual-vs-expected chart series *and* its uncertainty band.
+The `counterfactual_*` fields freeze what the exact live SKU mix would have done
+at old prices; `expected_*` freezes the price-conditioned expectation at target
+prices. Money is summed per SKU, never reconstructed from an average product
+price. Profit remains `null` whenever any live SKU lacks a frozen cost.
+Forecast products also freeze `revenue_realization_rate` from pre-change
+discount and return behavior, so expected, counterfactual, and realized net revenue use the
+same basis. Percentage money guardrails skip legacy readings that lack their own
+revenue/profit interval rather than scaling an aggregate units interval.
 
 `verdict` (`within` | `below` | `above`) is computed server-side, as Lane A asked
 in REQ-A-003. A day is `below` only when it falls outside the interval, not merely
@@ -186,11 +211,42 @@ the machine did not act on.
 
 `can` exists so the UI does not have to re-derive the state machine.
 
+### `POST /api/rollouts/[id]/confirm` — B4
+
+Body: `{ "confirm": true, "scheduled_start_at": "optional future ISO timestamp or null" }`.
+The explicit confirmation is mandatory. The route authenticates the Shopify
+session, checks rollout ownership, then acquires the same rollout lease used by
+the evaluator. Under that lease it reloads the draft and verifies every frozen
+price and compare-at value against live Shopify.
+
+A future timestamp moves the draft to `scheduled` and performs no price write.
+`null` (or an omitted non-future draft schedule) starts stage 0 immediately. A
+start returns 200 only after every due price and compare-at value is verified at
+its target. Baseline drift or any partial/unverified write leaves the rollout in
+a recoverable `paused` state; no later stage can run. Lease contention returns
+409 `rollout_busy`. `auto_rollback: true` is rejected for the public beta.
+
+### `POST /api/rollouts/[id]/pause` — B4
+
+Body: `{ "confirm": true, "reason": "optional merchant note" }`. Authenticated,
+tenant-scoped, and serialized under the rollout lease. It changes only database
+state and the audit event stream; it never writes Shopify prices. It is available
+for `running` and `scheduled` rollouts and idempotent when already paused.
+
 ### `POST /api/rollouts/[id]/rollback` — B4
 
-Body: `{ "reason": "optional plain-language note" }`. Restores every variant this
+Body: `{ "confirm": true, "reason": "optional plain-language note" }`. The
+explicit confirmation is required; an authenticated request without it returns
+400 and cannot write a price. Restores every variant this
 rollout applied a price to, from the baselines captured at creation, and journals
 each write. Idempotent: calling it twice restores once.
+
+Rollback is serialized under the rollout lease. Before the Shopify mutation the
+route durably changes even a completed rollout to a nonterminal rollback-in-
+progress state. It reports success only after live Shopify verifies both the
+frozen price and frozen compare-at value for every non-excluded variant. A write
+failure, timeout, verification mismatch, or lease conflict never returns success;
+the rollout remains `paused`, visible, and retryable.
 
 ```json
 {
@@ -209,6 +265,11 @@ the confirm dialog and toast can be wired against it directly. `POST /api/kill-s
 returns the same three fields. On a partial failure `ok` is `false`, `failed` is
 non-zero, and `message` names what still needs attention — every attempt is
 journalled either way, so `/api/journal` is always the authority on what moved.
+
+The store-wide kill switch engages before taking per-rollout leases. If any
+evaluator still holds a lease, the response is 207 with `rollout_busy`, the kill
+switch remains engaged, and the route cannot claim the undo completed while a
+concurrent writer may still finish.
 
 ### `POST /api/cron/evaluate` — B5
 

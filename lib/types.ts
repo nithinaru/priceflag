@@ -20,6 +20,7 @@ import type {
   JournalActor,
   JournalSource,
   JournalStatus,
+  RolloutReport,
   StageSpec,
 } from './contracts';
 
@@ -217,6 +218,8 @@ export interface Rollout {
   last_evaluated_at: string | null;
   last_evaluated_day: DayString | null;
   created_by: string;
+  /** Durable database insertion order; legacy/demo snapshots may omit it. */
+  creation_sequence?: number;
   created_at: string;
   updated_at: string;
 }
@@ -267,9 +270,21 @@ export interface RolloutVariant {
 
 export type RolloutVariantCreate = Omit<
   RolloutVariant,
-  'id' | 'created_at' | 'updated_at' | 'applied_price_cents' | 'applied_at' | 'reverted_at'
+  | 'id'
+  | 'created_at'
+  | 'updated_at'
+  | 'applied_price_cents'
+  | 'applied_at'
+  | 'reverted_at'
 > &
-  Partial<Pick<RolloutVariant, 'applied_price_cents' | 'applied_at' | 'reverted_at'>>;
+  Partial<
+    Pick<
+      RolloutVariant,
+      | 'applied_price_cents'
+      | 'applied_at'
+      | 'reverted_at'
+    >
+  >;
 
 export type EvaluationDecision = 'none' | 'hold' | 'advance' | 'rollback' | 'pause' | 'complete';
 
@@ -286,6 +301,17 @@ export interface RolloutReading {
   expected_units: number;
   expected_low: number;
   expected_high: number;
+  /** Exact no-price-change baseline for the live SKU mix; null on legacy rows. */
+  counterfactual_units?: number | null;
+  counterfactual_revenue_cents?: Cents | null;
+  counterfactual_profit_cents?: Cents | null;
+  /** Exact price-conditioned money expectations for guardrails; null on legacy rows. */
+  expected_revenue_cents?: Cents | null;
+  expected_profit_cents?: Cents | null;
+  expected_revenue_low_cents?: Cents | null;
+  expected_revenue_high_cents?: Cents | null;
+  expected_profit_low_cents?: Cents | null;
+  expected_profit_high_cents?: Cents | null;
   expected_source: 'model' | 'bracket';
   interval_nominal: number;
   model_version: string | null;
@@ -364,6 +390,8 @@ export interface JournalEntry {
   error: string | null;
   shopify_user_errors: unknown;
   applied_at: string;
+  /** Durable total order for recovery when timestamps tie; absent on legacy rows. */
+  creation_sequence?: number;
   created_at: string;
 }
 
@@ -394,7 +422,7 @@ export interface WebhookEventRecord {
   api_version: string | null;
   triggered_at: string | null;
   received_at: string;
-  status: 'received' | 'processed' | 'failed' | 'ignored' | 'duplicate';
+  status: 'received' | 'processing' | 'processed' | 'failed' | 'ignored' | 'duplicate';
   attempts: number;
   error: string | null;
   processed_at: string | null;
@@ -491,10 +519,22 @@ export interface ModelRun {
   incumbent_version: string | null;
   metrics: Record<string, unknown>;
   rows_written: number;
+  /** Deterministic digest of the accepted request; makes response-loss retries idempotent. */
+  ingest_key?: string | null;
+  fits_written?: number;
+  bands_written?: number;
+  reports_written?: number;
   notes: string | null;
   error: string | null;
   started_at: string;
   finished_at: string | null;
+  created_at?: string;
+}
+
+/** Database representation of a validated rollout report contract. */
+export interface RolloutReportRow extends RolloutReport {
+  id: string;
+  shop_id: string;
   created_at?: string;
 }
 
@@ -518,4 +558,6 @@ export interface OrderDayQuery {
   variant_gids?: string[];
   from_day?: DayString;
   to_day?: DayString;
+  limit?: number;
+  offset?: number;
 }

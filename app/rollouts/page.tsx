@@ -20,25 +20,42 @@ import {
 import { formatDay, formatDayLong } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
 import { getRolloutBundles, type RolloutBundle } from "@/components/demo/rollouts";
+import { NotConnected } from "@/components/shell/not-connected";
+import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { getRealRolloutBundles } from "@/app/lib/store-data";
 
 export const metadata: Metadata = {
   title: "Price changes",
 };
 
+export const dynamic = "force-dynamic";
+
 /**
  * Grouped by the only question that matters at a glance: is it touching my
  * storefront, is it about to, or is it over.
  */
-export default function RolloutsPage() {
-  const bundles = getRolloutBundles();
+export default async function RolloutsPage({
+  searchParams,
+}: {
+  searchParams: Promise<PageSearchParams>;
+}) {
+  const ctx = await resolveShopForPage(await searchParams);
+  if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
+
+  const bundles =
+    ctx.mode === "demo" ? getRolloutBundles() : await getRealRolloutBundles(ctx.shop!);
+  const currency = ctx.mode === "demo" ? getDemoStore().shop.currency : ctx.shop!.currency;
+
   const liveNow = bundles.filter(
-    (bundle) => bundle.rollout.status === "running" || bundle.rollout.status === "paused",
+    (bundle) => bundle.rollout.status !== "cancelled" && bundle.live.variants_live > 0,
   );
   const notStarted = bundles.filter(
     (bundle) => bundle.rollout.status === "scheduled" || bundle.rollout.status === "draft",
   );
-  const finished = bundles.filter((bundle) =>
-    ["completed", "rolled_back", "cancelled"].includes(bundle.rollout.status),
+  const finished = bundles.filter(
+    (bundle) =>
+      ["completed", "rolled_back", "cancelled"].includes(bundle.rollout.status) &&
+      bundle.live.variants_live === 0,
   );
 
   return (
@@ -52,6 +69,7 @@ export default function RolloutsPage() {
         title="On your storefront now"
         description="These are live. Each one can be undone in a single step."
         bundles={liveNow}
+        currency={currency}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
@@ -74,6 +92,7 @@ export default function RolloutsPage() {
         title="Not started yet"
         description="Set up, but nothing has changed on your storefront."
         bundles={notStarted}
+        currency={currency}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
@@ -87,6 +106,7 @@ export default function RolloutsPage() {
         title="Finished"
         description="Changes that ran their course, and ones that were undone."
         bundles={finished}
+        currency={currency}
         empty={
           <EmptyState
             icon={<IconLayers size={19} />}
@@ -103,11 +123,13 @@ function Section({
   title,
   description,
   bundles,
+  currency,
   empty,
 }: {
   title: string;
   description: string;
   bundles: RolloutBundle[];
+  currency: string;
   empty: ReactNode;
 }) {
   return (
@@ -120,7 +142,7 @@ function Section({
           <ul className="divide-y divide-border border-t border-border">
             {bundles.map((bundle) => (
               <li key={bundle.rollout.id}>
-                <RolloutRow bundle={bundle} />
+                <RolloutRow bundle={bundle} currency={currency} />
               </li>
             ))}
           </ul>
@@ -130,9 +152,8 @@ function Section({
   );
 }
 
-function RolloutRow({ bundle }: { bundle: RolloutBundle }) {
+function RolloutRow({ bundle, currency }: { bundle: RolloutBundle; currency: string }) {
   const { rollout } = bundle;
-  const { shop } = getDemoStore();
   const meta = rolloutStatusMeta(rollout.status);
   const showHealth = rollout.status === "running" || rollout.status === "paused";
 
@@ -153,7 +174,7 @@ function RolloutRow({ bundle }: { bundle: RolloutBundle }) {
             : meta.sentence}
         </p>
         <p className="text-sm text-ink-subtle">
-          {countOf(bundle.live.variants_total, "product")}, {changeWords(rollout, shop.currency)} ·{" "}
+          {countOf(bundle.live.variants_total, "product")}, {changeWords(rollout, currency)} ·{" "}
           {timingSentence(bundle)}
         </p>
       </div>

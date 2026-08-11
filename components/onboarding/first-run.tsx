@@ -105,7 +105,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             body={
               hasAnyRollout
                 ? "You have set one up. Every change is staged a few products at a time and can be undone in one click."
-                : "Pick a few products, see what the change would do, and set the limit that undoes it if you are wrong. Nothing goes live until you press start."
+                : "Pick a few products, see what the change could do, and set the limit that pauses it for review. Nothing goes live until you confirm the draft."
             }
             action={
               hasAnyRollout ? null : (
@@ -128,8 +128,8 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
               rather than dress up a guess as one.
             </p>
             <p className="mt-2 max-w-prose">
-              You can still change prices safely today. Set the limit that undoes the change, roll it
-              out a few products at a time, and undo the whole thing in one click. As orders come in
+              You can still plan a price change today. Set a limit that pauses the rollout, move a
+              few products at a time, and keep manual rollback one click away. As orders come in
               we start building the range, and we will tell you the moment it is worth reading.
             </p>
           </Notice>

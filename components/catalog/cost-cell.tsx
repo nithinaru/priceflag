@@ -6,7 +6,7 @@ import { CellNote } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { IconCheck, IconClose } from "@/components/ui/icons";
 import { centsToInputValue, formatMoney, parseMoneyToCents } from "@/components/format";
-import { saveCost } from "@/app/products/actions";
+import { merchantJson } from "@/components/lib/merchant-api";
 import type { CogsSource } from "@/lib/contracts";
 import type { Cents } from "@/lib/money";
 
@@ -24,6 +24,7 @@ export function CostCell({
   cogsSource,
   currency,
   onSaved,
+  demoMode = true,
 }: {
   variantGid: string;
   productTitle: string;
@@ -32,6 +33,8 @@ export function CostCell({
   cogsSource: CogsSource;
   currency: string;
   onSaved: (cogsCents: Cents | null) => void;
+  /** Defaults to the safe claim: never say "saved to your store" unless told otherwise. */
+  demoMode?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => centsToInputValue(cogsCents));
@@ -76,7 +79,23 @@ export function CostCell({
 
     setSaving(true);
     setError(null);
-    const result = await saveCost(variantGid, next);
+    let result: { ok: true; cogs_cents: Cents | null; persisted: boolean } | { ok: false; message: string };
+    if (demoMode) {
+      result = { ok: true, cogs_cents: next, persisted: false };
+    } else {
+      try {
+        const reply = await merchantJson<{ product: { cogs_cents: Cents | null } }>(
+          `/api/products/${encodeURIComponent(variantGid)}/cogs`,
+          { method: "PATCH", body: JSON.stringify({ cogs_cents: next }) },
+        );
+        result = { ok: true, cogs_cents: reply.product.cogs_cents, persisted: true };
+      } catch (cause) {
+        result = {
+          ok: false,
+          message: cause instanceof Error ? cause.message : "That cost did not save. Try again.",
+        };
+      }
+    }
     setSaving(false);
 
     if (!result.ok) {
@@ -93,7 +112,9 @@ export function CostCell({
         ? next === null
           ? `${productTitle} has no cost again, so its profit is unknown.`
           : `${productTitle} costs ${formatMoney(next, { currency })}. Profit is worked out from that.`
-        : `This is the demo store, so nothing was written back to Shopify. On a connected store, ${productTitle} would keep this cost.`,
+        : demoMode
+          ? `This is the demo store, so nothing was written back to Shopify. On a connected store, ${productTitle} would keep this cost.`
+          : `The cost was not saved to your store. It will show here until you leave the page — try saving again.`,
     });
   }
 

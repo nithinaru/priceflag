@@ -1,0 +1,83 @@
+name: ml-release-gate
+
+on:
+  push:
+    branches:
+      - codex/prod-integration
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ml-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-store-release-gate:
+    if: github.repository == 'nithinaru/priceflag' && github.ref == 'refs/heads/codex/prod-integration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Repository owners must configure this environment with a required
+    # reviewer, prevent self-review and administrator bypass, and allow only
+    # the codex/prod-integration deployment branch. Secrets remain unavailable
+    # until the reviewer has inspected and approved this exact GITHUB_SHA.
+    environment: priceflag-ml-release
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - name: Check out the exact reviewed integration commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Refuse any unexpected repository, branch, or checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "nithinaru/priceflag"
+          test "$GITHUB_REF" = "refs/heads/codex/prod-integration"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Verify the live protected release environment
+        run: node ../scripts/github-environment-guard.mjs priceflag-ml-release codex/prod-integration required
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Use Python 3.12 and the locked uv environment
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: ml/uv.lock
+
+      - name: Install exactly the locked Python environment
+        run: uv sync --locked
+
+      - name: Refit real stores, pass model gates, and ingest accepted outputs
+        run: uv run --locked python nightly.py
+        env:
+          PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
+          PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
+          PRICEFLAG_APP_URL: https://priceflag-app.vercel.app
+          PRICEFLAG_EXPECTED_APP_URL: https://priceflag-app.vercel.app
+          PRICEFLAG_EXPECTED_VERCEL_TARGET: production
+          ML_INGEST_SECRET: ${{ secrets.ML_INGEST_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          REQUIRE_REAL_INGEST: "true"
+
+      - name: Verify redacted proof of real reads and acknowledged writes
+        run: uv run --locked python verify_nightly_evidence.py out/real_ingest_evidence.json
+        env:
+          PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
+          PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
+
+      - name: Preserve only the redacted release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ml-release-evidence-${{ github.sha }}-${{ github.run_id }}
+          path: ml/out/real_ingest_evidence.json
+          if-no-files-found: error
+          retention-days: 30

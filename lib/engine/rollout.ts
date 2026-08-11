@@ -27,6 +27,20 @@ export class RolloutError extends Error {
   }
 }
 
+/**
+ * Durable state marker written before a rollback mutation. Webhook handling uses
+ * this prefix to distinguish Priceflag restoring a frozen baseline from a
+ * merchant edit arriving through products/update.
+ */
+export const ROLLBACK_IN_PROGRESS_PREFIX = 'priceflag:rollback-in-progress:';
+
+export function rollbackInProgressReason(kind: 'manual' | 'automatic' | 'kill_switch'): string {
+  return `${ROLLBACK_IN_PROGRESS_PREFIX}${kind} — Priceflag is restoring frozen baseline prices.`;
+}
+
+export const START_ATTENTION_REASON =
+  'Priceflag could not verify every first-stage price. The rollout is paused and safe to retry or roll back.';
+
 // ---------------------------------------------------------------------------
 // stage plans
 // ---------------------------------------------------------------------------

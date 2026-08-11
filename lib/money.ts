@@ -15,6 +15,9 @@ export type Rounding = 'none' | 'end_99' | 'end_95' | 'end_00';
 
 export const ROUNDING_MODES: readonly Rounding[] = ['none', 'end_99', 'end_95', 'end_00'];
 
+/** Shopify prices must never be free or negative. */
+export const MIN_STOREFRONT_PRICE_CENTS: Cents = 1;
+
 export function isCents(value: unknown): value is Cents {
   return typeof value === 'number' && Number.isSafeInteger(value);
 }
@@ -24,6 +27,15 @@ export function assertCents(value: unknown, label = 'value'): Cents {
     throw new TypeError(`${label} must be an integer number of cents, got ${String(value)}`);
   }
   return value;
+}
+
+/** Defense shared by planning and the final write boundary. */
+export function assertStorefrontPrice(value: unknown, label = 'price'): Cents {
+  const cents = assertCents(value, label);
+  if (cents < MIN_STOREFRONT_PRICE_CENTS) {
+    throw new RangeError(`${label} must be at least ${MIN_STOREFRONT_PRICE_CENTS} cent, got ${String(cents)}`);
+  }
+  return cents;
 }
 
 /**

@@ -242,3 +242,6 @@ Golden store `n_skus=24, days=180, seed=7`; reproduce with
   `explanation` string per fit (from C2 on).
 - Run ML tests from repo root: `uv run --project ml pytest ml` (needs uv;
   `brew install uv`).
+> Production note (2026-08-04): references below to an external
+> `SUPABASE_ML_READONLY_KEY` are historical. The worker now uses authenticated
+> `POST /api/ml/export`; the legacy database role is `NOLOGIN`.

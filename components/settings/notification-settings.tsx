@@ -4,23 +4,25 @@ import { useState } from "react";
 import { Button, Card, CardBody, CardFooter, CardHeader, Input, Notice } from "@/components/ui";
 import { useToast } from "@/components/ui/toast";
 import { IconClose } from "@/components/ui/icons";
-import { saveNotificationEmails } from "@/app/settings/actions";
+import { merchantJson } from "@/components/lib/merchant-api";
 
 /**
  * Who gets told, and about what.
  *
  * The list of events is not configurable, deliberately: every one of them is a
- * thing that changed a price or is about to. A merchant who can switch off
- * "your prices were put back automatically" is a merchant who will one day not
- * know their prices were put back automatically.
+ * thing that changed a price or is about to. Safety-limit alerts are always
+ * included so a merchant knows when Priceflag has paused for their decision.
  */
 export function NotificationSettings({
   initialEmails,
   emailConfigured,
+  demoMode = true,
 }: {
   initialEmails: string[];
   /** Whether this deployment can actually send mail. */
   emailConfigured: boolean;
+  /** Defaults to the safe claim: never say "saved to your shop" unless told otherwise. */
+  demoMode?: boolean;
 }) {
   const [emails, setEmails] = useState<string[]>(
     initialEmails.length > 0 ? initialEmails : [""],
@@ -32,7 +34,31 @@ export function NotificationSettings({
   async function save() {
     setSaving(true);
     setError(null);
-    const reply = await saveNotificationEmails(emails);
+    const cleaned = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    const invalid = cleaned.find((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email));
+    if (invalid) {
+      setSaving(false);
+      setError(`“${invalid}” does not look like an email address.`);
+      return;
+    }
+
+    let reply: { ok: true; emails: string[]; persisted: boolean } | { ok: false; message: string };
+    if (demoMode) {
+      reply = { ok: true, emails: cleaned, persisted: false };
+    } else {
+      try {
+        const body = await merchantJson<{ shop: { notify_emails: string[] } }>("/api/shop", {
+          method: "PATCH",
+          body: JSON.stringify({ notify_emails: cleaned }),
+        });
+        reply = { ok: true, emails: body.shop.notify_emails, persisted: true };
+      } catch (cause) {
+        reply = {
+          ok: false,
+          message: cause instanceof Error ? cause.message : "Those addresses did not save. Try again.",
+        };
+      }
+    }
     setSaving(false);
 
     if (!reply.ok) {
@@ -47,8 +73,10 @@ export function NotificationSettings({
       description: reply.persisted
         ? reply.emails.length === 0
           ? "Nobody will be emailed about price changes on this store."
-          : `We will email ${reply.emails.length === 1 ? "this address" : "these addresses"} whenever a price change starts, moves on, or is undone.`
-        : "This is the demo store, so nothing was stored. On a connected store these addresses would be saved against your shop.",
+          : `We will email ${reply.emails.length === 1 ? "this address" : "these addresses"} when a change starts, advances, pauses, or is manually rolled back.`
+        : demoMode
+          ? "This is the demo store, so nothing was stored. On a connected store these addresses would be saved against your shop."
+          : "These addresses were not saved to your shop. They will show here until you leave the page — try saving again.",
     });
   }
 
@@ -56,7 +84,7 @@ export function NotificationSettings({
     <Card>
       <CardHeader
         title="Who we email"
-        description="We email when a price change starts, moves to more products, goes below your limit, or is undone. Never anything else."
+        description="We email when a price change starts, moves to more products, crosses a safety limit, pauses, or is manually rolled back."
       />
       <CardBody className="space-y-4">
         {!emailConfigured ? (

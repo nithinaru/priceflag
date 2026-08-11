@@ -1,20 +1,17 @@
-"use server";
+import "server-only";
 
-import { getAdapter } from "@/lib/adapters";
+import { isDemoMode } from "@/lib/config";
 import { buildForecast } from "@/lib/engine/forecast";
 import { CONTRACT_VERSION, type ForecastResult, type Guardrails } from "@/lib/contracts";
-import { exclusionReasonFor } from "@/lib/types";
+import { exclusionReasonFor, type OrderDay, type Product } from "@/lib/types";
 import type { Rounding } from "@/lib/money";
 import { DEMO_NOW, getDemoStore, getProductsByGid } from "@/components/demo/store";
 
 /**
- * The forecast and create calls, as server actions.
- *
- * These stand in for `POST /api/forecast` and `POST /api/rollouts`
- * (contracts/api.md), which land in B3 and B4. The request and reply shapes here
- * are the contract's, so swapping in a `fetch` later is a body change and
- * nothing else. Running the engine on the server also keeps 180 days × 14
- * variants of order history out of the browser bundle.
+ * Demo-only server actions. A connected store never uses these public action
+ * endpoints: the client calls the merchant APIs with a fresh App Bridge session
+ * token instead. Keeping the deterministic demo engine server-side avoids
+ * shipping its order history to the browser.
  */
 
 export type ForecastRequest = {
@@ -32,10 +29,35 @@ export type ForecastReply =
   | { ok: true; forecast: ForecastResult }
   | { ok: false; code: string; message: string };
 
-export async function requestForecast(input: ForecastRequest): Promise<ForecastReply> {
+const DEMO_ONLY: { ok: false; code: string; message: string } = {
+  ok: false,
+  code: "demo_only",
+  message: "This demo action is unavailable for connected stores. Reload Priceflag from Shopify admin.",
+};
+
+export async function requestDemoForecast(input: ForecastRequest): Promise<ForecastReply> {
+  if (!isDemoMode()) return DEMO_ONLY;
   const store = getDemoStore();
   const products = getProductsByGid(input.variant_gids);
+  return forecastFor(products, input, {
+    currency: store.shop.currency,
+    timezone: store.shop.timezone,
+    orderDays: () => Promise.resolve(store.orderDays),
+    now: DEMO_NOW,
+  });
+}
 
+/** The engine call itself — identical in both modes, only the data source differs. */
+async function forecastFor(
+  products: Product[],
+  input: ForecastRequest,
+  source: {
+    currency: string;
+    timezone: string;
+    orderDays: () => Promise<OrderDay[]>;
+    now: Date;
+  },
+): Promise<ForecastReply> {
   if (products.length === 0) {
     return {
       ok: false,
@@ -55,24 +77,14 @@ export async function requestForecast(input: ForecastRequest): Promise<ForecastR
   }
 
   try {
-    // Lane C's fits, via the adapter (B6). Without these every forecast is
-    // `assumption` with no range, which is what REQ-A-006 was about — the
-    // forecast card's fitted band was unreachable because this call never asked
-    // for them. A store with no fits still works: absent entries fall back to
-    // bracket math, per the contract's fallback chain.
-    const fits = await getAdapter().getLatestFits(
-      store.shop.id,
-      products.map((product) => product.variant_gid),
-    );
-
     const forecast = buildForecast({
-      shop: { currency: store.shop.currency, timezone: store.shop.timezone },
+      shop: { currency: source.currency, timezone: source.timezone },
       products,
-      orderDays: store.orderDays,
+      orderDays: await source.orderDays(),
       change: input.change,
       horizonDays: input.horizon_days,
-      now: DEMO_NOW,
-      fits,
+      now: source.now,
+      fits: new Map(),
     });
     return { ok: true, forecast };
   } catch (error) {
@@ -101,9 +113,12 @@ export type CreateRolloutReply =
 /**
  * Creating the rollout is `POST /api/rollouts` (B4), which freezes the baseline
  * prices that make rollback correct — that has to happen server-side against a
- * real store, so demo mode says exactly that rather than pretending.
+ * real store, so demo mode says exactly that rather than pretending. Real mode
+ * routes through that authenticated API when it lands; this action never writes
+ * a rollout via the adapter directly, because the API is where baselines are
+ * frozen and journalled.
  */
-export async function createRollout(input: CreateRolloutRequest): Promise<CreateRolloutReply> {
+export async function createDemoRollout(input: CreateRolloutRequest): Promise<CreateRolloutReply> {
   if (input.guardrails.contract_version !== CONTRACT_VERSION) {
     return {
       ok: false,
@@ -119,6 +134,7 @@ export async function createRollout(input: CreateRolloutRequest): Promise<Create
     };
   }
 
+  if (!isDemoMode()) return DEMO_ONLY;
   const eligible = getProductsByGid(input.variant_gids).filter(
     (product) => exclusionReasonFor(product) === null,
   );
@@ -134,6 +150,6 @@ export async function createRollout(input: CreateRolloutRequest): Promise<Create
     ok: true,
     rollout_id: null,
     message:
-      "This is the demo store, so no prices were changed and nothing was sent to Shopify. On a connected store this would create the change as a draft, freeze today's prices as the ones to roll back to, and wait for you to start it.",
+      "This is the demo store, so no draft was stored and nothing was sent to Shopify. On a connected store, Priceflag would freeze today's prices in a draft and wait for a separate confirmation before writing anything.",
   };
 }

@@ -1,0 +1,189 @@
+name: production-gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Tests only: this workflow receives no credentials and never deploys or calls
+# production. Its database job boots an isolated Supabase stack on the GitHub
+# runner. Hosted staging and its advisors remain separate launch gates.
+permissions:
+  contents: read
+
+concurrency:
+  group: production-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-safety:
+    name: Node 22 application safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies from a clean state
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run smoke suite
+        run: npm run smoke
+
+      - name: Run authenticated merchant API suite
+        run: npm run test:merchant-api
+
+      - name: Run price-write, ML-ingest, and Shopify-webhook safety suites
+        run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:webhooks && npm run test:deployment-safety
+
+      - name: Run demo integration suite
+        run: npx --no-install tsx tests/integration/run.ts --demo
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Install the Chromium browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify the compiled app in a real browser
+        env:
+          PRICEFLAG_MODE: demo
+          APP_ACCESS_SECRET: local-ci-browser-gate
+          PRICEFLAG_URL: http://127.0.0.1:3000
+        run: |
+          npm start >/tmp/priceflag-next.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              cat /tmp/priceflag-next.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          npm run smoke:browser
+
+      - name: Reject high-severity dependency vulnerabilities
+        run: npm audit --audit-level=high
+
+  database-safety:
+    name: Local Supabase migration and adapter safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      REQUIRE_SUPABASE_TESTS: "true"
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies from a clean state
+        run: npm ci
+
+      - name: Start an isolated Supabase stack and apply every migration
+        run: |
+          set -euo pipefail
+
+          # Supabase prints local JWTs when it starts. Keep that output out of
+          # the Actions log even though this runner is disposable.
+          if ! npx --no-install supabase start --debug \
+            --exclude realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor \
+            >"$RUNNER_TEMP/supabase-start.log" 2>&1; then
+            echo "::error::The isolated Supabase stack or migration chain failed to start."
+            node scripts/sanitize-supabase-start-log.mjs "$RUNNER_TEMP/supabase-start.log"
+            npx --no-install supabase stop >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          npx --no-install supabase status -o env >"$RUNNER_TEMP/supabase.env"
+          set -a
+          source "$RUNNER_TEMP/supabase.env"
+          set +a
+
+          PRICEFLAG_SUPABASE_SERVER_KEY="${SERVICE_ROLE_KEY:-${SECRET_KEY:-}}"
+
+          : "${API_URL:?Supabase status did not provide API_URL}"
+          : "${PRICEFLAG_SUPABASE_SERVER_KEY:?Supabase status did not provide a server API key}"
+          : "${DB_URL:?Supabase status did not provide DB_URL}"
+
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$PRICEFLAG_SUPABASE_SERVER_KEY"
+            echo "SUPABASE_DB_URL=$DB_URL"
+          } >>"$GITHUB_ENV"
+
+          echo "Isolated Supabase is ready and the full migration chain applied."
+
+      - name: Lint the migrated database
+        run: npx --no-install supabase db lint --local --level warning --fail-on error
+
+      - name: Prove the multi-transaction ML role lockout against a live legacy session
+        run: npm run test:ml-role-retirement
+
+      - name: Run the real Supabase adapter and privilege-boundary smoke suite
+        run: npm run smoke
+
+      - name: Run the adversarial integration suite against real Postgres
+        run: npx --no-install tsx tests/integration/run.ts
+
+      - name: Stop the isolated Supabase stack
+        if: always()
+        run: npx --no-install supabase stop >/dev/null 2>&1 || true
+
+  ml-safety:
+    name: Python 3.12 locked ML safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Use Python 3.12 and uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: ml/uv.lock
+
+      - name: Install exactly the locked Python environment
+        run: uv sync --locked
+
+      - name: Run Python tests
+        run: uv run --locked pytest
+
+      - name: Run golden nightly model and drift gates
+        # No Supabase variables or secrets are supplied: this is deliberately
+        # the deterministic, offline golden-data leg of nightly.py.
+        run: uv run --locked python nightly.py

@@ -27,7 +27,7 @@ auto-rollback (R29).
 | Path | What |
 |---|---|
 | `priceflag_ml/golden.py` | Synthetic golden store with known ground truth (elasticity, seasonality, promos with price confound, trend, stockouts, NB noise) |
-| `priceflag_ml/data.py` | Read-only data access: golden fixture or Supabase PostgREST (`SUPABASE_URL` + `SUPABASE_ML_READONLY_KEY`) |
+| `priceflag_ml/data.py` | Read-only data access: golden fixture or the authenticated, paginated Priceflag ML export API |
 | `priceflag_ml/baselines.py` | Incumbents: seasonal-naive forecaster (80% bands), bracket elasticity (v0 stand-in) |
 | `priceflag_ml/elasticity.py` | Champion elasticity: Poisson GLM + EB shrinkage, honest confidence tiers, `elasticity_fits` rows |
 | `priceflag_ml/forecaster.py` | Champion baseline forecaster: promo-clean dow-level model + calibrated 80% bands, `expected_bands` rows |
@@ -35,6 +35,32 @@ auto-rollback (R29).
 | `priceflag_ml/harness.py` | Rolling-origin backtests, golden recovery, champion-vs-challenger comparison |
 | `eval/` | Committed harness score snapshots (`c1_incumbents.json` = the bar) |
 | `tests/` | The harness itself is under test |
+
+## Real-store release safety
+
+Real reads use authenticated `POST /api/ml/export`. The worker receives no
+PostgreSQL login, Supabase API key, or service-role key. Before any merchant
+aggregates are read, it verifies the READY deployment against the pinned Vercel
+project and requires the export to report the expected Supabase project and
+environment. Pagination is bounded and every page must match the requested shop
+and model surface.
+
+Before the app ingest secret is used, the destination is verified through the
+Vercel API as a READY deployment in the pinned Priceflag app project and the
+expected Production or Preview target. Accepted model-run receipts are then
+read back through the authenticated application boundary and must match the
+candidate commit, successful status and exact row count.
+
+Migration `20260804180000_normalize_ml_readonly_privileges.sql` retires the
+legacy database identity as `NOLOGIN`, removes both membership directions,
+drops its RLS policies, revokes its application grants, and exposes a fail-closed
+attestation used by the hosted staging workflow. It must never be re-enabled.
+
+GitHub uploads only `out/real_ingest_evidence.json`, whose strict allowlist
+contains aggregate counts and identities but no merchant domains, product or
+variant identifiers, model-run IDs, financial rows, URLs or credentials. Raw
+fit, band and report files remain ephemeral on the runner and are never
+uploaded.
 
 ## Reproduce the incumbent scores
 

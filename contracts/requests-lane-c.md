@@ -3,6 +3,10 @@
 Append-only. Lane B: please land or answer; Lane C mocks against golden data
 meanwhile (nothing here blocks C1–C3).
 
+> Production note (2026-08-04): the historical direct-database credential
+> requests below are superseded. The worker now uses authenticated
+> `POST /api/ml/export`, and `priceflag_ml_readonly` is permanently `NOLOGIN`.
+
 ## 2026-07-29 (Sprint C1)
 
 1. **v0 source not in repo.** The build brief tells Lane C to port

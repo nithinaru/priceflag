@@ -38,7 +38,11 @@ export interface DailyObservation {
   expected_high: number;
   expected_revenue_cents: Cents;
   expected_profit_cents: Cents | null;
-  /** Lane C (C5). When present and calibrated, preferred over the raw threshold. */
+  expected_revenue_low_cents?: Cents | null;
+  expected_revenue_high_cents?: Cents | null;
+  expected_profit_low_cents?: Cents | null;
+  expected_profit_high_cents?: Cents | null;
+  /** Lane C (C5) probability for the units outcome. */
   breach_probability?: number | null;
 }
 
@@ -65,6 +69,7 @@ export interface GuardrailAssessment {
 interface MetricReading {
   actual: number;
   expected: number;
+  intervalLow: number | null;
   /** null when the metric is unknowable today. */
   known: boolean;
   format: (value: number) => string;
@@ -76,6 +81,7 @@ function readMetric(rule: GuardrailRule, observation: DailyObservation, currency
       return {
         actual: observation.actual_units,
         expected: observation.expected_units,
+        intervalLow: observation.expected_low,
         known: true,
         format: (value) => `${value.toFixed(value < 10 ? 1 : 0)} units`,
       };
@@ -83,6 +89,7 @@ function readMetric(rule: GuardrailRule, observation: DailyObservation, currency
       return {
         actual: observation.actual_revenue_cents,
         expected: observation.expected_revenue_cents,
+        intervalLow: observation.expected_revenue_low_cents ?? null,
         known: true,
         format: (value) => formatCents(Math.round(value), currency),
       };
@@ -90,13 +97,14 @@ function readMetric(rule: GuardrailRule, observation: DailyObservation, currency
       return {
         actual: observation.actual_profit_cents ?? 0,
         expected: observation.expected_profit_cents ?? 0,
+        intervalLow: observation.expected_profit_low_cents ?? null,
         known: observation.actual_profit_cents !== null && observation.expected_profit_cents !== null,
         format: (value) => formatCents(Math.round(value), currency),
       };
     default:
       // Unknown metric from a newer contract version: cannot evaluate, so say so
       // rather than guessing.
-      return { actual: 0, expected: 0, known: false, format: String };
+      return { actual: 0, expected: 0, intervalLow: null, known: false, format: String };
   }
 }
 
@@ -113,7 +121,9 @@ export function ruleConditionHolds(
 
   // A calibrated probability, when we have one, is strictly better evidence than
   // a threshold crossing — it already accounts for how noisy this SKU is.
-  const probability = observation.breach_probability;
+  // C5 currently models units. Reusing that probability for revenue or profit
+  // would fire a guardrail for a metric the model never measured.
+  const probability = rule.metric === 'units' ? observation.breach_probability : null;
   if (probability !== null && probability !== undefined) {
     const holds = probability >= BREACH_PROBABILITY_THRESHOLD;
     return {
@@ -146,7 +156,24 @@ export function ruleConditionHolds(
   }
 
   const thresholdPct = rule.threshold_pct ?? 0;
-  const limit = reading.expected * (1 - thresholdPct / 100);
+  if (reading.intervalLow === null) {
+    // A units interval cannot be converted to a money interval with an average
+    // price when SKU mix is heterogeneous. Legacy rows without metric-specific
+    // bounds skip percentage money rules instead of manufacturing precision.
+    return { holds: false, floored: false, known: false, reason: '' };
+  }
+  const percentageLimit = reading.expected * (1 - thresholdPct / 100);
+  // A percentage miss inside the calibrated interval is ordinary noise. Require
+  // the observation to cross both the merchant's limit and the lower band edge.
+  const expectedLowForMetric = reading.intervalLow;
+  // The sentence the merchant approved defines the percentage from the expected
+  // centre. The interval is a second, independent noise check: the day must cross
+  // both lines. Applying the percentage again to the low edge would silently turn
+  // a 30% limit into a much larger tolerated decline.
+  const limit =
+    thresholdPct <= 0
+      ? percentageLimit
+      : Math.min(percentageLimit, expectedLowForMetric);
   const holds = reading.expected > 0 && reading.actual < limit;
   const shortfallPct = reading.expected > 0 ? ((reading.expected - reading.actual) / reading.expected) * 100 : 0;
 

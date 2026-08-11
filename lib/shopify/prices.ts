@@ -16,8 +16,13 @@
  * Verified against the live 2026-07 schema by introspection.
  */
 
-import { assertNoUserErrors, type AdminGraphqlClient, type GraphqlUserError } from './client';
-import { formatCentsAsShopifyMoney, parseMoneyToCents, type Cents } from '../money';
+import { assertNoUserErrors, ShopifyApiError, type AdminGraphqlClient, type GraphqlUserError } from './client';
+import {
+  assertStorefrontPrice,
+  formatCentsAsShopifyMoney,
+  parseMoneyToCents,
+  type Cents,
+} from '../money';
 
 export const VARIANT_PRICES_QUERY = /* GraphQL */ `
   query PriceflagVariantPrices($ids: [ID!]!) {
@@ -115,6 +120,20 @@ export async function writeProductVariantPrices(
 ): Promise<BulkWriteResult> {
   if (writes.length === 0) return { productGid, applied: [], userErrors: [] };
 
+  const requested = new Map<string, PriceWrite>();
+  for (const write of writes) {
+    // This is the final shared Shopify mutation boundary. Callers validate too,
+    // but persisted rollback baselines and future write paths are untrusted.
+    assertStorefrontPrice(write.priceCents, 'Shopify price');
+    if (requested.has(write.variantGid)) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) was given duplicate variant ${write.variantGid}.`,
+      );
+    }
+    requested.set(write.variantGid, write);
+  }
+
   const variants = writes.map((write) => {
     const input: Record<string, unknown> = {
       id: write.variantGid,
@@ -127,22 +146,100 @@ export async function writeProductVariantPrices(
   });
 
   const data = await client.request<{
-    productVariantsBulkUpdate: {
-      productVariants: { id: string; price: string; compareAtPrice: string | null }[] | null;
-      userErrors: GraphqlUserError[];
+    productVariantsBulkUpdate?: {
+      productVariants: ({ id: string; price: string; compareAtPrice: string | null } | null)[] | null;
+      userErrors?: GraphqlUserError[];
     } | null;
   }>(VARIANTS_BULK_UPDATE, { productId: productGid, variants });
 
   const payload = data.productVariantsBulkUpdate;
   assertNoUserErrors(payload?.userErrors, `productVariantsBulkUpdate(${productGid})`);
 
+  if (payload === null || payload === undefined || !Array.isArray(payload.productVariants)) {
+    throw new ShopifyApiError(
+      'invalid_response',
+      `productVariantsBulkUpdate(${productGid}) returned no variant acknowledgement. The write will be reconciled from live Shopify state.`,
+    );
+  }
+  if (payload.productVariants.length !== writes.length) {
+    throw new ShopifyApiError(
+      'invalid_response',
+      `productVariantsBulkUpdate(${productGid}) acknowledged ${payload.productVariants.length} of ${writes.length} requested variants. The write will be reconciled from live Shopify state.`,
+      payload.productVariants,
+    );
+  }
+
+  const seen = new Set<string>();
+  const applied: BulkWriteResult['applied'] = [];
+  for (const variant of payload.productVariants) {
+    if (
+      variant === null ||
+      typeof variant.id !== 'string' ||
+      typeof variant.price !== 'string' ||
+      (variant.compareAtPrice !== null && typeof variant.compareAtPrice !== 'string')
+    ) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) returned a malformed variant acknowledgement. The write will be reconciled from live Shopify state.`,
+        variant,
+      );
+    }
+
+    const expected = requested.get(variant.id);
+    if (expected === undefined || seen.has(variant.id)) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) acknowledged an unexpected or duplicate variant ${variant.id}. The write will be reconciled from live Shopify state.`,
+        variant,
+      );
+    }
+
+    let priceCents: Cents;
+    let compareAtCents: Cents | null;
+    try {
+      priceCents = parseMoneyToCents(variant.price);
+      compareAtCents = variant.compareAtPrice === null ? null : parseMoneyToCents(variant.compareAtPrice);
+    } catch (cause) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) returned invalid money for ${variant.id}. The write will be reconciled from live Shopify state.`,
+        cause,
+      );
+    }
+
+    if (priceCents !== expected.priceCents) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) acknowledged ${variant.id} at ${variant.price}, not the requested ${formatCentsAsShopifyMoney(expected.priceCents)}. The write will be reconciled from live Shopify state.`,
+        variant,
+      );
+    }
+    if (expected.compareAtCents !== undefined && compareAtCents !== expected.compareAtCents) {
+      const expectedCompareAt =
+        expected.compareAtCents === null ? 'null' : formatCentsAsShopifyMoney(expected.compareAtCents);
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) acknowledged ${variant.id} with compare-at ${variant.compareAtPrice ?? 'null'}, not the requested ${expectedCompareAt}. The write will be reconciled from live Shopify state.`,
+        variant,
+      );
+    }
+
+    seen.add(variant.id);
+    applied.push({ variantGid: variant.id, priceCents, compareAtCents });
+  }
+
+  for (const variantGid of requested.keys()) {
+    if (!seen.has(variantGid)) {
+      throw new ShopifyApiError(
+        'invalid_response',
+        `productVariantsBulkUpdate(${productGid}) did not acknowledge requested variant ${variantGid}. The write will be reconciled from live Shopify state.`,
+      );
+    }
+  }
+
   return {
     productGid,
-    applied: (payload?.productVariants ?? []).map((variant) => ({
-      variantGid: variant.id,
-      priceCents: parseMoneyToCents(variant.price),
-      compareAtCents: variant.compareAtPrice === null ? null : parseMoneyToCents(variant.compareAtPrice),
-    })),
-    userErrors: payload?.userErrors ?? [],
+    applied,
+    userErrors: payload.userErrors ?? [],
   };
 }

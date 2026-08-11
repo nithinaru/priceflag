@@ -92,7 +92,7 @@
     },
     "breakeven": {
       "type": "object",
-      "description": "Pure margin arithmetic — always true regardless of any model. Lead with this (R6).",
+      "description": "Transparent unit-margin arithmetic, independent of the demand model. For multi-product selections it assumes unit demand moves proportionally and the merchant-facing sentence must say so (R6).",
       "additionalProperties": false,
       "required": ["units_change_pct", "direction", "sentence"],
       "properties": {
@@ -107,7 +107,7 @@
         "sentence": {
           "type": "string",
           "minLength": 1,
-          "description": "Merchant-facing, e.g. 'You can lose up to 14% of orders and still make the same profit.'"
+          "description": "Merchant-facing, e.g. 'You can sell up to 14% fewer units and still make the same profit.'"
         }
       }
     },
@@ -137,7 +137,7 @@
       }
     },
     "fitted": {
-      "description": "Model-driven prediction. null when confidence is `assumption` — then the scenario table is the whole story.",
+      "description": "Predicted range. Store-fitted when history supports it; otherwise a broad category-default range with confidence=`assumption`. null only when there is no recent unit demand to project.",
       "oneOf": [
         { "type": "null" },
         {
@@ -159,8 +159,8 @@
             "n_obs": { "type": "integer", "minimum": 0 },
             "price_variation_pct": { "type": "number", "minimum": 0 },
             "source": {
-              "enum": ["model", "portfolio_prior"],
-              "description": "portfolio_prior = shrunk toward the store-wide prior because this variant's own history was thin."
+              "enum": ["model", "portfolio_prior", "category_default"],
+              "description": "portfolio_prior = shrunk toward the store-wide prior because this variant's own history was thin. category_default = a broad consumer-goods elasticity range used when the store cannot identify demand response yet."
             },
             "expected": { "$ref": "#/$defs/outcome" },
             "low": { "$ref": "#/$defs/outcome" },
@@ -218,6 +218,8 @@
           "cogs_cents",
           "cogs_source",
           "baseline_units_per_day",
+          "demand_multiplier",
+          "revenue_realization_rate",
           "confidence",
           "excluded",
           "exclusion_reason"
@@ -235,6 +237,17 @@
           "cogs_cents": { "type": ["integer", "null"], "minimum": 0 },
           "cogs_source": { "enum": ["shopify", "manual", "none"] },
           "baseline_units_per_day": { "type": "number", "minimum": 0 },
+          "demand_multiplier": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "description": "Expected unit-demand multiplier for this variant at its target price. 1 means unchanged demand. null only for an excluded variant. Consumers of older stored forecasts must fall back conservatively when absent."
+          },
+          "revenue_realization_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Frozen pre-change net revenue after discounts and returns divided by gross list-price revenue. Applied consistently to baseline and target money."
+          },
           "confidence": { "enum": ["fitted", "partial", "assumption"] },
           "excluded": { "type": "boolean" },
           "exclusion_reason": {

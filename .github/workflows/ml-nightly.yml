@@ -3,31 +3,71 @@ name: ml-nightly
 on:
   schedule:
     - cron: "0 7 * * *" # daily 07:00 UTC
-  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ml-nightly
+  cancel-in-progress: false
 
 jobs:
   refit-and-gate:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: priceflag-ml-production
     defaults:
       run:
         working-directory: ml
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - name: Check out the default-branch nightly code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify the live production-nightly environment
+        run: node ../scripts/github-environment-guard.mjs priceflag-ml-production main optional
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Use Python 3.12 and the locked uv environment
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.12"
-      - run: uv sync --locked
+          enable-cache: true
+          cache-dependency-glob: ml/uv.lock
+
+      - name: Install exactly the locked Python environment
+        run: uv sync --locked
+
       # Full harness gates + drift check; exits 1 (red run) if any champion
       # stops beating its incumbent or any committed verdict snapshot drifts.
-      # With Supabase secrets configured (post-B6), also refits real stores
-      # and emits contract-row artifacts.
-      - run: uv run python nightly.py
+      # Production nightlies are not allowed to pass in golden-only mode.
+      - name: Refit real stores, pass model gates, and ingest accepted outputs
+        run: uv run --locked python nightly.py
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ML_READONLY_KEY: ${{ secrets.SUPABASE_ML_READONLY_KEY }}
-      - uses: actions/upload-artifact@v4
+          PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
+          PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
+          PRICEFLAG_APP_URL: https://priceflag-app.vercel.app
+          PRICEFLAG_EXPECTED_APP_URL: https://priceflag-app.vercel.app
+          PRICEFLAG_EXPECTED_VERCEL_TARGET: production
+          ML_INGEST_SECRET: ${{ secrets.ML_INGEST_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          REQUIRE_REAL_INGEST: "true"
+
+      - name: Verify redacted proof of real reads and acknowledged writes
+        run: uv run --locked python verify_nightly_evidence.py out/real_ingest_evidence.json
+        env:
+          PRICEFLAG_ML_EXPECTED_PROJECT_REF: vnyqevrdvfjsfhdnbfsz
+          PRICEFLAG_ML_EXPECTED_ENVIRONMENT: production
+
+      - name: Preserve the complete redacted nightly evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ml-nightly-output
-          path: ml/out/
+          name: ml-nightly-output-${{ github.sha }}-${{ github.run_id }}
+          path: ml/out/real_ingest_evidence.json
+          if-no-files-found: error
           retention-days: 30

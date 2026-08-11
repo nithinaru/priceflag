@@ -1,127 +1,203 @@
-"""Data access: golden loader shape, densification, and the Supabase source
-(pagination + parsing) against a mock transport — no live network."""
+import json
 
 import httpx
-import numpy as np
 import pandas as pd
 import pytest
 
-import priceflag_ml.data as data
-from priceflag_ml.data import CANONICAL_COLUMNS, SupabaseSource, densify_daily, load_golden
-from priceflag_ml.golden import GoldenConfig
+from priceflag_ml.data import (
+    CANONICAL_COLUMNS,
+    PriceflagApiSource,
+    SourceIdentity,
+    densify_daily,
+    load_golden,
+)
+
+PROJECT_REF = "abcdefghijklmnopqrst"
+SHOP = "coffee.myshopify.com"
 
 
-def test_load_golden_canonical_shape():
-    df = load_golden(GoldenConfig(n_skus=4, days=60, seed=2))
-    assert list(df.columns) == CANONICAL_COLUMNS
-    assert len(df) == 4 * 60
+def response(body, status=200):
+    return httpx.Response(status, json=body)
 
 
-def test_supabase_source_requires_credentials():
-    with pytest.raises(ValueError):
-        SupabaseSource(url="", key="")
-
-
-def test_supabase_from_env_message_without_keys(monkeypatch):
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.delenv("SUPABASE_ML_READONLY_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="load_golden"):
-        SupabaseSource.from_env()
-
-
-def test_densify_daily_fills_missing_days():
-    df = pd.DataFrame(
-        {
-            "shop_id": "s1",
-            "sku": "A",
-            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05"]),  # 2 missing days
-            "units": [3, 2, 4],
-            "price_cents": [5000, 5000, 4500],
-            "revenue_cents": [15000, 10000, 18000],
-            "promo": [False, False, True],
-            "stockout": [False, False, False],
-        }
-    )
-    out = densify_daily(df)
-    assert len(out) == 5
-    assert pd.DatetimeIndex(out["date"]).is_monotonic_increasing
-    filled = out[out["date"].isin(pd.to_datetime(["2026-01-03", "2026-01-04"]))]
-    assert (filled["units"] == 0).all()
-    assert (filled["revenue_cents"] == 0).all()
-    assert (~filled["promo"]).all() and (~filled["stockout"]).all()
-    assert (filled["price_cents"] == 5000).all()  # forward-filled posted price
-
-
-def test_densify_daily_noop_on_contiguous():
-    df = load_golden(GoldenConfig(n_skus=2, days=30, seed=3))
-    out = densify_daily(df)
-    assert len(out) == len(df)
-
-
-def _mock_source(rows: list[dict], page_size: int) -> tuple[SupabaseSource, list[dict]]:
-    """SupabaseSource over a MockTransport serving `rows` in pages, recording requests."""
-    seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        params = dict(request.url.params)
-        seen.append(params)
-        offset, limit = int(params["offset"]), int(params["limit"])
-        return httpx.Response(200, json=rows[offset : offset + limit])
-
+def source_with(handler):
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return SupabaseSource("https://example.supabase.co", "test-key", client=client), seen
+    return PriceflagApiSource("https://priceflag-app.vercel.app", "test-secret", client=client)
 
 
-def _view_row(day, units, gid="gid://shopify/ProductVariant/1", **extra):
-    row = {
-        "shop_domain": "s1.myshopify.com",
-        "variant_gid": gid,
-        "day": day,
-        "units": units,
-        "net_revenue_cents": units * 5000,
-        "list_price_cents": 5000,
-        "on_promo": False,
-        "had_stockout": False,
+def attestation(**overrides):
+    body = {
+        "schema_version": 1,
+        "source": "priceflag-ml-export",
+        "project_ref": PROJECT_REF,
+        "environment": "production",
+        "shops": [SHOP],
     }
-    row.update(extra)
-    return row
+    body.update(overrides)
+    return body
 
 
-def test_supabase_order_days_paginates_past_server_cap(monkeypatch):
-    """PostgREST caps responses at max-rows; a single GET silently truncates.
-    The client must page until a short page arrives."""
-    monkeypatch.setattr(data, "_PAGE_SIZE", 3)
-    dates = pd.date_range("2026-01-01", periods=7, freq="D")
-    rows = [_view_row(str(d.date()), i + 1) for i, d in enumerate(dates)]
-    src, seen = _mock_source(rows, page_size=3)
-    out = src.order_days("s1.myshopify.com")
-    assert len(out) == 7  # 3 + 3 + 1 across three pages
-    assert len(seen) == 3
-    assert [p["offset"] for p in seen] == ["0", "3", "6"]
-    assert out["units"].tolist() == [1, 2, 3, 4, 5, 6, 7]
-    assert (out["sku"] == "gid://shopify/ProductVariant/1").all()
-    assert (out["price_cents"] == 5000).all()
+def test_golden_shape_and_densification():
+    frame = load_golden()
+    assert list(frame.columns) == CANONICAL_COLUMNS
+    tiny = pd.DataFrame(
+        [
+            {"shop_id": SHOP, "sku": "A", "date": pd.Timestamp("2026-01-01"), "units": 2,
+             "price_cents": 1000, "revenue_cents": 2000, "promo": False, "stockout": False},
+            {"shop_id": SHOP, "sku": "A", "date": pd.Timestamp("2026-01-03"), "units": 1,
+             "price_cents": 1100, "revenue_cents": 1100, "promo": True, "stockout": False},
+        ]
+    )
+    dense = densify_daily(tiny)
+    assert len(dense) == 3
+    middle = dense[dense["date"] == pd.Timestamp("2026-01-02")].iloc[0]
+    assert middle["units"] == 0
+    assert middle["price_cents"] == 1000
 
 
-def test_supabase_order_days_maps_view_columns_and_densifies(monkeypatch):
-    monkeypatch.setattr(data, "_PAGE_SIZE", 100)
-    rows = [
-        _view_row("2026-01-01", 2, on_promo=True),
-        _view_row("2026-01-03", 1, had_stockout=True),
-    ]
-    src, _ = _mock_source(rows, page_size=100)
-    out = src.order_days("s1.myshopify.com")
-    assert list(out.columns) == CANONICAL_COLUMNS
-    assert len(out) == 3  # missing day densified
-    assert out["promo"].tolist() == [True, False, False]
-    assert out["stockout"].tolist() == [False, False, True]
-    assert np.issubdtype(out["date"].dtype, np.datetime64)
-    assert out["revenue_cents"].tolist() == [10000, 0, 5000]
+@pytest.mark.parametrize("origin", ["", "http://priceflag-app.vercel.app", "https://user@priceflag-app.vercel.app", "https://priceflag-app.vercel.app/path"])
+def test_source_requires_a_clean_https_origin(origin):
+    with pytest.raises(ValueError, match="clean HTTPS origin"):
+        PriceflagApiSource(origin, "secret")
 
 
-def test_supabase_order_days_empty_result(monkeypatch):
-    monkeypatch.setattr(data, "_PAGE_SIZE", 100)
-    src, _ = _mock_source([], page_size=100)
-    out = src.order_days("nope")
-    assert out.empty
-    assert list(out.columns) == CANONICAL_COLUMNS
+def test_source_requires_secret():
+    with pytest.raises(ValueError, match="pipeline secret"):
+        PriceflagApiSource("https://priceflag-app.vercel.app", "")
+
+
+def test_source_from_env_is_pinned(monkeypatch):
+    for name in (
+        "PRICEFLAG_APP_URL",
+        "APP_URL",
+        "PRICEFLAG_EXPECTED_APP_URL",
+        "ML_INGEST_SECRET",
+        "VERCEL_TOKEN",
+        "PRICEFLAG_EXPECTED_VERCEL_TARGET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(RuntimeError, match="required for real reads"):
+        PriceflagApiSource.from_env()
+
+    monkeypatch.setenv("PRICEFLAG_APP_URL", "https://priceflag-app.vercel.app")
+    monkeypatch.setenv("PRICEFLAG_EXPECTED_APP_URL", "https://other.vercel.app")
+    monkeypatch.setenv("ML_INGEST_SECRET", "secret")
+    monkeypatch.setenv("VERCEL_TOKEN", "token")
+    monkeypatch.setenv("PRICEFLAG_EXPECTED_VERCEL_TARGET", "production")
+    with pytest.raises(RuntimeError, match="does not match"):
+        PriceflagApiSource.from_env()
+
+    monkeypatch.setenv("PRICEFLAG_EXPECTED_APP_URL", "https://priceflag-app.vercel.app")
+    assert isinstance(PriceflagApiSource.from_env(client=object()), PriceflagApiSource)
+
+
+def test_attestation_pins_source_project_environment_and_shop_scope():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return response(attestation())
+
+    source = source_with(handler)
+    identity = source.attest(PROJECT_REF, "production")
+    assert identity == SourceIdentity(PROJECT_REF, "production", "priceflag-ml-export")
+    assert source.list_shops() == [SHOP]
+    assert requests[0].headers["authorization"] == "Bearer test-secret"
+    assert json.loads(requests[0].content) == {"operation": "attest"}
+
+
+@pytest.mark.parametrize(
+    "override,match",
+    [
+        ({"source": "other"}, "contract"),
+        ({"project_ref": "zyxwvutsrqponmlkjihg"}, "project"),
+        ({"environment": "staging"}, "environment"),
+        ({"shops": ["not-a-shop"]}, "shop list"),
+        ({"shops": [SHOP, SHOP]}, "duplicate shops"),
+    ],
+)
+def test_attestation_rejects_mismatched_identity(override, match):
+    source = source_with(lambda _request: response(attestation(**override)))
+    with pytest.raises(RuntimeError, match=match):
+        source.attest(PROJECT_REF, "production")
+
+
+def test_reads_are_paginated_and_mapped_to_model_frames():
+    seen = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        seen.append(payload)
+        if payload["operation"] == "attest":
+            return response(attestation())
+        surface = payload["surface"]
+        cursor = payload["cursor"]
+        rows = {
+            "product_days": [
+                {"shop_domain": SHOP, "variant_gid": "gid://shopify/ProductVariant/1", "day": "2026-01-01",
+                 "units": 2, "list_price_cents": 1500, "net_revenue_cents": 3000,
+                 "on_promo": False, "had_stockout": False},
+                {"shop_domain": SHOP, "variant_gid": "gid://shopify/ProductVariant/1", "day": "2026-01-03",
+                 "units": 1, "list_price_cents": 1600, "net_revenue_cents": 1600,
+                 "on_promo": True, "had_stockout": False},
+            ],
+            "products": [{"shop_domain": SHOP, "variant_gid": "gid://shopify/ProductVariant/1", "price_cents": 1600, "cogs_cents": 500}],
+            "price_history": [{"shop_domain": SHOP, "variant_gid": "gid://shopify/ProductVariant/1", "applied_at": "2026-01-02T00:00:00Z", "before_price_cents": 1500, "after_price_cents": 1600, "source": "manual", "rollout_id": None, "stage_index": None}],
+            "rollout_windows": [{"shop_domain": SHOP, "rollout_id": "00000000-0000-4000-8000-000000000001", "status": "completed", "start_day": "2026-01-01", "end_day": "2026-01-03", "variant_gids": ["gid://shopify/ProductVariant/1"]}],
+        }[surface]
+        if surface == "product_days" and cursor == 0:
+            page, next_cursor = rows[:1], 1
+        elif surface == "product_days":
+            page, next_cursor = rows[1:], None
+        else:
+            page, next_cursor = rows, None
+        return response({"schema_version": 1, "surface": surface, "shop_domain": SHOP, "rows": page, "next_cursor": next_cursor})
+
+    source = source_with(handler)
+    source.attest(PROJECT_REF, "production")
+    orders = source.order_days(SHOP)
+    assert len(orders) == 3
+    assert orders.iloc[1]["units"] == 0
+    assert orders.iloc[1]["price_cents"] == 1500
+    assert source.products(SHOP).iloc[0]["cogs_cents"] == 500
+    assert source.price_history(SHOP).iloc[0]["after_price_cents"] == 1600
+    assert len(source.rollout_windows(SHOP, status="completed")) == 1
+    assert [call["cursor"] for call in seen if call.get("surface") == "product_days"] == [0, 1]
+
+
+def test_read_rejects_unattested_shop_and_bad_cursor():
+    source = source_with(lambda _request: response(attestation()))
+    source.attest(PROJECT_REF, "production")
+    with pytest.raises(ValueError, match="attested"):
+        source.products("foreign.myshopify.com")
+
+    def handler(request):
+        payload = json.loads(request.content)
+        if payload["operation"] == "attest":
+            return response(attestation())
+        return response({"schema_version": 1, "surface": payload["surface"], "shop_domain": SHOP, "rows": [], "next_cursor": 1})
+
+    bad = source_with(handler)
+    bad.attest(PROJECT_REF, "production")
+    with pytest.raises(RuntimeError, match="pagination cursor"):
+        bad.products(SHOP)
+
+
+def test_receipts_are_verified_through_the_attested_shop_api():
+    run_id = "00000000-0000-4000-8000-000000000001"
+    sha = "a" * 40
+
+    def handler(request):
+        payload = json.loads(request.content)
+        if payload["operation"] == "attest":
+            return response(attestation())
+        assert payload == {
+            "operation": "verify_receipts",
+            "shop_domain": SHOP,
+            "receipts": [{"id": run_id, "git_sha": sha, "rows_written": 3}],
+        }
+        return response({"schema_version": 1, "shop_domain": SHOP, "verified": 1})
+
+    source = source_with(handler)
+    source.attest(PROJECT_REF, "production")
+    assert source.verify_ingest_receipts([(SHOP, run_id, 3)], sha) == 1

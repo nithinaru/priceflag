@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/components/cn";
 import {
+  IconBeaker,
   IconBook,
   IconClose,
   IconFlag,
@@ -56,12 +57,27 @@ const ITEMS: NavItem[] = [
   },
 ];
 
+const FOUNDER_LAB_ITEM: NavItem = {
+  href: "/model-lab",
+  label: "Founder Lab",
+  icon: <IconBeaker size={17} />,
+  hint: "Run pricing scenarios safely",
+};
+
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function Nav({ statusSlot, storeSlot }: { statusSlot?: ReactNode; storeSlot?: ReactNode }) {
+export function Nav({
+  statusSlot,
+  storeSlot,
+  showFounderLab = false,
+}: {
+  statusSlot?: ReactNode;
+  storeSlot?: ReactNode;
+  showFounderLab?: boolean;
+}) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -84,7 +100,7 @@ export function Nav({ statusSlot, storeSlot }: { statusSlot?: ReactNode; storeSl
       {/* Desktop: a permanent rail. */}
       <div className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-surface lg:flex">
         <Brand />
-        <NavList pathname={pathname} className="flex-1 overflow-y-auto px-3 py-4" />
+        <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
         <div className="space-y-3 border-t border-border px-3 py-4">
           {statusSlot}
           {storeSlot}
@@ -137,7 +153,7 @@ export function Nav({ statusSlot, storeSlot }: { statusSlot?: ReactNode; storeSl
                 <IconClose size={18} />
               </button>
             </div>
-            <NavList pathname={pathname} className="flex-1 overflow-y-auto px-3 py-4" />
+            <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
             <div className="space-y-3 border-t border-border px-3 py-4">
               {statusSlot}
               {storeSlot}
@@ -163,11 +179,20 @@ function Brand() {
   );
 }
 
-function NavList({ pathname, className }: { pathname: string; className?: string }) {
+function NavList({
+  pathname,
+  showFounderLab,
+  className,
+}: {
+  pathname: string;
+  showFounderLab: boolean;
+  className?: string;
+}) {
+  const items = showFounderLab ? [...ITEMS.slice(0, 2), FOUNDER_LAB_ITEM, ...ITEMS.slice(2)] : ITEMS;
   return (
     <nav className={className} aria-label="Main">
       <ul className="space-y-0.5">
-        {ITEMS.map((item) => {
+        {items.map((item) => {
           const active = isActive(pathname, item.href);
           return (
             <li key={item.href}>

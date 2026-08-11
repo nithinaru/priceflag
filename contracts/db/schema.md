@@ -88,6 +88,12 @@ before 180 days of order history finishes, and onboarding says so (R24).
 
 ### `rollouts`
 
+Draft creation uses the server-only `pf_create_rollout_draft(jsonb, jsonb)` RPC.
+It inserts the rollout, its frozen `rollout_variants` selection, and the created
+event in one
+transaction; execution is revoked from `public`, `anon`, and `authenticated` and
+granted only to `service_role`.
+
 | Column | Notes |
 |---|---|
 | `stages` | jsonb `[{index, fraction, hold_days}]`. Cumulative fractions **of the SKU selection, never of traffic**. Immutable after start |
@@ -137,6 +143,10 @@ log grep.
 Shopify keeps none; this is it (R18). **Append-only**: a trigger rejects UPDATE
 outright, and DELETE only inside an explicit purge:
 
+`creation_sequence` supplies a durable recovery order when apply and rollback
+timestamps tie. It is null only on legacy rows; new writes receive it from a
+server-only sequence.
+
 ```sql
 begin;
 set local priceflag.purge = 'on';
@@ -163,8 +173,9 @@ was written. Compare-before-write makes that common; it is not an error.
 
 `UNIQUE (webhook_id)` on the `X-Shopify-Webhook-Id` header turns Shopify's
 at-least-once delivery into effectively-once processing. A duplicate
-`orders/create` that slipped through would corrupt `order_days`, which drives
-auto-rollback.
+`orders/create` or `refunds/create` that slipped through would corrupt
+`order_days`, which drives live guardrail decisions. Raw order and refund
+payloads are never retained.
 
 ### `model_runs`, `elasticity_fits`, `expected_bands`, `rollout_reports`
 

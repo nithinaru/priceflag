@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Link the repo to the existing Vercel project, push env vars, deploy a preview.
+# Link the repo to the existing Vercel project, push env vars, and deploy a
+# protected preview. This script deliberately cannot promote production.
 #
 #   bash scripts/vercel-setup.sh              # link + env + preview deploy
-#   bash scripts/vercel-setup.sh --prod       # ...and promote to production (B7)
 #
-# Reads every value from .env.local and passes them to the Vercel CLI on stdin, so
+# Reads every value from .env.preview.local and passes it to Vercel on stdin, so
 # no secret is ever written to a file in the repo, printed, or committed. Values
 # are shown only as "set (N chars)".
 #
@@ -29,24 +29,64 @@ TARGET_DOMAIN="priceflag-app.vercel.app"
 
 cd "$(dirname "$0")/.."
 
-if [[ ! -f .env.local ]]; then
-  echo "error: .env.local not found. Copy .env.example and fill it in." >&2
+ENV_FILE=".env.preview.local"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "error: $ENV_FILE not found. Copy .env.example and fill it with staging/test-store values." >&2
+  exit 1
+fi
+
+if [[ $# -ne 0 ]]; then
+  echo "error: this command creates previews only and accepts no arguments." >&2
+  echo "       Create and verify a staged production artifact only after every preview gate passes." >&2
   exit 1
 fi
 
 # Load without echoing. `set -a` exports everything defined in the file.
 set -a
 # shellcheck disable=SC1091
-source ./.env.local
+source "./$ENV_FILE"
 set +a
 
 if [[ -z "${VERCEL_TOKEN:-}" ]]; then
-  echo "error: VERCEL_TOKEN is not set in .env.local." >&2
+  echo "error: VERCEL_TOKEN is not set in $ENV_FILE." >&2
   echo "       Create one at https://vercel.com/account/tokens (scope: $TEAM_SCOPE)." >&2
   exit 1
 fi
 
 VC=(npx --yes vercel@latest "--token=$VERCEL_TOKEN" "--scope=$TEAM_SCOPE")
+
+# Every required server-side value for the invite beta. Fail before touching
+# Vercel if one is absent; a partially configured preview is not launch proof.
+REQUIRED_VARS=(
+  SUPABASE_URL
+  SUPABASE_SERVICE_ROLE_KEY
+  SHOPIFY_API_KEY
+  SHOPIFY_API_SECRET
+  SHOPIFY_APP_HANDLE
+  SHOPIFY_API_VERSION
+  SHOPIFY_SCOPES
+  APP_URL
+  ENCRYPTION_KEY
+  CRON_SECRET
+  APP_ACCESS_SECRET
+  ML_INGEST_SECRET
+  RESEND_API_KEY
+  RESEND_FROM
+  PRICEFLAG_SHOP_ALLOWLIST
+)
+
+for name in "${REQUIRED_VARS[@]}"; do
+  if [[ -z "${!name:-}" ]]; then
+    echo "error: required variable $name is empty in $ENV_FILE." >&2
+    exit 1
+  fi
+done
+
+if [[ -n "${SHOPIFY_ADMIN_ACCESS_TOKEN:-}" || -n "${SHOPIFY_SHOP_DOMAIN:-}" ]]; then
+  echo "error: preview verification must use the Partner OAuth test app, not static Shopify credentials." >&2
+  exit 1
+fi
 
 echo "==> Linking to the existing '$PROJECT_NAME' project (never creating a second one)"
 mkdir -p .vercel
@@ -57,25 +97,6 @@ cat > .vercel/project.json <<JSON
 JSON
 echo "    linked to $PROJECT_ID on $TEAM_SCOPE"
 
-# Every var the app reads at runtime. PRICEFLAG_MODE is forced to `real` on Vercel
-# — the demo adapter writes to the local filesystem, which is read-only there.
-VARS=(
-  SUPABASE_URL
-  SUPABASE_SERVICE_ROLE_KEY
-  SHOPIFY_API_KEY
-  SHOPIFY_API_SECRET
-  SHOPIFY_ADMIN_ACCESS_TOKEN
-  SHOPIFY_SHOP_DOMAIN
-  SHOPIFY_API_VERSION
-  SHOPIFY_SCOPES
-  ENCRYPTION_KEY
-  CRON_SECRET
-  APP_ACCESS_SECRET
-  ML_INGEST_SECRET
-  RESEND_API_KEY
-  RESEND_FROM
-)
-
 push_var() {
   local name="$1" env_target="$2" value="$3"
   # Remove any existing value first; `env add` refuses to overwrite.
@@ -84,29 +105,26 @@ push_var() {
   echo "    $name -> $env_target: set (${#value} chars)"
 }
 
-for target in preview production; do
+for target in preview; do
   echo "==> Pushing env vars ($target)"
-  for name in "${VARS[@]}"; do
+  for name in "${REQUIRED_VARS[@]}"; do
     value="${!name:-}"
-    if [[ -z "$value" ]]; then
-      echo "    $name -> $target: SKIPPED (empty in .env.local)"
-      continue
-    fi
     push_var "$name" "$target" "$value"
   done
   push_var PRICEFLAG_MODE "$target" "real"
+
+  # Static Admin API credentials are a local-development path. Keeping stale
+  # copies in Vercel creates ambiguity even though runtime code rejects them.
+  for legacy_name in SHOPIFY_ADMIN_ACCESS_TOKEN SHOPIFY_SHOP_DOMAIN; do
+    "${VC[@]}" env rm "$legacy_name" "$target" --yes >/dev/null 2>&1 || true
+    echo "    $legacy_name -> $target: removed (production OAuth only)"
+  done
 done
 
-echo "==> Building and deploying"
-if [[ "${1:-}" == "--prod" ]]; then
-  DEPLOY_OUTPUT="$("${VC[@]}" deploy --prod --yes 2>&1)"
-else
-  DEPLOY_OUTPUT="$("${VC[@]}" deploy --yes 2>&1)"
-fi
+echo "==> Building and deploying a protected preview"
+DEPLOY_OUTPUT="$("${VC[@]}" deploy --yes 2>&1)"
 
-# The CLI emits a JSON envelope, not a bare URL. Capturing stdout wholesale and
-# passing it to `alias set` fails in a way that looks exactly like "the domain is
-# taken", so extract the hostname explicitly.
+# Extract only the generated deployment hostname; do not print the CLI envelope.
 DEPLOY_URL="$(printf '%s' "$DEPLOY_OUTPUT" | grep -oE 'https://[a-z0-9.-]+\.vercel\.app' | head -1)"
 
 if [[ -z "$DEPLOY_URL" ]]; then
@@ -116,28 +134,17 @@ if [[ -z "$DEPLOY_URL" ]]; then
 fi
 echo "    deployment: $DEPLOY_URL"
 
-# APP_URL has to be the deployment's own origin for OAuth redirects to resolve.
-echo "==> Setting APP_URL to the deployment origin"
-for target in preview production; do
-  push_var APP_URL "$target" "https://$TARGET_DOMAIN"
-done
-
-echo "==> Attempting the target domain: $TARGET_DOMAIN"
-if "${VC[@]}" alias set "$DEPLOY_URL" "$TARGET_DOMAIN" 2>/dev/null; then
-  echo "    alias set: https://$TARGET_DOMAIN"
-else
-  echo "    COULD NOT claim $TARGET_DOMAIN — it is probably taken globally."
-  echo "    Deployment is still live at: $DEPLOY_URL"
-  echo "    Not silently substituting another subdomain; see docs/lane-status/lane-b.md."
-fi
-
 echo
 echo "Done."
-echo "  deployment: $DEPLOY_URL"
-echo "  target:     https://$TARGET_DOMAIN"
+echo "  preview artifact: $DEPLOY_URL"
+echo "  production target (unchanged): https://$TARGET_DOMAIN"
+echo "  production variables: unchanged"
 echo
 echo "Deployment Protection is enabled on this project, so a plain curl gets a 302"
 echo "to Vercel SSO. That is a security setting and this script does not change it."
 echo "To verify, open the URL in a browser signed in to Vercel."
+echo "This script did not alias or promote the preview. After it passes, use"
+echo "scripts/vercel-stage.sh to create a production-environment artifact without"
+echo "assigning the production domain. Verify that exact staged URL before promotion."
 echo
 echo "Reminder: the evaluator cron is intentionally NOT in vercel.json until B5."

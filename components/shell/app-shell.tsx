@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Nav } from "@/components/shell/nav";
 import { LiveStatus, StoreCard } from "@/components/shell/live-status";
+import { isDemoMode } from "@/lib/config";
 
 /**
  * App frame: a permanent nav rail on desktop, a sticky bar plus drawer on
@@ -18,7 +19,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         Skip to content
       </a>
 
-      <Nav statusSlot={<LiveStatus />} storeSlot={<StoreCard />} />
+      <Nav statusSlot={<LiveStatus />} storeSlot={<StoreCard />} showFounderLab={isDemoMode()} />
 
       <div className="lg:pl-60">
         <main id="main" className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-9">

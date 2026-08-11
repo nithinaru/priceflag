@@ -16,6 +16,9 @@ import { countOf } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
 import { getLiveVariantGids } from "@/components/demo/rollouts";
 import { describeEnvironment } from "@/lib/config";
+import { NotConnected } from "@/components/shell/not-connected";
+import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { getRealSettings, type SettingsData } from "@/app/lib/store-data";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -32,11 +35,17 @@ export const dynamic = "force-dynamic";
  * whether real prices can move. So this explains what mode you are in, what it
  * means, and exactly what to do to change it.
  */
-export default function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<PageSearchParams>;
+}) {
+  const ctx = await resolveShopForPage(await searchParams);
+  if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
+
   const environment = describeEnvironment();
-  const { shop, products } = getDemoStore();
-  const live = getLiveVariantGids();
-  const demo = environment.mode === "demo";
+  const demo = ctx.mode === "demo";
+  const data = demo ? demoSettings() : await getRealSettings(ctx.shop!);
 
   return (
     <div className="space-y-6">
@@ -48,7 +57,7 @@ export default function SettingsPage() {
       <Card tone={demo ? "hold" : "live"} edge>
         <CardHeader
           eyebrow="Which store"
-          title={demo ? "You are on the demo store" : `Connected to ${shop.domain}`}
+          title={demo ? "You are on the demo store" : `Connected to ${data.shopDomain}`}
           description={
             demo
               ? "Everything you see is simulated: a made-up catalog with made-up sales. Price changes here move nothing, and nothing is sent to Shopify. It is the safest place to learn what the product does."
@@ -70,14 +79,14 @@ export default function SettingsPage() {
         </CardHeader>
         <CardBody>
           <DetailList>
-            <DetailRow label="Store">{shop.domain}</DetailRow>
-            <DetailRow label="Products loaded">{countOf(products.length, "product")}</DetailRow>
+            <DetailRow label="Store">{data.shopDomain}</DetailRow>
+            <DetailRow label="Products loaded">{countOf(data.productCount, "product")}</DetailRow>
             <DetailRow label="On a Priceflag price right now">
-              {live.length === 0 ? "None" : countOf(live.length, "product")}
+              {data.liveCount === 0 ? "None" : countOf(data.liveCount, "product")}
             </DetailRow>
-            <DetailRow label="Currency">{shop.currency}</DetailRow>
+            <DetailRow label="Currency">{data.currency}</DetailRow>
             <DetailRow label="Day boundaries">
-              {shop.timezone} — a day ends when it ends for your shoppers, not at UTC midnight
+              {data.timezone} — a day ends when it ends for your shoppers, not at UTC midnight
             </DetailRow>
           </DetailList>
         </CardBody>
@@ -92,7 +101,11 @@ export default function SettingsPage() {
         ) : null}
       </Card>
 
-      <NotificationSettings initialEmails={[]} emailConfigured={environment.resend} />
+      <NotificationSettings
+        initialEmails={data.notifyEmails}
+        emailConfigured={environment.resend}
+        demoMode={demo}
+      />
 
       <Card>
         <CardHeader
@@ -119,4 +132,16 @@ export default function SettingsPage() {
       </Card>
     </div>
   );
+}
+
+function demoSettings(): SettingsData {
+  const { shop, products } = getDemoStore();
+  return {
+    shopDomain: shop.domain,
+    currency: shop.currency,
+    timezone: shop.timezone,
+    productCount: products.length,
+    liveCount: getLiveVariantGids().length,
+    notifyEmails: [],
+  };
 }

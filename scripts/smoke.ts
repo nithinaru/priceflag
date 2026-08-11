@@ -91,10 +91,12 @@ import {
   isValidShopDomain,
   missingScopes,
   normalizeShopDomain,
+  postInstallUrl,
   ShopifyAuthError,
   verifyOAuthState,
 } from '../lib/shopify/oauth';
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
+import { CredentialError, credentialsFromShop } from '../lib/shopify/credentials';
 import { AdminGraphqlClient } from '../lib/shopify/client';
 import { runSync, syncOrderDays, syncProducts, syncProgressFromRun } from '../lib/sync';
 import {
@@ -105,7 +107,9 @@ import {
   verifyRollback,
 } from '../lib/pricing/writer';
 import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
-import type { ElasticityFitRow, OrderDay, Product, Rollout } from '../lib/types';
+import { buildReportFromBundle } from '../components/demo/report';
+import type { RolloutBundle } from '../components/demo/rollouts';
+import type { ElasticityFitRow, OrderDay, Product, Rollout, RolloutReading, RolloutVariant } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
 
 // ---------------------------------------------------------------------------
@@ -273,6 +277,10 @@ function observation(overrides: Partial<DailyObservation> & { day: string }): Da
     expected_high: 14,
     expected_revenue_cents: 32000,
     expected_profit_cents: 20500,
+    expected_revenue_low_cents: 19200,
+    expected_revenue_high_cents: 44800,
+    expected_profit_low_cents: 12300,
+    expected_profit_high_cents: 28700,
     ...overrides,
   };
 }
@@ -518,6 +526,18 @@ async function testShopifyAuth(): Promise<void> {
     assertEqual(url.searchParams.get('grant_options[]'), null, 'no grant_options means an offline token');
   });
 
+  await test('post-install returns to the Shopify Admin app handle, never the client id', () => {
+    assertEqual(
+      postInstallUrl('acme-dev.myshopify.com', 'priceflag-beta'),
+      'https://admin.shopify.com/store/acme-dev/apps/priceflag-beta',
+      'embedded app home',
+    );
+    assertThrows(
+      () => postInstallUrl('acme-dev.myshopify.com', 'not/a-handle'),
+      'invalid app handle',
+    );
+  });
+
   await test('the callback HMAC verifies exactly as Shopify computes it', () => {
     const params = new URLSearchParams({
       code: 'authcode',
@@ -712,6 +732,24 @@ async function testShopifyAuth(): Promise<void> {
         ),
       'iss and dest disagree',
     );
+    // Prefix matching is not enough: the issuer must equal `{dest}/admin`
+    // exactly. Both of these passed the old startsWith(dest) check.
+    assertThrows(
+      () =>
+        verifySessionToken(
+          signSessionToken(validSessionClaims({ iss: 'https://acme-dev.myshopify.com.attacker.test/admin' })),
+          verifyOptions,
+        ),
+      'issuer with the destination as a hostname prefix is rejected',
+    );
+    assertThrows(
+      () =>
+        verifySessionToken(
+          signSessionToken(validSessionClaims({ iss: 'https://acme-dev.myshopify.com/admin/extra' })),
+          verifyOptions,
+        ),
+      'issuer with an extra path is rejected',
+    );
 
     // A little clock skew is tolerated, as Shopify's own libraries do.
     const session = verifySessionToken(
@@ -750,6 +788,75 @@ async function testShopifyAuth(): Promise<void> {
       () => resolveShopFromRequest(request, { allowQueryParam: false }),
       'refused without a session token',
     );
+  });
+
+  section('shopify auth — Admin API credentials');
+
+  await test('an uninstalled shop is rejected before a matching static token', async () => {
+    const names = ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_ADMIN_ACCESS_TOKEN', 'VERCEL_ENV'] as const;
+    const original = new Map(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.SHOPIFY_SHOP_DOMAIN = 'acme-dev.myshopify.com';
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = 'shpat_local_only';
+      process.env.VERCEL_ENV = 'preview';
+      const adapter = DemoAdapter.ephemeral();
+      const shop = await adapter.upsertShop({
+        shop_domain: 'acme-dev.myshopify.com',
+        mode: 'real',
+        uninstalled_at: NOW.toISOString(),
+      });
+
+      let error: unknown;
+      try {
+        credentialsFromShop(shop);
+      } catch (cause) {
+        error = cause;
+      }
+      assert(error instanceof CredentialError, 'credential rejection uses the typed error');
+      assertEqual((error as CredentialError).code, 'shop_uninstalled', 'static env cannot resurrect an uninstall');
+    } finally {
+      for (const name of names) {
+        const value = original.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  await test('a production runtime cannot turn static env credentials into write authority', async () => {
+    const names = ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_ADMIN_ACCESS_TOKEN', 'VERCEL_ENV'] as const;
+    const original = new Map(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.SHOPIFY_SHOP_DOMAIN = 'acme-dev.myshopify.com';
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = 'shpat_local_only';
+      process.env.VERCEL_ENV = 'production';
+      const adapter = DemoAdapter.ephemeral();
+      const shop = await adapter.upsertShop({
+        shop_domain: 'acme-dev.myshopify.com',
+        mode: 'real',
+        access_token_enc: null,
+        uninstalled_at: null,
+      });
+
+      let error: unknown;
+      try {
+        credentialsFromShop(shop);
+      } catch (cause) {
+        error = cause;
+      }
+      assert(error instanceof CredentialError, 'credential rejection uses the typed error');
+      assertEqual(
+        (error as CredentialError).code,
+        'static_credentials_forbidden',
+        'production requires the encrypted OAuth credential path',
+      );
+    } finally {
+      for (const name of names) {
+        const value = original.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 }
 
@@ -1165,8 +1272,10 @@ async function testSync(): Promise<void> {
       }),
     });
 
-    const outcome = await runSync(adapter, shop, { client, historyDays: 180 });
+    const queued = await adapter.createSyncRun(shop.id, 'full');
+    const outcome = await runSync(adapter, shop, { client, historyDays: 180, initialRun: queued });
     assertEqual(outcome.error, null, 'an empty store is not an error');
+    assertEqual(outcome.syncRunId, queued.id, 'background kickoff continues the run exposed to the poller');
 
     const run = await adapter.getLatestSyncRun(shop.id);
     const progress = syncProgressFromRun(run);
@@ -1749,7 +1858,7 @@ async function testContracts(): Promise<void> {
     validate('forecast_result.schema.json', forecast);
   });
 
-  await test('a bracket-only forecast validates too (fitted: null)', () => {
+  await test('a category-default forecast validates with an honest broad range', () => {
     const product = makeProduct({ cogs_cents: null, cogs_source: 'none' });
     const forecast = buildForecast({
       shop: { currency: 'USD', timezone: TZ },
@@ -1758,8 +1867,14 @@ async function testContracts(): Promise<void> {
       change: { type: 'absolute', absolute_cents: -300 },
       now: NOW,
     });
-    assertEqual(forecast.fitted, null, 'no fit means no fitted block');
-    assertEqual(forecast.confidence, 'assumption', 'and the tier says so');
+    assert(forecast.fitted !== null, 'recent demand gets a broad predicted range');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the range identifies its default source');
+    assertEqual(forecast.confidence, 'assumption', 'the tier says it was not learned from this store');
+    assert(
+      (forecast.fitted?.low.units_change_pct as number) < (forecast.fitted?.expected.units_change_pct as number) &&
+        (forecast.fitted?.expected.units_change_pct as number) < (forecast.fitted?.high.units_change_pct as number),
+      'the default range brackets its expected value',
+    );
     validate('forecast_result.schema.json', forecast);
   });
 
@@ -1984,7 +2099,7 @@ async function testContracts(): Promise<void> {
 async function testForecast(): Promise<void> {
   section('forecast');
 
-  await test('breakeven is exact margin arithmetic', () => {
+  await test('breakeven is transparent unit-margin arithmetic', () => {
     // price 32.00, cost 11.50, +10% -> 35.20. margin 20.50 -> 23.70.
     // breakeven multiplier = 20.50 / 23.70 = 0.86498 -> -13.50%
     const product = makeProduct();
@@ -1996,10 +2111,10 @@ async function testForecast(): Promise<void> {
       now: NOW,
     });
 
-    assertEqual(forecast.breakeven.direction, 'can_lose', 'a price rise means orders can be lost');
+    assertEqual(forecast.breakeven.direction, 'can_lose', 'a price rise means units can be lost');
     assertClose(forecast.breakeven.units_change_pct as number, -13.5021, 0.01, 'breakeven percent');
     assert(
-      forecast.breakeven.sentence.includes('lose up to 14%'),
+      forecast.breakeven.sentence.includes('14% fewer units'),
       `sentence should name the number, got: ${forecast.breakeven.sentence}`,
     );
   });
@@ -2013,7 +2128,7 @@ async function testForecast(): Promise<void> {
       change: { type: 'percent', percent: -10 },
       now: NOW,
     });
-    assertEqual(forecast.breakeven.direction, 'must_gain', 'a cut needs more orders');
+    assertEqual(forecast.breakeven.direction, 'must_gain', 'a cut needs more units');
     // margin 20.50 -> 17.30; 20.50/17.30 - 1 = +18.50%
     assertClose(forecast.breakeven.units_change_pct as number, 18.4971, 0.01, 'breakeven percent');
   });
@@ -2072,7 +2187,7 @@ async function testForecast(): Promise<void> {
       forecast.warnings.some((warning) => warning.code === 'missing_cogs'),
       'and it warns about the missing cost',
     );
-    // Revenue is still knowable, and still exact.
+    // Revenue is still knowable for every explicitly stated unit-demand scenario.
     assert(
       forecast.scenarios.some((scenario) => scenario.revenue_delta_cents !== 0),
       'revenue is still computed',
@@ -2093,6 +2208,12 @@ async function testForecast(): Promise<void> {
     assert(forecast.fitted !== null, 'fitted block present');
     assertEqual(forecast.confidence, 'fitted', 'tier is fitted');
     assertEqual(forecast.model_version, 'elasticity-v1.0.0', 'model version is traceable (R31)');
+    assertClose(
+      forecast.products[0]?.demand_multiplier as number,
+      Math.pow(1.1, -1.6),
+      1e-6,
+      'the frozen product response uses its expected fitted elasticity',
+    );
 
     const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
     // elasticity -1.6 on a +10% price move: 1.1^-1.6 - 1 = -14.0%
@@ -2164,6 +2285,74 @@ async function testForecast(): Promise<void> {
     assert(fitted.high.units_change_pct > fitted.expected.units_change_pct, 'on both sides');
   });
 
+  await test('per-SKU elasticity and margin are applied before money is aggregated', () => {
+    const highMargin = makeProduct({
+      id: 'high-margin',
+      product_gid: toGid('Product', 1101),
+      variant_gid: toGid('ProductVariant', 2101),
+      inventory_item_gid: toGid('InventoryItem', 3101),
+      price_cents: 10_000,
+      cogs_cents: 0,
+    });
+    const thinMargin = makeProduct({
+      id: 'thin-margin',
+      product_gid: toGid('Product', 1102),
+      variant_gid: toGid('ProductVariant', 2102),
+      inventory_item_gid: toGid('InventoryItem', 3102),
+      price_cents: 10_000,
+      cogs_cents: 9_000,
+    });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [highMargin, thinMargin],
+      orderDays: [...makeHistory(highMargin, 90, 10), ...makeHistory(thinMargin, 90, 10)],
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([
+        [highMargin.variant_gid, makeFit(highMargin.variant_gid, { id: 'fit-high', elasticity: -3 })],
+        [thinMargin.variant_gid, makeFit(thinMargin.variant_gid, { id: 'fit-thin', elasticity: -0.01 })],
+      ]),
+      now: NOW,
+    });
+
+    const expected = forecast.fitted?.expected;
+    assert(expected !== undefined, 'fitted outcome exists');
+    const expectedProfit =
+      (((11_000 - 0) * Math.pow(1.1, -3) - (10_000 - 0)) * 10 +
+        ((11_000 - 9_000) * Math.pow(1.1, -0.01) - (10_000 - 9_000)) * 10) *
+      90;
+    assertClose(
+      expected?.profit_delta_cents as number,
+      expectedProfit,
+      2,
+      'each SKU demand response is multiplied by its own margin before summing',
+    );
+    assert((expected?.profit_delta_cents as number) < 0, 'heterogeneous economics keep the correct loss sign');
+  });
+
+  await test('the frozen revenue realization rate includes ordinary returns', () => {
+    const product = makeProduct({ price_cents: 10_000, cogs_cents: 4_000 });
+    const history = makeHistory(product, 28, 1).map((row) => ({
+      ...row,
+      gross_revenue_cents: 10_000,
+      discount_cents: 0,
+      refund_cents: 1_000,
+      net_revenue_cents: 9_000,
+    }));
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: history,
+      change: { type: 'percent', percent: 10 },
+      now: NOW,
+    });
+    assertClose(
+      forecast.products[0]?.revenue_realization_rate as number,
+      0.9,
+      1e-6,
+      'expected money includes the pre-change return rate',
+    );
+  });
+
   await test('a stale fit is demoted, never served as fresh (R32)', () => {
     const product = makeProduct();
     const stale = makeFit(product.variant_gid, {
@@ -2177,12 +2366,28 @@ async function testForecast(): Promise<void> {
       fits: new Map([[product.variant_gid, stale]]),
       now: NOW,
     });
+    const freshForecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, makeFit(product.variant_gid)]]),
+      now: NOW,
+    });
 
-    assertEqual(forecast.confidence, 'partial', 'fitted demotes to partial when stale');
+    assertEqual(forecast.confidence, 'assumption', 'stale evidence is replaced rather than served as store-specific');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the replacement names its source');
     assert(
       forecast.warnings.some((warning) => warning.code === 'stale_model'),
       'and it says why',
     );
+    const staleWidth =
+      (forecast.fitted?.high.units_change_pct ?? 0) -
+      (forecast.fitted?.low.units_change_pct ?? 0);
+    const freshWidth =
+      (freshForecast.fitted?.high.units_change_pct ?? 0) -
+      (freshForecast.fitted?.low.units_change_pct ?? 0);
+    assert(staleWidth > freshWidth, 'the stale replacement is materially wider than the fresh fitted range');
   });
 
   await test('an assumption-tier fit is not leaned on', () => {
@@ -2196,8 +2401,16 @@ async function testForecast(): Promise<void> {
       fits: new Map([[product.variant_gid, weak]]),
       now: NOW,
     });
-    assertEqual(forecast.fitted, null, 'no fitted block');
-    assertEqual(forecast.confidence, 'assumption', 'and the tier is honest about it');
+    assert(forecast.fitted !== null, 'recent demand still gets a broad range');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the weak fit is replaced by the named default');
+    assertEqual(forecast.fitted?.elasticity, -1.5, 'the weak store estimate is not used');
+    assertClose(
+      forecast.products[0]?.demand_multiplier as number,
+      Math.pow(1.1, -1.5),
+      1e-6,
+      'the frozen response uses the default expected elasticity',
+    );
+    assertEqual(forecast.confidence, 'assumption', 'the tier is honest about the default');
   });
 
   await test('gift cards and subscriptions are excluded, with the reason (R22)', () => {
@@ -2227,6 +2440,7 @@ async function testForecast(): Promise<void> {
     assertEqual(forecast.products.length, 3, 'but all three are reported');
     const excluded = forecast.products.filter((line) => line.excluded);
     assertEqual(excluded.length, 2, 'two exclusions');
+    assert(excluded.every((line) => line.demand_multiplier === null), 'excluded lines freeze no demand response');
     assert(
       excluded.some((line) => line.exclusion_reason === 'gift_card') &&
         excluded.some((line) => line.exclusion_reason === 'subscription'),
@@ -2289,6 +2503,24 @@ async function testForecast(): Promise<void> {
     assertEqual(forecast.breakeven.direction, 'undefined', 'and breakeven is meaningless there');
   });
 
+  await test('a below-cost price cut still emits ascending ranges for every metric', () => {
+    const product = makeProduct({ price_cents: 1_000, cogs_cents: 900 });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: -50 },
+      now: NOW,
+    });
+    const fitted = forecast.fitted as NonNullable<typeof forecast.fitted>;
+    assert(fitted.low.units_change_pct <= fitted.high.units_change_pct, 'unit range is ascending');
+    assert(fitted.low.revenue_delta_cents <= fitted.high.revenue_delta_cents, 'revenue range is ascending');
+    assert(
+      (fitted.low.profit_delta_cents as number) <= (fitted.high.profit_delta_cents as number),
+      'profit range is ascending even when more demand loses more money',
+    );
+  });
+
   await test('a zero change is rejected rather than forecast', () => {
     assertThrows(() => computeTargetPrice(3200, { type: 'percent', percent: 0 }), 'zero percent');
     assertThrows(() => computeTargetPrice(3200, { type: 'absolute', absolute_cents: 0 }), 'zero cents');
@@ -2331,6 +2563,7 @@ async function testForecast(): Promise<void> {
         targetPriceCents: 11000,
         targetCompareAtCents: null,
         compareAtAction: 'none',
+        revenueRealizationRate: 1,
         cogsCents: 2000,
         fit: null,
         fitConfidence: 'assumption',
@@ -2344,6 +2577,7 @@ async function testForecast(): Promise<void> {
         targetPriceCents: 11000,
         targetCompareAtCents: null,
         compareAtAction: 'none',
+        revenueRealizationRate: 1,
         cogsCents: 9000,
         fit: null,
         fitConfidence: 'assumption',
@@ -2357,6 +2591,129 @@ async function testForecast(): Promise<void> {
   });
 }
 
+async function testReports(): Promise<void> {
+  section('post-rollout reports');
+
+  await test('a perfectly predicted heterogeneous SKU mix lands at the stored forecast center', () => {
+    const rollout = makeRollout({
+      horizon_days: 1,
+      current_stage: 0,
+      forecast: {
+        model_version: 'report-regression-v1',
+        products: [
+          {
+            variant_gid: 'gid://shopify/ProductVariant/cheap',
+            excluded: false,
+            baseline_units_per_day: 100,
+            demand_multiplier: 1,
+          },
+          {
+            variant_gid: 'gid://shopify/ProductVariant/expensive',
+            excluded: false,
+            baseline_units_per_day: 100,
+            demand_multiplier: 0.1,
+          },
+        ],
+        fitted: {
+          expected: {
+            units_change_pct: -45,
+            revenue_delta_cents: -880_000,
+            profit_delta_cents: -430_000,
+          },
+          low: {
+            units_change_pct: -55,
+            revenue_delta_cents: -930_000,
+            profit_delta_cents: -480_000,
+          },
+          high: {
+            units_change_pct: -35,
+            revenue_delta_cents: -830_000,
+            profit_delta_cents: -380_000,
+          },
+        },
+      } as unknown as Rollout['forecast'],
+    });
+    const variant = (
+      id: string,
+      baseline: number,
+      target: number,
+      cogs: number,
+    ): RolloutVariant => ({
+      id,
+      rollout_id: rollout.id,
+      shop_id: rollout.shop_id,
+      variant_gid: `gid://shopify/ProductVariant/${id}`,
+      product_gid: `gid://shopify/Product/${id}`,
+      title: id,
+      sku: id,
+      baseline_price_cents: baseline,
+      baseline_compare_at_cents: null,
+      target_price_cents: target,
+      target_compare_at_cents: null,
+      compare_at_action: 'none',
+      baseline_units_per_day: 100,
+      cogs_cents_at_creation: cogs,
+      cohort_stage: 0,
+      applied_price_cents: target,
+      applied_at: NOW.toISOString(),
+      reverted_at: null,
+      excluded: false,
+      exclusion_reason: null,
+      created_at: NOW.toISOString(),
+      updated_at: NOW.toISOString(),
+    });
+    const variants = [variant('cheap', 1_000, 1_100, 500), variant('expensive', 10_000, 11_000, 5_000)];
+    const reading: RolloutReading = {
+      id: 'reading-report-regression',
+      rollout_id: rollout.id,
+      shop_id: rollout.shop_id,
+      day: TODAY,
+      stage_index: 0,
+      actual_units: 110,
+      actual_orders: 100,
+      actual_revenue_cents: 220_000,
+      actual_profit_cents: 120_000,
+      expected_units: 110,
+      expected_low: 90,
+      expected_high: 130,
+      counterfactual_units: 200,
+      counterfactual_revenue_cents: 1_100_000,
+      counterfactual_profit_cents: 550_000,
+      expected_revenue_cents: 220_000,
+      expected_profit_cents: 120_000,
+      expected_source: 'model',
+      interval_nominal: 0.8,
+      model_version: 'report-regression-v1',
+      band_stale: false,
+      band_floored: false,
+      breach_probability: null,
+      breach: false,
+      breach_rule_id: null,
+      breach_reason: null,
+      breach_streak: 0,
+      decision: 'hold',
+      evaluated_at: NOW.toISOString(),
+    };
+    const report = buildReportFromBundle({
+      rollout,
+      variants,
+      readings: [reading],
+      events: [],
+      health: 'healthy',
+      health_sentence: 'Healthy.',
+      live: { stage_index: 0, variants_live: 2, variants_total: 2, fraction: 1 },
+      can: { confirm: false, rollback: true, pause: true, cancel: false, resume: false },
+    } satisfies RolloutBundle);
+
+    if (report === null) throw new Error('the report was not built');
+    assertEqual(report.realized.units_change_pct, -45, 'realized units use the no-change baseline');
+    assertEqual(report.realized.revenue_delta_cents, -880_000, 'realized revenue is per-SKU baseline money');
+    assertEqual(report.realized.profit_delta_cents, -430_000, 'realized profit is per-SKU baseline money');
+    assertEqual(report.predicted.expected.units_change_pct, -45, 'report center matches the approved price effect');
+    assert(report.in_range, 'a perfectly predicted result was scored outside its own range');
+  });
+}
+
 // ---------------------------------------------------------------------------
 // guardrails
 // ---------------------------------------------------------------------------
@@ -2366,9 +2723,11 @@ async function testGuardrails(): Promise<void> {
 
   const rules = defaultGuardrails();
 
-  await test('the default guardrail sentence avoids jargon (REQ-A-005)', () => {
-    const sentence = defaultGuardrails().rules[0]?.sentence ?? '';
-    assert(sentence.includes('put every price back'), `plain wording: ${sentence}`);
+  await test('the default guardrail is alert-only and avoids jargon (REQ-A-005)', () => {
+    const defaults = defaultGuardrails();
+    const sentence = defaults.rules[0]?.sentence ?? '';
+    assertEqual(defaults.auto_rollback, false, 'public beta defaults to merchant-controlled rollback');
+    assert(sentence.includes('pause') && sentence.includes('alert'), `plain wording: ${sentence}`);
     assert(!/revert/i.test(sentence), `"revert" is the one word a merchant may not use: ${sentence}`);
   });
 
@@ -2381,21 +2740,21 @@ async function testGuardrails(): Promise<void> {
   await test('one bad day is not enough for a two-day rule', () => {
     const assessment = evaluateGuardrails(rules, [
       observation({ day: '2026-07-27' }),
-      observation({ day: '2026-07-28', actual_units: 5 }),
+      observation({ day: '2026-07-28', actual_units: 4 }),
     ]);
     assertEqual(assessment.breach, true, 'today did cross the line');
     assertEqual(assessment.streak, 1, 'streak of one');
     assertEqual(assessment.action, null, 'but the rule needs two days');
   });
 
-  await test('two consecutive bad days trigger the rollback', () => {
+  await test('two consecutive bad days pause the default rollout', () => {
     const assessment = evaluateGuardrails(rules, [
       observation({ day: '2026-07-26' }),
-      observation({ day: '2026-07-27', actual_units: 5 }),
+      observation({ day: '2026-07-27', actual_units: 4 }),
       observation({ day: '2026-07-28', actual_units: 4 }),
     ]);
     assertEqual(assessment.streak, 2, 'streak of two');
-    assertEqual(assessment.action, 'rollback_all', 'and it fires');
+    assertEqual(assessment.action, 'pause', 'and it pauses without writing prices');
     assert((assessment.reason ?? '').includes('below'), `reason reads plainly: ${assessment.reason}`);
     // REQ-A-005: Lane A renders this verbatim, so no ISO dates on screen.
     assert(
@@ -2468,7 +2827,7 @@ async function testGuardrails(): Promise<void> {
       observation({ day: '2026-07-27', actual_units: 9, breach_probability: 0.91 }),
       observation({ day: '2026-07-28', actual_units: 9, breach_probability: 0.93 }),
     ]);
-    assertEqual(assessment.action, 'rollback_all', 'probability fires the rule');
+    assertEqual(assessment.action, 'pause', 'probability pauses the default rollout');
     assert((assessment.reason ?? '').includes('%'), 'and states the confidence');
   });
 
@@ -2636,7 +2995,9 @@ async function testRollout(): Promise<void> {
   });
 
   await test('advances once the hold is served', () => {
-    const rollout = makeRollout();
+    const rollout = makeRollout({
+      guardrails: { ...defaultGuardrails(), auto_rollback: true },
+    });
     const decision = decideNext({
       rollout,
       assessment: evaluateGuardrails(rollout.guardrails, [observation({ day: TODAY })]),
@@ -2661,16 +3022,16 @@ async function testRollout(): Promise<void> {
 
   await test('safety outranks advancing', () => {
     // The stage is ready to advance AND a guardrail has fired. Advancing a
-    // failing rollout is the worst possible outcome, so rollback wins.
+    // failing rollout is the worst possible outcome, so the beta-safe pause wins.
     const rollout = makeRollout();
     const assessment = evaluateGuardrails(rollout.guardrails, [
       observation({ day: addDays(TODAY, -1), actual_units: 4 }),
       observation({ day: TODAY, actual_units: 4 }),
     ]);
-    assertEqual(assessment.action, 'rollback_all', 'guardrail fired');
+    assertEqual(assessment.action, 'pause', 'guardrail fired in alert-only mode');
 
     const decision = decideNext({ rollout, assessment, asOf: TODAY, timezone: TZ });
-    assertEqual(decision.decision, 'rollback', 'rollback beats advance');
+    assertEqual(decision.decision, 'pause', 'pause beats advance');
   });
 
   await test('a rollout that is not running decides nothing', () => {
@@ -2826,7 +3187,7 @@ async function testReadings(): Promise<void> {
 
   await test('a floored band refuses to claim anything either way', () => {
     const sentence = readingSentence({ ...reading, band_floored: true });
-    assert(sentence.includes('too few orders'), `says why it cannot judge: ${sentence}`);
+    assert(sentence.includes('too few unit sales'), `says why it cannot judge: ${sentence}`);
     assert(!sentence.includes('inside the range'), 'and does not overclaim');
   });
 
@@ -2854,6 +3215,13 @@ async function testReadings(): Promise<void> {
       assert(sentence.length > 20, `${health} has a real sentence`);
       assert(!/elasticity|confidence interval|guardrail threshold/i.test(sentence), `${health} avoids jargon`);
     }
+  });
+
+  await test('beta breach copy says pause, never automatic rollback', () => {
+    const sentence = healthSentence('breaching', 'pause', 2);
+    assert(sentence.includes('paused the rollout'), `pause is explicit: ${sentence}`);
+    assert(sentence.includes('no prices were restored automatically'), `no automatic write is explicit: ${sentence}`);
+    assert(!sentence.includes('rollback is being applied'), `does not claim a rollback: ${sentence}`);
   });
 
   await test('unknown profit does not sum to zero', () => {
@@ -3001,7 +3369,11 @@ async function runAdapterSuite(label: string, adapter: StoreAdapter, shopId: str
     assert(all.length > 100, `expected months of history, got ${all.length} days`);
 
     const from = addDays(TODAY, -14);
-    const window = await adapter.getOrderDays(shopId, { variant_gids: [variantGid], from_day: from });
+    const window = await adapter.getOrderDays(shopId, {
+      variant_gids: [variantGid],
+      from_day: from,
+      to_day: TODAY,
+    });
     assert(window.length <= 15, 'window is respected');
     assert(
       window.every((row) => row.day >= from),
@@ -3342,9 +3714,16 @@ async function testAdapters(): Promise<void> {
   });
 
   // -- Supabase ------------------------------------------------------------
+  const requireSupabase = process.env.REQUIRE_SUPABASE_TESTS === 'true';
   if (!hasSupabaseConfig()) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    if (requireSupabase) {
+      await test('the required Supabase adapter suite is configured', async () => {
+        throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set');
+      });
+    } else {
+      skip('the full adapter suite', 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set');
+    }
     return;
   }
 
@@ -3352,7 +3731,13 @@ async function testAdapters(): Promise<void> {
   const ping = await supabase.ping();
   if (!ping.ok) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', `unreachable: ${ping.detail ?? 'unknown'}`);
+    if (requireSupabase) {
+      await test('the required Supabase database is reachable', async () => {
+        throw new Error(`Supabase is unreachable: ${ping.detail ?? 'unknown'}`);
+      });
+    } else {
+      skip('the full adapter suite', `unreachable: ${ping.detail ?? 'unknown'}`);
+    }
     return;
   }
 
@@ -3373,7 +3758,13 @@ async function testAdapters(): Promise<void> {
     shopId = shop.id;
   } catch (cause) {
     section('adapter: SupabaseAdapter');
-    skip('the full adapter suite', `could not seed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    if (requireSupabase) {
+      await test('the required Supabase database accepts the test fixture', async () => {
+        throw cause;
+      });
+    } else {
+      skip('the full adapter suite', `could not seed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
     return;
   }
 
@@ -3388,7 +3779,7 @@ async function testAdapters(): Promise<void> {
     auth: { persistSession: false },
   });
 
-  await test('the price journal rejects UPDATE, even from the service role', async () => {
+  await test('the price journal blocks UPDATE from the service role', async () => {
     const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
     const row = existing.items[0];
     assert(row !== undefined, 'there is a journal entry to attempt');
@@ -3400,8 +3791,8 @@ async function testAdapters(): Promise<void> {
 
     assert(error !== null, 'the update must be refused');
     assert(
-      /append-only/i.test(error?.message ?? ''),
-      `the guard trigger should say why, got: ${error?.message}`,
+      /append-only|permission denied/i.test(error?.message ?? ''),
+      `the database should reject journal mutation, got: ${error?.message}`,
     );
 
     // And the value is genuinely unchanged.
@@ -3409,13 +3800,16 @@ async function testAdapters(): Promise<void> {
     assert(after?.after_price_cents !== 999999, 'nothing was written');
   });
 
-  await test('the price journal rejects DELETE without an explicit purge', async () => {
+  await test('the price journal blocks DELETE from the service role', async () => {
     const existing = await supabase.listJournalEntries(shopId, { limit: 1 });
     const row = existing.items[0] as { id: string };
 
     const { error } = await raw.from('journal_entries').delete().eq('id', row.id);
     assert(error !== null, 'the delete must be refused');
-    assert(/append-only/i.test(error?.message ?? ''), `and say why, got: ${error?.message}`);
+    assert(
+      /append-only|permission denied/i.test(error?.message ?? ''),
+      `the database should reject journal deletion, got: ${error?.message}`,
+    );
 
     const still = await supabase.listJournalEntries(shopId, { limit: 1 });
     assert(still.total > 0, 'the trail survives');
@@ -3474,6 +3868,327 @@ async function testAdapters(): Promise<void> {
     assert(typeof row?.dow === 'number' && row.dow >= 1 && row.dow <= 7, 'dow is an ISO weekday');
     assert(row?.list_price_cents !== null, 'the elasticity regressor is populated');
   });
+
+  section('postgres privilege boundary');
+  const postgresUrl = process.env.SUPABASE_DB_URL;
+  if (postgresUrl === undefined || postgresUrl === '') {
+    if (requireSupabase) {
+      await test('the required direct-Postgres security checks are configured', async () => {
+        throw new Error('REQUIRE_SUPABASE_TESTS=true but SUPABASE_DB_URL is not set');
+      });
+    } else {
+      skip('direct-Postgres security checks', 'SUPABASE_DB_URL not set');
+    }
+    return;
+  }
+
+  const { Client } = await import('pg');
+  const postgres = new Client({ connectionString: postgresUrl });
+  try {
+    await postgres.connect();
+
+    await test('every Priceflag table has row-level security enabled', async () => {
+      const { rows } = await postgres.query<{ relname: string; relrowsecurity: boolean }>(
+        `select c.relname, c.relrowsecurity
+           from pg_class c
+           join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public'
+            and c.relkind in ('r', 'p')
+          order by c.relname`,
+      );
+      assert(rows.length >= 15, `expected the Priceflag schema, found only ${rows.length} public tables`);
+      const exposed = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
+      assert(exposed.length === 0, `tables without RLS: ${exposed.join(', ')}`);
+    });
+
+    await test('browser database roles have no privilege on Priceflag tables or views', async () => {
+      const { rows } = await postgres.query<{ role_name: string; relname: string; privilege_name: string }>(
+        `with roles(role_name) as (
+           values ('anon'::text), ('authenticated'::text)
+         ), objects(relname) as (
+           select c.relname
+             from pg_class c
+             join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public'
+              and c.relkind in ('r', 'p', 'v', 'm')
+         ), privileges(privilege_name) as (
+           values ('SELECT'::text), ('INSERT'::text), ('UPDATE'::text),
+                  ('DELETE'::text), ('TRUNCATE'::text), ('REFERENCES'::text),
+                  ('TRIGGER'::text)
+         )
+         select role_name, relname, privilege_name
+           from roles
+           cross join objects
+           cross join privileges
+          where has_table_privilege(
+            role_name,
+            format('%I.%I', 'public', relname),
+            privilege_name
+          )
+          order by role_name, relname, privilege_name`,
+      );
+      assert(
+        rows.length === 0,
+        `browser roles unexpectedly have database privileges: ${rows
+          .map((row) => `${row.role_name}:${row.relname}:${row.privilege_name}`)
+          .join(', ')}`,
+      );
+    });
+
+    await test('server-only RPCs are executable only by the service role', async () => {
+      const protectedFunctions = [
+        'pf_acquire_rollout_lock',
+        'pf_release_rollout_lock',
+        'pf_create_rollout_draft',
+        'pf_ingest_model_run',
+        'pf_ingest_order_webhook',
+        'pf_purge_shop_for_compliance',
+      ];
+      const { rows } = await postgres.query<{
+        proname: string;
+        prosecdef: boolean;
+        settings: string;
+        service_execute: boolean;
+        anon_execute: boolean;
+        authenticated_execute: boolean;
+        ml_execute: boolean;
+      }>(
+        `select p.proname,
+                p.prosecdef,
+                coalesce(array_to_string(p.proconfig, ','), '') as settings,
+                has_function_privilege('service_role', p.oid, 'EXECUTE') as service_execute,
+                has_function_privilege('anon', p.oid, 'EXECUTE') as anon_execute,
+                has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+                has_function_privilege('priceflag_ml_readonly', p.oid, 'EXECUTE') as ml_execute
+           from pg_proc p
+          where p.pronamespace = 'public'::regnamespace
+            and p.proname = any($1::text[])
+          order by p.proname`,
+        [protectedFunctions],
+      );
+      assertEqual(rows.length, protectedFunctions.length, 'every protected RPC exists exactly once');
+      for (const row of rows) {
+        assert(row.service_execute, `${row.proname} must be executable by service_role`);
+        assert(!row.anon_execute, `${row.proname} must not be executable by anon`);
+        assert(!row.authenticated_execute, `${row.proname} must not be executable by authenticated`);
+        assert(!row.ml_execute, `${row.proname} must not be executable by the ML reader`);
+        if (row.prosecdef) {
+          assert(
+            row.settings.includes('search_path=""'),
+            `${row.proname} is SECURITY DEFINER and must use an empty search_path; got ${row.settings}`,
+          );
+        }
+      }
+    });
+
+    await test('the server role can operate the app but cannot rewrite audit evidence', async () => {
+      const { rows } = await postgres.query<{
+        shops_readable: boolean;
+        journal_insertable: boolean;
+        journal_updatable: boolean;
+        journal_deletable: boolean;
+        compliance_insertable: boolean;
+        compliance_updatable: boolean;
+        compliance_deletable: boolean;
+        compliance_truncatable: boolean;
+      }>(
+        `select
+           has_table_privilege('service_role', 'public.shops', 'SELECT') as shops_readable,
+           has_table_privilege('service_role', 'public.journal_entries', 'INSERT') as journal_insertable,
+           has_table_privilege('service_role', 'public.journal_entries', 'UPDATE') as journal_updatable,
+           has_table_privilege('service_role', 'public.journal_entries', 'DELETE') as journal_deletable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'INSERT') as compliance_insertable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'UPDATE') as compliance_updatable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'DELETE') as compliance_deletable,
+           has_table_privilege('service_role', 'public.compliance_audit', 'TRUNCATE') as compliance_truncatable`,
+      );
+      const permission = rows[0];
+      if (permission === undefined) throw new Error('Postgres did not return the service-role privileges');
+      assert(permission.shops_readable, 'service_role cannot read the shop it authenticated');
+      assert(permission.journal_insertable, 'service_role cannot append to the price journal');
+      assert(!permission.journal_updatable, 'service_role can rewrite price-journal history');
+      assert(!permission.journal_deletable, 'service_role can delete price-journal history outside compliance purge');
+      assert(permission.compliance_insertable, 'service_role cannot append the verified compliance tombstone');
+      assert(!permission.compliance_updatable, 'service_role can rewrite compliance audit evidence');
+      assert(!permission.compliance_deletable, 'service_role can delete compliance audit evidence');
+      assert(!permission.compliance_truncatable, 'service_role can truncate compliance audit evidence');
+    });
+
+    await test('the compliance audit remains append-only even for the database owner', async () => {
+      const auditId = '00000000-0000-4000-8000-000000000099';
+      const webhookId = `smoke-compliance-${Date.now()}`;
+      await postgres.query('begin');
+      try {
+        await postgres.query(
+          `insert into public.compliance_audit
+             (id, webhook_id, shop_id, shop_domain, topic, action)
+           values ($1, $2, $3, 'append-only-smoke.myshopify.com', 'shop/redact', 'shop_data_purged')`,
+          [auditId, webhookId, shopId],
+        );
+
+        for (const [operation, sql] of [
+          ['UPDATE', `update public.compliance_audit set details = '{}'::jsonb where id = $1`],
+          ['DELETE', 'delete from public.compliance_audit where id = $1'],
+          ['TRUNCATE', 'truncate table public.compliance_audit'],
+        ] as const) {
+          await postgres.query('savepoint compliance_mutation');
+          let rejected = false;
+          try {
+            await postgres.query(sql, operation === 'TRUNCATE' ? [] : [auditId]);
+          } catch (cause) {
+            rejected = /append-only/i.test(cause instanceof Error ? cause.message : String(cause));
+          }
+          await postgres.query('rollback to savepoint compliance_mutation');
+          assert(rejected, `${operation} bypassed the compliance-audit trigger`);
+        }
+      } finally {
+        await postgres.query('rollback');
+      }
+    });
+
+    await test('Postgres refuses zero-dollar included rollout baselines and targets', async () => {
+      const { rows } = await postgres.query<{ id: string }>(
+        `select id from public.rollout_variants where not excluded order by created_at limit 1`,
+      );
+      const variant = rows[0];
+      if (variant === undefined) {
+        throw new Error('the adapter fixture did not create an included rollout variant');
+      }
+
+      for (const column of ['baseline_price_cents', 'target_price_cents'] as const) {
+        await postgres.query('begin');
+        let rejected = false;
+        try {
+          await postgres.query(`update public.rollout_variants set ${column} = 0 where id = $1`, [variant.id]);
+        } catch (cause) {
+          rejected = /check constraint/i.test(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          await postgres.query('rollback');
+        }
+        assert(rejected, `${column} accepted a zero-dollar included write intent`);
+      }
+    });
+
+    await test('the legacy ML-role retirement removes independently granted forbidden columns', async () => {
+      await postgres.query('begin');
+      try {
+        await postgres.query(
+          'grant select (access_token_enc), update (name) on public.shops to priceflag_ml_readonly',
+        );
+        const poisoned = await postgres.query<{
+          token_readable: boolean;
+          name_writable: boolean;
+        }>(`select
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+              ) as token_readable,
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'name', 'UPDATE'
+              ) as name_writable`);
+        assert(poisoned.rows[0]?.token_readable, 'the regression setup did not grant forbidden token access');
+        assert(poisoned.rows[0]?.name_writable, 'the regression setup did not grant a forbidden column write');
+
+        // Exercise the same column-level REVOKE semantics without rerunning the
+        // role-administration migration. Hosted `postgres` deliberately loses
+        // ADMIN OPTION when retirement completes, so rerunning ALTER/COMMENT
+        // statements here would test an authority the final state must not have.
+        await postgres.query(
+          'revoke select (access_token_enc), update (name) on public.shops from priceflag_ml_readonly',
+        );
+
+        const normalized = await postgres.query<{
+          token_readable: boolean;
+          name_writable: boolean;
+        }>(`select
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+              ) as token_readable,
+              has_column_privilege(
+                'priceflag_ml_readonly', 'public.shops', 'name', 'UPDATE'
+              ) as name_writable`);
+        assert(!normalized.rows[0]?.token_readable, 'role retirement retained forbidden token access');
+        assert(!normalized.rows[0]?.name_writable, 'role retirement retained a forbidden column write');
+      } finally {
+        await postgres.query('rollback');
+      }
+    });
+
+    await test('the legacy external ML database identity is permanently unusable', async () => {
+      const { rows } = await postgres.query<{
+        can_login: boolean;
+        inherits_roles: boolean;
+        is_superuser: boolean;
+        can_create_database: boolean;
+        can_create_role: boolean;
+        can_replicate: boolean;
+        bypasses_rls: boolean;
+        connection_limit: number;
+        memberships: number;
+        policies: number;
+        direct_grants: number;
+        token_readable: boolean;
+        domain_readable: boolean;
+      }>(
+        `select
+           role.rolcanlogin as can_login,
+           role.rolinherit as inherits_roles,
+           role.rolsuper as is_superuser,
+           role.rolcreatedb as can_create_database,
+           role.rolcreaterole as can_create_role,
+           role.rolreplication as can_replicate,
+           role.rolbypassrls as bypasses_rls,
+           role.rolconnlimit as connection_limit,
+           (select count(*)::int
+              from pg_auth_members link
+              join pg_roles parent on parent.oid = link.roleid
+              join pg_roles member on member.oid = link.member
+             where (role.oid in (link.roleid, link.member))
+               and not (
+                 parent.rolname = 'priceflag_ml_readonly'
+                 and member.rolname = 'postgres'
+               )) as memberships,
+           (select count(*)::int
+              from pg_policy policy
+             where role.oid = any(policy.polroles)) as policies,
+           (select count(*)::int
+              from (
+                select 1 from information_schema.table_privileges
+                 where grantee = 'priceflag_ml_readonly' and table_schema = 'public'
+                union all
+                select 1 from information_schema.column_privileges
+                 where grantee = 'priceflag_ml_readonly' and table_schema = 'public'
+                union all
+                select 1 from information_schema.routine_privileges
+                 where grantee = 'priceflag_ml_readonly' and routine_schema = 'public'
+              ) grants) as direct_grants,
+           has_column_privilege(
+             'priceflag_ml_readonly', 'public.shops', 'access_token_enc', 'SELECT'
+           ) as token_readable,
+           has_column_privilege(
+             'priceflag_ml_readonly', 'public.shops', 'shop_domain', 'SELECT'
+           ) as domain_readable
+          from pg_roles role
+         where role.rolname = 'priceflag_ml_readonly'`,
+      );
+      const authority = rows[0];
+      if (authority === undefined) throw new Error('Postgres did not return the retired ML role');
+      assert(!authority.can_login, 'the retired ML role can still log in');
+      assert(!authority.inherits_roles, 'the retired ML role inherits roles');
+      assert(!authority.is_superuser, 'the retired ML role is a superuser');
+      assert(!authority.can_create_database, 'the retired ML role can create databases');
+      assert(!authority.can_create_role, 'the retired ML role can create or alter roles');
+      assert(!authority.can_replicate, 'the retired ML role has replication authority');
+      assert(!authority.bypasses_rls, 'the retired ML role bypasses row-level security');
+      assertEqual(authority.connection_limit, 0, 'the retired ML role connection limit');
+      assertEqual(authority.memberships, 0, 'the retired ML role membership count');
+      assertEqual(authority.policies, 0, 'RLS policies referencing the retired ML role');
+      assertEqual(authority.direct_grants, 0, 'direct public-schema grants to the retired ML role');
+      assert(!authority.token_readable, 'the retired ML role can read shops.access_token_enc');
+      assert(!authority.domain_readable, 'the retired ML role retains the obsolete direct read surface');
+    });
+  } finally {
+    await postgres.end();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3490,6 +4205,7 @@ async function main(): Promise<void> {
   await testGoldenData();
   await testContracts();
   await testForecast();
+  await testReports();
   await testGuardrails();
   await testRollout();
   await testBands();

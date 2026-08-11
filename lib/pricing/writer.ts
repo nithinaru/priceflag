@@ -37,7 +37,7 @@
 import type { StoreAdapter } from '../adapters/types';
 import { nowIso } from '../dates';
 import type { Cents } from '../money';
-import { formatCents } from '../money';
+import { assertStorefrontPrice, formatCents } from '../money';
 import type { JournalEntryCreate, Rollout, RolloutVariant, Shop } from '../types';
 import { buildJournalEntry, rollbackIdempotencyKey, rolloutIdempotencyKey } from '../engine/journal';
 import { assertWritable } from '../shopify/credentials';
@@ -73,6 +73,19 @@ export interface ApplyResult {
   fully_applied: boolean;
 }
 
+export interface PriceVerificationMismatch {
+  variant_gid: string;
+  expected: Cents;
+  found: Cents | null;
+  expected_compare_at: Cents | null;
+  found_compare_at: Cents | null;
+}
+
+export interface PriceVerification {
+  verified: number;
+  mismatched: PriceVerificationMismatch[];
+}
+
 function emptyResult(): ApplyResult {
   return {
     intended: 0,
@@ -101,6 +114,7 @@ export async function applyStage(
   context: WriterContext,
   rollout: Rollout,
   stageIndex: number,
+  options: { abortOnExternalChange?: boolean } = {},
 ): Promise<ApplyResult> {
   // R21: the kill switch is checked at the writer, not only in the UI, so no
   // future caller can route around it.
@@ -133,7 +147,20 @@ export async function applyStage(
       continue;
     }
 
-    if (current.priceCents === variant.target_price_cents) {
+    // Planning rejects this too, but persisted intent is untrusted at the final
+    // boundary. Never let a corrupt row or bypass turn a product into a giveaway.
+    try {
+      assertStorefrontPrice(variant.target_price_cents, 'target price');
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      result.failed += 1;
+      result.failures.push({ variant_gid: variant.variant_gid, message });
+      continue;
+    }
+
+    const targetCompareAtMatches =
+      variant.compare_at_action === 'none' || current.compareAtCents === variant.target_compare_at_cents;
+    if (current.priceCents === variant.target_price_cents && targetCompareAtMatches) {
       // Already correct. Either we wrote it and lost the acknowledgement, or the
       // merchant set it by hand. Record it and move on — this is the branch that
       // closes the crash window.
@@ -173,13 +200,29 @@ export async function applyStage(
       continue;
     }
 
-    // Somebody else moved this price. Not ours to overwrite silently (R4): the
-    // caller pauses the rollout and asks, rather than mis-attributing the demand
-    // shift that follows.
-    if (variant.applied_at === null && current.priceCents !== variant.baseline_price_cents) {
+    // An acknowledgement may be missing or malformed after Shopify applied only
+    // part of what it reported. While the database is still unstamped, a target
+    // price with the wrong compare-at value is recoverable intent, not permission
+    // to claim success. Re-submit the exact pair below.
+    const recoverCompareAt =
+      variant.applied_at === null &&
+      current.priceCents === variant.target_price_cents &&
+      !targetCompareAtMatches;
+
+    // Before activation we own only the baseline. After activation we own only
+    // the target. Any other live value came from outside Priceflag and must be
+    // preserved; the evaluator/webhook pauses the rollout from this result.
+    const expectedPrice = variant.applied_at === null ? variant.baseline_price_cents : variant.target_price_cents;
+    if (
+      !recoverCompareAt &&
+      (current.priceCents !== expectedPrice ||
+        (variant.applied_at !== null &&
+          current.priceCents === variant.target_price_cents &&
+          !targetCompareAtMatches))
+    ) {
       result.external_changes.push({
         variant_gid: variant.variant_gid,
-        expected_cents: variant.baseline_price_cents,
+        expected_cents: expectedPrice,
         found_cents: current.priceCents,
       });
       continue;
@@ -197,9 +240,30 @@ export async function applyStage(
     byProduct.set(variant.product_gid, bucket);
   }
 
+  // The first stage has a stronger rule than a later reconcile: if even one
+  // frozen baseline drifted, do not put a subset of the proposal live. The
+  // merchant confirmed the selection as one change, so it either starts from
+  // those baselines or pauses without a Shopify mutation.
+  if (options.abortOnExternalChange && result.external_changes.length > 0) {
+    result.fully_applied = false;
+    return result;
+  }
+
   // --- the writes, one atomic call per product ------------------------------
   for (const [productGid, items] of byProduct) {
     try {
+      // Shop-level stops are stamped before they can wait for this rollout's
+      // lease. Re-read at the last mutation boundary so a writer that started
+      // moments earlier cannot continue behind a kill switch or uninstall.
+      const freshShop = await context.adapter.getShop(context.shop.id);
+      if (freshShop === null) throw new Error('The connected shop disappeared before the price write.');
+      if (freshShop.uninstalled_at !== null) {
+        throw new Error('Priceflag was uninstalled before the price write. No price was changed.');
+      }
+      assertWritable(freshShop);
+      // Repeat at the last possible boundary. A future caller may refactor the
+      // planner or bucket construction; this invariant stays beside the API call.
+      for (const { write } of items) assertStorefrontPrice(write.priceCents, 'target price');
       await writeProductVariantPrices(
         context.client,
         productGid,
@@ -297,6 +361,74 @@ export async function applyStage(
 }
 
 /**
+ * Compare every selected variant with the baseline the merchant reviewed.
+ * Used immediately before the first write; a mismatch aborts the whole start.
+ */
+export async function verifyFrozenBaselines(
+  context: WriterContext,
+  rollout: Rollout,
+): Promise<PriceVerification> {
+  const variants = (await context.adapter.getRolloutVariants(rollout.id)).filter((variant) => !variant.excluded);
+  const live = await readLivePrices(context.client, variants.map((variant) => variant.variant_gid));
+  const mismatched: PriceVerificationMismatch[] = [];
+  let verified = 0;
+
+  for (const variant of variants) {
+    const current = live.get(variant.variant_gid);
+    if (
+      current !== undefined &&
+      current.priceCents === variant.baseline_price_cents &&
+      current.compareAtCents === variant.baseline_compare_at_cents
+    ) {
+      verified += 1;
+      continue;
+    }
+    mismatched.push({
+      variant_gid: variant.variant_gid,
+      expected: variant.baseline_price_cents,
+      found: current?.priceCents ?? null,
+      expected_compare_at: variant.baseline_compare_at_cents,
+      found_compare_at: current?.compareAtCents ?? null,
+    });
+  }
+
+  return { verified, mismatched };
+}
+
+/** Verify the price and compare-at value for every variant due in a stage. */
+export async function verifyStage(
+  context: WriterContext,
+  rollout: Rollout,
+  stageIndex: number,
+): Promise<PriceVerification> {
+  const variants = variantsDueAtStage(await context.adapter.getRolloutVariants(rollout.id), stageIndex);
+  const live = await readLivePrices(context.client, variants.map((variant) => variant.variant_gid));
+  const mismatched: PriceVerificationMismatch[] = [];
+  let verified = 0;
+
+  for (const variant of variants) {
+    const current = live.get(variant.variant_gid);
+    if (
+      current !== undefined &&
+      current.priceCents === variant.target_price_cents &&
+      current.compareAtCents === variant.target_compare_at_cents
+    ) {
+      verified += 1;
+      continue;
+    }
+    mismatched.push({
+      variant_gid: variant.variant_gid,
+      expected: variant.target_price_cents,
+      found: current?.priceCents ?? null,
+      expected_compare_at: variant.target_compare_at_cents,
+      found_compare_at: current?.compareAtCents ?? null,
+    });
+  }
+
+  return { verified, mismatched };
+}
+
+/**
  * Repair drift for the currently live stage.
  *
  * Called before every evaluator decision, not only when something looks wrong —
@@ -328,7 +460,9 @@ export async function rollbackRollout(
   if (source !== 'kill_switch') assertWritable(context.shop);
 
   const all = await context.adapter.getRolloutVariants(rollout.id);
-  const touched = all.filter((variant) => !variant.excluded && variant.applied_at !== null);
+  // `applied_at` can lag Shopify when the write succeeds and the acknowledgement
+  // is lost. Read every selected variant and decide from Shopify's live price.
+  const touched = all.filter((variant) => !variant.excluded);
   if (touched.length === 0) return emptyResult();
 
   const live = await readLivePrices(context.client, touched.map((variant) => variant.variant_gid));
@@ -351,9 +485,49 @@ export async function rollbackRollout(
       continue;
     }
 
-    if (current.priceCents === variant.baseline_price_cents) {
+    const managesCompareAt = variant.compare_at_action !== 'none';
+    const baselinePairMatches =
+      current.priceCents === variant.baseline_price_cents &&
+      (!managesCompareAt || current.compareAtCents === variant.baseline_compare_at_cents);
+    if (baselinePairMatches) {
       result.skipped_noop += 1;
       if (variant.reverted_at === null) reverted.push(variant.id);
+      continue;
+    }
+
+    const targetPairMatches =
+      current.priceCents === variant.target_price_cents &&
+      (!managesCompareAt || current.compareAtCents === variant.target_compare_at_cents);
+    // A bulk mutation can restore the price but fail before restoring compare-at.
+    // Retry only the exact intermediate pair Priceflag itself could have left;
+    // an arbitrary compare-at value is a merchant edit and stays untouched.
+    const recoverPartialRollback =
+      managesCompareAt &&
+      variant.reverted_at === null &&
+      current.priceCents === variant.baseline_price_cents &&
+      current.compareAtCents === variant.target_compare_at_cents;
+
+    // A value other than our frozen target is a merchant/admin edit. Rollback is
+    // not permission to overwrite it, even when our target had previously lived.
+    if (!recoverPartialRollback && !targetPairMatches) {
+      result.external_changes.push({
+        variant_gid: variant.variant_gid,
+        expected_cents: variant.target_price_cents,
+        found_cents: current.priceCents,
+      });
+      continue;
+    }
+
+    // Frozen state is still untrusted at the last rollback boundary. An old or
+    // corrupt included row must never turn an undo into a free storefront item.
+    try {
+      assertStorefrontPrice(variant.baseline_price_cents, 'rollback baseline price');
+    } catch (cause) {
+      result.failed += 1;
+      result.failures.push({
+        variant_gid: variant.variant_gid,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
       continue;
     }
 
@@ -364,7 +538,7 @@ export async function rollbackRollout(
         variantGid: variant.variant_gid,
         priceCents: variant.baseline_price_cents,
         // Restore compare-at exactly as it was, including having been absent.
-        compareAtCents: variant.baseline_compare_at_cents,
+        compareAtCents: managesCompareAt ? variant.baseline_compare_at_cents : undefined,
       },
     });
     byProduct.set(variant.product_gid, bucket);
@@ -372,6 +546,17 @@ export async function rollbackRollout(
 
   for (const [productGid, items] of byProduct) {
     try {
+      if (source !== 'kill_switch') {
+        const freshShop = await context.adapter.getShop(context.shop.id);
+        if (freshShop === null) throw new Error('The connected shop disappeared before the rollback write.');
+        if (freshShop.uninstalled_at !== null) {
+          throw new Error('Priceflag was uninstalled before the rollback write. No price was changed.');
+        }
+        assertWritable(freshShop);
+      }
+      // Repeat beside the actual Shopify call, matching the forward writer's
+      // defense even if bucket construction is refactored later.
+      for (const { write } of items) assertStorefrontPrice(write.priceCents, 'rollback baseline price');
       await writeProductVariantPrices(
         context.client,
         productGid,
@@ -391,7 +576,9 @@ export async function rollbackRollout(
               before_price_cents: before.priceCents,
               after_price_cents: variant.baseline_price_cents,
               before_compare_at_cents: before.compareAtCents,
-              after_compare_at_cents: variant.baseline_compare_at_cents,
+              after_compare_at_cents: variant.compare_at_action !== 'none'
+                ? variant.baseline_compare_at_cents
+                : before.compareAtCents,
               currency: context.shop.currency,
             },
             {
@@ -425,7 +612,7 @@ export async function rollbackRollout(
     await context.adapter.updateRolloutVariant(id, { reverted_at: revertedAt });
   }
 
-  result.fully_applied = result.failed === 0;
+  result.fully_applied = result.failed === 0 && result.external_changes.length === 0;
   return result;
 }
 
@@ -439,26 +626,39 @@ export async function rollbackRollout(
 export async function verifyRollback(
   context: WriterContext,
   rollout: Rollout,
-): Promise<{ verified: number; mismatched: { variant_gid: string; expected: Cents; found: Cents | null }[] }> {
+): Promise<PriceVerification> {
   const all = await context.adapter.getRolloutVariants(rollout.id);
-  const touched = all.filter((variant) => !variant.excluded && variant.applied_at !== null);
+  // Verification must cover the same acknowledgement-loss window as rollback.
+  const touched = all.filter((variant) => !variant.excluded);
   const live = await readLivePrices(context.client, touched.map((variant) => variant.variant_gid));
 
-  const mismatched: { variant_gid: string; expected: Cents; found: Cents | null }[] = [];
+  const mismatched: PriceVerificationMismatch[] = [];
   let verified = 0;
 
   for (const variant of touched) {
     const current = live.get(variant.variant_gid);
     if (current === undefined) {
-      mismatched.push({ variant_gid: variant.variant_gid, expected: variant.baseline_price_cents, found: null });
+      mismatched.push({
+        variant_gid: variant.variant_gid,
+        expected: variant.baseline_price_cents,
+        found: null,
+        expected_compare_at: variant.baseline_compare_at_cents,
+        found_compare_at: null,
+      });
       continue;
     }
-    if (current.priceCents === variant.baseline_price_cents) verified += 1;
+    if (
+      current.priceCents === variant.baseline_price_cents &&
+      (variant.compare_at_action === 'none' ||
+        current.compareAtCents === variant.baseline_compare_at_cents)
+    ) verified += 1;
     else {
       mismatched.push({
         variant_gid: variant.variant_gid,
         expected: variant.baseline_price_cents,
         found: current.priceCents,
+        expected_compare_at: variant.baseline_compare_at_cents,
+        found_compare_at: current.compareAtCents,
       });
     }
   }

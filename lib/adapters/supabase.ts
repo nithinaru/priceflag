@@ -39,6 +39,7 @@ import type {
   RolloutPatch,
   RolloutReading,
   RolloutReadingUpsert,
+  RolloutReportRow,
   RolloutStatus,
   RolloutVariant,
   RolloutVariantCreate,
@@ -49,7 +50,16 @@ import type {
   WebhookEventCreate,
   WebhookEventRecord,
 } from '../types';
-import type { LockResult, Paged, StoreAdapter } from './types';
+import type {
+  AtomicModelIngestInput,
+  AtomicModelIngestResult,
+  AtomicOrderWebhookInput,
+  AtomicOrderWebhookResult,
+  CompliancePurgeResult,
+  LockResult,
+  Paged,
+  StoreAdapter,
+} from './types';
 
 type Row = Record<string, unknown>;
 
@@ -183,6 +193,12 @@ export class SupabaseAdapter implements StoreAdapter {
         builder = builder.order('title', { ascending: true }).order('variant_title', { ascending: true });
     }
 
+    // Every paged ordering ends in a tenant-unique immutable key. Shopify can
+    // legitimately contain thousands of variants with identical titles or
+    // prices; OFFSET pagination without this tie-breaker can omit or duplicate
+    // rows when Postgres chooses a different order for ties between requests.
+    builder = builder.order('variant_gid', { ascending: true });
+
     const offset = query.offset ?? 0;
     if (query.limit !== undefined) builder = builder.range(offset, offset + query.limit - 1);
 
@@ -259,13 +275,28 @@ export class SupabaseAdapter implements StoreAdapter {
   // -- order history -------------------------------------------------------
 
   async getOrderDays(shopId: string, query: OrderDayQuery = {}): Promise<OrderDay[]> {
-    let builder = this.db.from('order_days').select('*').eq('shop_id', shopId);
-    if (query.variant_gids?.length) builder = builder.in('variant_gid', [...query.variant_gids]);
-    if (query.from_day) builder = builder.gte('day', query.from_day);
-    if (query.to_day) builder = builder.lte('day', query.to_day);
+    // Supabase/PostgREST projects commonly cap one response at 1,000 rows. A
+    // 180-day forecast crosses that with only six variants, so a single select
+    // would silently train on incomplete history. Page on a deterministic
+    // compound order until the server returns a short page.
+    const pageSize = query.limit ?? 1000;
+    const initialOffset = query.offset ?? 0;
+    const rows: Row[] = [];
+    for (let offset = initialOffset; ; offset += pageSize) {
+      let builder = this.db.from('order_days').select('*').eq('shop_id', shopId);
+      if (query.variant_gids?.length) builder = builder.in('variant_gid', [...query.variant_gids]);
+      if (query.from_day) builder = builder.gte('day', query.from_day);
+      if (query.to_day) builder = builder.lte('day', query.to_day);
 
-    const result = await builder.order('day', { ascending: true });
-    return unwrap(result, `getOrderDays(${shopId})`).map((row) => mapOrderDay(row as Row));
+      const result = await builder
+        .order('day', { ascending: true })
+        .order('variant_gid', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      const page = unwrap(result, `getOrderDays(${shopId})`) as Row[];
+      rows.push(...page);
+      if (query.limit !== undefined || page.length < pageSize) break;
+    }
+    return rows.map((row) => mapOrderDay(row));
   }
 
   async upsertOrderDays(shopId: string, rows: readonly OrderDayUpsert[]): Promise<number> {
@@ -283,11 +314,43 @@ export class SupabaseAdapter implements StoreAdapter {
     return written;
   }
 
+  async commitOrderDaySyncSnapshot(
+    shopId: string,
+    rows: readonly OrderDayUpsert[],
+    snapshotStartedAt: string,
+  ): Promise<number> {
+    if (rows.length === 0) return 0;
+    const result = await this.db.rpc('pf_commit_order_day_sync_snapshot', {
+      p_shop_id: shopId,
+      p_rows: rows,
+      p_snapshot_started_at: snapshotStartedAt,
+    });
+    return num(unwrap(result, `commitOrderDaySyncSnapshot(${shopId})`));
+  }
+
   // -- rollouts ------------------------------------------------------------
 
   async createRollout(input: RolloutCreate): Promise<Rollout> {
     const result = await this.db.from('rollouts').insert(input).select('*').single();
     return mapRollout(unwrap(result, 'createRollout') as Row);
+  }
+
+  async createDraftRollout(
+    input: RolloutCreate & Pick<Rollout, 'id'>,
+    variants: readonly RolloutVariantCreate[],
+  ): Promise<{ rollout: Rollout; variants: RolloutVariant[] }> {
+    const result = await this.db.rpc('pf_create_rollout_draft', {
+      p_rollout: input,
+      p_variants: variants,
+    });
+    const payload = unwrap(result, 'createDraftRollout') as {
+      rollout: Row;
+      variants: Row[];
+    };
+    return {
+      rollout: mapRollout(payload.rollout),
+      variants: payload.variants.map(mapRolloutVariant),
+    };
   }
 
   async getRollout(rolloutId: string): Promise<Rollout | null> {
@@ -299,7 +362,12 @@ export class SupabaseAdapter implements StoreAdapter {
   async listRollouts(shopId: string, statuses?: readonly RolloutStatus[]): Promise<Rollout[]> {
     let builder = this.db.from('rollouts').select('*').eq('shop_id', shopId);
     if (statuses?.length) builder = builder.in('status', [...statuses]);
-    const result = await builder.order('created_at', { ascending: false });
+    // UUID is only a stable tie-breaker, not evidence of creation order. Callers
+    // such as the kill switch must remain correct under either tied-row order.
+    const result = await builder
+      .order('created_at', { ascending: false })
+      .order('creation_sequence', { ascending: false })
+      .order('id', { ascending: false });
     return unwrap(result, `listRollouts(${shopId})`).map((row) => mapRollout(row as Row));
   }
 
@@ -338,6 +406,26 @@ export class SupabaseAdapter implements StoreAdapter {
       .order('cohort_stage', { ascending: true })
       .order('variant_gid', { ascending: true });
     return unwrap(result, `getRolloutVariants(${rolloutId})`).map((row) => mapRolloutVariant(row as Row));
+  }
+
+  async listRolloutVariantsForShop(shopId: string): Promise<RolloutVariant[]> {
+    const rows: RolloutVariant[] = [];
+    for (let offset = 0; ; offset += 1000) {
+      const result = await this.db
+        .from('rollout_variants')
+        .select('*')
+        .eq('shop_id', shopId)
+        .order('created_at', { ascending: true })
+        // Batched inserts commonly share a timestamp. Without a unique
+        // tie-breaker, OFFSET pages can duplicate one tied row and silently
+        // omit another from the shop-wide rollback verification.
+        .order('id', { ascending: true })
+        .range(offset, offset + 999);
+      const page = unwrap(result, `listRolloutVariantsForShop(${shopId})`);
+      rows.push(...page.map((row) => mapRolloutVariant(row as Row)));
+      if (page.length < 1000) break;
+    }
+    return rows;
   }
 
   async updateRolloutVariant(id: string, patch: Partial<RolloutVariant>): Promise<RolloutVariant> {
@@ -432,7 +520,11 @@ export class SupabaseAdapter implements StoreAdapter {
     if (filter.from_day) builder = builder.gte('applied_at', `${filter.from_day}T00:00:00Z`);
     if (filter.to_day) builder = builder.lte('applied_at', `${filter.to_day}T23:59:59.999Z`);
 
-    builder = builder.order('applied_at', { ascending: false });
+    builder = builder
+      .order('creation_sequence', { ascending: false, nullsFirst: false })
+      .order('applied_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
     const offset = filter.offset ?? 0;
     if (filter.limit !== undefined) builder = builder.range(offset, offset + filter.limit - 1);
 
@@ -448,7 +540,10 @@ export class SupabaseAdapter implements StoreAdapter {
       .eq('shop_id', shopId)
       .eq('variant_gid', variantGid)
       .eq('status', 'applied')
+      .order('creation_sequence', { ascending: false, nullsFirst: false })
       .order('applied_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(1)
       .maybeSingle();
     const row = unwrapMaybe(result, `getLastJournaledPrice(${variantGid})`);
@@ -469,7 +564,15 @@ export class SupabaseAdapter implements StoreAdapter {
           .select('*')
           .eq('webhook_id', event.webhook_id)
           .single();
-        return { duplicate: true, record: mapWebhook(unwrap(existing, 'recordWebhook(duplicate)') as Row) };
+        const record = mapWebhook(unwrap(existing, 'recordWebhook(duplicate)') as Row);
+        if (
+          record.shop_id !== (event.shop_id ?? null) ||
+          record.shop_domain !== event.shop_domain ||
+          record.topic !== event.topic
+        ) {
+          throw new Error('webhook id is already bound to a different shop or topic');
+        }
+        return { duplicate: true, record };
       }
       throw new Error(`recordWebhook(${event.topic}): ${insert.error.message}`);
     }
@@ -495,6 +598,64 @@ export class SupabaseAdapter implements StoreAdapter {
       .eq('webhook_id', webhookId)
       .select('id');
     unwrap(result, `markWebhookProcessed(${webhookId})`);
+  }
+
+  async claimWebhook(webhookId: string): Promise<boolean> {
+    const result = await this.db
+      .from('webhook_events')
+      .update({ status: 'processing', error: null, processed_at: null })
+      .eq('webhook_id', webhookId)
+      .in('status', ['received', 'failed'])
+      .select('id');
+    return unwrap(result, `claimWebhook(${webhookId})`).length === 1;
+  }
+
+  async ingestOrderWebhook(input: AtomicOrderWebhookInput): Promise<AtomicOrderWebhookResult> {
+    const functionName = input.event.topic === 'refunds/create' ? 'pf_ingest_refund_webhook' : 'pf_ingest_order_webhook';
+    const result = await this.db.rpc(functionName, {
+      p_shop_id: input.event.shop_id,
+      p_event: { ...input.event, payload: null },
+      p_rows: input.rows,
+    });
+    const raw = unwrap(result, `${functionName}(${input.event.webhook_id})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_ingest_order_webhook returned an invalid result');
+    }
+    const row = raw as Row;
+    if (row.record === null || typeof row.record !== 'object' || Array.isArray(row.record)) {
+      throw new Error('pf_ingest_order_webhook returned no event record');
+    }
+    return {
+      duplicate: Boolean(row.duplicate),
+      rows_written: num(row.rows_written),
+      record: mapWebhook(row.record as Row),
+    };
+  }
+
+  async purgeShopForCompliance(input: {
+    shopId: string | null;
+    shopDomain: string;
+    webhookId: string;
+    triggeredAt: string | null;
+  }): Promise<CompliancePurgeResult> {
+    const result = await this.db.rpc('pf_purge_shop_for_compliance', {
+      p_shop_id: input.shopId,
+      p_shop_domain: input.shopDomain,
+      p_webhook_id: input.webhookId,
+      p_triggered_at: input.triggeredAt,
+    });
+    const raw = unwrap(result, `purgeShopForCompliance(${input.shopDomain})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_purge_shop_for_compliance returned an invalid result');
+    }
+    const row = raw as Row;
+    return {
+      duplicate: Boolean(row.duplicate),
+      purged: Boolean(row.purged),
+      shop_id: (row.shop_id as string | null) ?? null,
+      shop_domain: String(row.shop_domain),
+      webhook_id: String(row.webhook_id),
+    };
   }
 
   // -- sync ----------------------------------------------------------------
@@ -567,6 +728,16 @@ export class SupabaseAdapter implements StoreAdapter {
     return unwrap(result, 'listModelRuns').map((row) => mapModelRun(row as Row));
   }
 
+  async getModelRunsByIds(shopId: string, ids: readonly string[]): Promise<ModelRun[]> {
+    if (ids.length === 0) return [];
+    const result = await this.db
+      .from('model_runs')
+      .select('*')
+      .eq('shop_id', shopId)
+      .in('id', [...ids]);
+    return unwrap(result, `getModelRunsByIds(${shopId})`).map((row) => mapModelRun(row as Row));
+  }
+
   async recordModelRun(
     input: Omit<ModelRun, 'id' | 'started_at' | 'created_at'> & { started_at?: string },
   ): Promise<ModelRun> {
@@ -577,6 +748,37 @@ export class SupabaseAdapter implements StoreAdapter {
   async updateModelRun(id: string, patch: Partial<Omit<ModelRun, 'id'>>): Promise<ModelRun> {
     const result = await this.db.from('model_runs').update(patch).eq('id', id).select('*').single();
     return mapModelRun(unwrap(result, `updateModelRun(${id})`) as Row);
+  }
+
+  async ingestModelRunAtomic(input: AtomicModelIngestInput): Promise<AtomicModelIngestResult> {
+    const result = await this.db.rpc('pf_ingest_model_run', {
+      p_shop_id: input.shopId,
+      p_ingest_key: input.ingestKey,
+      p_run: input.run,
+      p_fits: input.fits,
+      p_bands: input.bands,
+      p_reports: input.reports,
+    });
+    const raw = unwrap(result, `ingestModelRunAtomic(${input.shopId})`) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('pf_ingest_model_run returned an invalid result');
+    }
+    const row = raw as Row;
+    return {
+      model_run_id: String(row.model_run_id),
+      fits_written: num(row.fits_written),
+      bands_written: num(row.bands_written),
+      reports_written: num(row.reports_written),
+      rows_written: num(row.rows_written),
+      deduplicated: Boolean(row.deduplicated),
+    };
+  }
+
+  async listRolloutReports(shopId: string, rolloutId?: string): Promise<RolloutReportRow[]> {
+    let builder = this.db.from('rollout_reports').select('*').eq('shop_id', shopId);
+    if (rolloutId !== undefined) builder = builder.eq('rollout_id', rolloutId);
+    const result = await builder.order('generated_at', { ascending: false });
+    return unwrap(result, `listRolloutReports(${shopId})`).map((row) => mapRolloutReport(row as Row));
   }
 
   async upsertFits(shopId: string, fits: readonly Omit<ElasticityFitRow, 'id'>[]): Promise<number> {
@@ -736,6 +938,7 @@ function mapRollout(row: Row): Rollout {
     last_evaluated_at: (row.last_evaluated_at as string | null) ?? null,
     last_evaluated_day: (row.last_evaluated_day as DayString | null) ?? null,
     created_by: String(row.created_by ?? 'merchant'),
+    creation_sequence: row.creation_sequence == null ? undefined : num(row.creation_sequence),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -782,6 +985,15 @@ function mapReading(row: Row): RolloutReading {
     expected_units: num(row.expected_units),
     expected_low: num(row.expected_low),
     expected_high: num(row.expected_high),
+    counterfactual_units: numOrNull(row.counterfactual_units),
+    counterfactual_revenue_cents: numOrNull(row.counterfactual_revenue_cents),
+    counterfactual_profit_cents: numOrNull(row.counterfactual_profit_cents),
+    expected_revenue_cents: numOrNull(row.expected_revenue_cents),
+    expected_profit_cents: numOrNull(row.expected_profit_cents),
+    expected_revenue_low_cents: numOrNull(row.expected_revenue_low_cents),
+    expected_revenue_high_cents: numOrNull(row.expected_revenue_high_cents),
+    expected_profit_low_cents: numOrNull(row.expected_profit_low_cents),
+    expected_profit_high_cents: numOrNull(row.expected_profit_high_cents),
     expected_source: (row.expected_source as RolloutReading['expected_source']) ?? 'bracket',
     interval_nominal: num(row.interval_nominal, 0.8),
     model_version: (row.model_version as string | null) ?? null,
@@ -835,6 +1047,7 @@ function mapJournal(row: Row): JournalEntry {
     error: (row.error as string | null) ?? null,
     shopify_user_errors: row.shopify_user_errors ?? null,
     applied_at: String(row.applied_at),
+    creation_sequence: row.creation_sequence == null ? undefined : num(row.creation_sequence),
     created_at: String(row.created_at),
   };
 }
@@ -944,10 +1157,46 @@ function mapModelRun(row: Row): ModelRun {
     incumbent_version: (row.incumbent_version as string | null) ?? null,
     metrics: (row.metrics as Record<string, unknown>) ?? {},
     rows_written: num(row.rows_written),
+    ingest_key: (row.ingest_key as string | null) ?? null,
+    fits_written: num(row.fits_written),
+    bands_written: num(row.bands_written),
+    reports_written: num(row.reports_written),
     notes: (row.notes as string | null) ?? null,
     error: (row.error as string | null) ?? null,
     started_at: String(row.started_at),
     finished_at: (row.finished_at as string | null) ?? null,
+    created_at: (row.created_at as string | undefined) ?? undefined,
+  };
+}
+
+function mapRolloutReport(row: Row): RolloutReportRow {
+  const update = (row.elasticity_update as RolloutReportRow['elasticity_update']) ?? (
+    row.elasticity_after === null || row.elasticity_after === undefined
+      ? null
+      : {
+          before: numOrNull(row.elasticity_before),
+          after: num(row.elasticity_after),
+        }
+  );
+  return {
+    id: String(row.id),
+    shop_id: String(row.shop_id),
+    contract_version: '1.0.0',
+    rollout_id: String(row.rollout_id),
+    generated_at: String(row.generated_at),
+    model_version: String(row.model_version),
+    model_run_id: (row.model_run_id as string | null) ?? null,
+    window: {
+      start_day: String(row.window_start),
+      end_day: String(row.window_end),
+      days: num(row.window_days),
+    },
+    predicted: row.predicted as RolloutReportRow['predicted'],
+    realized: row.realized as RolloutReportRow['realized'],
+    in_range: Boolean(row.in_range),
+    elasticity_update: update,
+    narrative: String(row.narrative),
+    per_variant: (row.per_variant as RolloutReportRow['per_variant']) ?? [],
     created_at: (row.created_at as string | undefined) ?? undefined,
   };
 }

@@ -31,6 +31,8 @@ export interface SyncOptions {
   catalogOnly?: boolean;
   client?: AdminGraphqlClient;
   now?: Date;
+  /** A queued run created before returning an HTTP response. */
+  initialRun?: SyncRun;
 }
 
 export interface SyncOutcome {
@@ -94,7 +96,10 @@ export async function runSync(
   const historyDays = options.historyDays ?? DEFAULT_HISTORY_DAYS;
 
   const client = options.client ?? new AdminGraphqlClient(credentialsFromShop(shop));
-  const run = await adapter.createSyncRun(shop.id, options.catalogOnly === true ? 'catalog' : 'full');
+  const run = options.initialRun ?? await adapter.createSyncRun(shop.id, options.catalogOnly === true ? 'catalog' : 'full');
+  if (run.shop_id !== shop.id || run.stage !== 'queued') {
+    throw new Error('runSync requires a queued sync run owned by the target shop');
+  }
 
   let currentShop = shop;
   let products: ProductSyncResult | null = null;

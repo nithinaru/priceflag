@@ -118,6 +118,10 @@ export interface ForecastProductLine {
   cogs_cents: Cents | null;
   cogs_source: CogsSource;
   baseline_units_per_day: number;
+  /** Expected unit-demand multiplier at this line's approved target price. */
+  demand_multiplier: number | null;
+  /** Frozen pre-change net revenue after discounts/returns, divided by gross revenue. */
+  revenue_realization_rate: number;
   confidence: Confidence;
   excluded: boolean;
   exclusion_reason: ExclusionReason;
@@ -160,7 +164,7 @@ export interface ForecastResult {
     elasticity_se: number | null;
     n_obs: number;
     price_variation_pct: number;
-    source: 'model' | 'portfolio_prior';
+    source: 'model' | 'portfolio_prior' | 'category_default';
     expected: ForecastOutcome;
     low: ForecastOutcome;
     high: ForecastOutcome;
@@ -259,19 +263,19 @@ export interface Guardrails {
 export function defaultGuardrails(): Guardrails {
   return {
     contract_version: CONTRACT_VERSION,
-    auto_rollback: true,
+    auto_rollback: false,
     rules: [
       {
-        id: 'units-30-2d',
+        id: 'units-35-2d',
         metric: 'units',
         comparison: 'below_expected_pct',
-        threshold_pct: 30,
+        threshold_pct: 35,
         consecutive_days: 2,
         scope: 'rollout',
         action: 'rollback_all',
         min_expected_units: DEFAULT_MIN_EXPECTED_UNITS,
         sentence:
-          'If daily units fall more than 30% below expected for 2 days in a row, put every price back automatically.',
+          'If daily units fall more than 35% below expected for 2 days in a row, pause the rollout and alert me.',
       },
     ],
   };

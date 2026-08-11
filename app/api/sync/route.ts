@@ -1,85 +1,121 @@
 /**
  * `POST /api/sync` — start (or re-run) a sync.
  *
- * Runs inline and returns the final progress. That is fine for the store sizes v1
- * targets (30–500 SKUs) and it keeps the failure visible; a fire-and-forget job
- * that dies silently is worse than a request that takes twenty seconds. If a
- * pilot store is large enough to hit the function timeout, this becomes a queued
- * job and the contract does not change — Lane A already polls `/api/sync/status`.
+ * Returns as soon as Shopify credentials and webhook configuration are verified,
+ * then runs the catalog/history work after the response. Progress and failures
+ * are durable in `sync_runs`, which is what `/api/sync/status` polls; closing the
+ * browser therefore does not turn a healthy sync into an abandoned HTTP request.
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { after, NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { getMode } from '@/lib/config';
-import { ensureStaticShop, resolveShopCredentials, CredentialError } from '@/lib/shopify/credentials';
+import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
+import { getAppUrl, getMode } from '@/lib/config';
+import { resolveShopCredentials } from '@/lib/shopify/credentials';
+import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
-import { resolveShopFromRequest } from '@/lib/shopify/session';
-import { ShopifyAuthError } from '@/lib/shopify/oauth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
+const ACTIVE_SYNC_GRACE_MS = 6 * 60 * 1_000;
+
+function requestedHistoryDays(url: URL): number | undefined {
+  if (!url.searchParams.has('days')) return undefined;
+  const days = Number(url.searchParams.get('days'));
+  if (!Number.isSafeInteger(days) || days < 1 || days > 3_650) {
+    throw new RangeError('History days must be a whole number between 1 and 3650.');
+  }
+  return days;
+}
 
 function fail(code: string, message: string, status: number, retryable = false): NextResponse {
   return NextResponse.json({ error: { code, message, retryable, details: null } }, { status });
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (getMode() === 'demo') {
-    return fail(
-      'demo_mode',
-      'The simulated store already has its catalog and history loaded — there is nothing to sync.',
-      409,
-    );
-  }
-
-  const adapter = getAdapter();
-
-  // The static-token path has no install flow, so nothing else would ever create
-  // the shop row that every other table points at.
-  await ensureStaticShop(adapter);
-
-  let shopDomain: string;
+export async function POST(request: Request): Promise<NextResponse> {
   try {
-    shopDomain = resolveShopFromRequest(request).shopDomain;
-  } catch (cause) {
-    if (cause instanceof ShopifyAuthError) {
-      const { staticShopDomain } = await import('@/lib/shopify/credentials');
-      const fallback = staticShopDomain();
-      if (fallback === null) return fail(cause.code, 'Could not work out which store this request is for.', 401);
-      shopDomain = fallback;
-    } else {
-      throw cause;
+    const adapter = getAdapter();
+    const { shop } = await resolveAuthenticatedShop(request, adapter);
+
+    // Authenticate first: demo mode is a separate product experience, not an
+    // unauthenticated escape hatch around merchant-route authorization.
+    if (getMode() === 'demo') {
+      return fail(
+        'demo_mode',
+        'The simulated store already has its catalog and history loaded — there is nothing to sync.',
+        409,
+      );
     }
-  }
 
-  const shop = await adapter.getShopByDomain(shopDomain);
-  if (shop === null) return fail('shop_not_connected', `${shopDomain} is not connected to Priceflag.`, 404);
+    const url = new URL(request.url);
+    let historyDays: number | undefined;
+    try {
+      historyDays = requestedHistoryDays(url);
+    } catch {
+      return fail('invalid_request', 'History days must be a whole number between 1 and 3650.', 400);
+    }
+    const options = {
+      catalogOnly: url.searchParams.get('catalogOnly') === '1',
+      historyDays,
+    };
 
-  try {
+    const latest = await adapter.getLatestSyncRun(shop.id);
+    if (latest !== null && latest.finished_at === null && latest.stage !== 'error') {
+      const lastProgress = new Date(latest.updated_at).getTime();
+      if (Number.isFinite(lastProgress) && Date.now() - lastProgress < ACTIVE_SYNC_GRACE_MS) {
+        return NextResponse.json(
+          { accepted: true, already_running: true, progress: syncProgressFromRun(latest) },
+          { status: 202, headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      await adapter.updateSyncRun(latest.id, {
+        stage: 'error',
+        error_code: 'internal',
+        error_message: 'The previous sync stopped before it finished. Priceflag is starting it again.',
+        error_retryable: true,
+        finished_at: new Date().toISOString(),
+        message: 'The previous sync stopped before it finished. Starting again…',
+      });
+    }
+
     // Resolve credentials before starting, so a bad token fails immediately
     // rather than halfway through writing a catalog.
-    await resolveShopCredentials(adapter, shopDomain);
+    const credentials = await resolveShopCredentials(adapter, shop.shop_domain);
+
+    // Reconcile on every merchant-triggered sync, not just the OAuth callback.
+    // That gives an installed shop a visible retry path after a transient
+    // registration failure or an app-domain move, and removes duplicate HTTP
+    // subscriptions before they can double-count orders.
+    await reconcileWebhooks(credentials, getAppUrl());
+
+    const initialRun = await adapter.createSyncRun(shop.id, options.catalogOnly ? 'catalog' : 'full');
+
+    after(async () => {
+      // `runSync` records its own terminal error state. Catch only an unexpected
+      // failure outside that boundary so the background task never becomes an
+      // unhandled rejection after the response has already reached the merchant.
+      await runSync(adapter, shop, { ...options, initialRun }).catch(async () => {
+        await adapter.updateSyncRun(initialRun.id, {
+          stage: 'error',
+          error_code: 'internal',
+          error_message: 'The sync stopped unexpectedly. Try again and it will continue safely.',
+          error_retryable: true,
+          finished_at: new Date().toISOString(),
+          message: 'The sync stopped unexpectedly. Try again.',
+        }).catch(() => undefined);
+      });
+    });
+
+    return NextResponse.json(
+      {
+        accepted: true,
+        progress: syncProgressFromRun(initialRun),
+      },
+      { status: 202, headers: { 'Cache-Control': 'no-store' } },
+    );
   } catch (cause) {
-    if (cause instanceof CredentialError) return fail(cause.code, cause.message, 401);
-    throw cause;
+    return merchantErrorResponse(cause);
   }
-
-  const url = new URL(request.url);
-  const outcome = await runSync(adapter, shop, {
-    catalogOnly: url.searchParams.get('catalogOnly') === '1',
-    historyDays: url.searchParams.has('days') ? Number(url.searchParams.get('days')) : undefined,
-  });
-
-  const run = await adapter.getLatestSyncRun(shop.id);
-
-  return NextResponse.json(
-    {
-      progress: syncProgressFromRun(run),
-      products: outcome.products,
-      orders: outcome.orders,
-    },
-    { status: outcome.error === null ? 200 : 502 },
-  );
 }

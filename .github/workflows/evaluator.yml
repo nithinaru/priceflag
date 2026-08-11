@@ -1,11 +1,11 @@
-# The evaluator schedule — the only scheduler Priceflag has.
+# Manual evaluator recovery tool. It is intentionally not scheduled during the
+# invite-only beta: automatic evaluator execution could advance a rollout or
+# write prices without an operator present. Use workflow_dispatch only after
+# the target and credentials have been verified.
 #
-# Vercel Cron cannot be used here. The production deployment is behind Deployment
-# Protection, protection answers an unauthenticated request with a 302 to SSO, and
-# Vercel Cron does not follow redirects — so a scheduled invocation would be
-# silently swallowed and no rollout would ever advance or roll back. Protection
-# stays on: Priceflag has no login of its own and the URL is guessable, so an
-# unprotected deployment would let anyone write prices to a real Shopify store.
+# Deployment Protection stays on: Priceflag has no login of its own and the URL
+# is guessable, so an unprotected deployment would let anyone write prices to a
+# real Shopify store.
 #
 # Two secrets, doing two different jobs, and both are required:
 #   VERCEL_AUTOMATION_BYPASS_SECRET — gets past Deployment Protection
@@ -13,19 +13,9 @@
 # The bypass alone reaches a 401. The bearer alone reaches a 302. Neither secret
 # is sufficient on its own, which is the point.
 #
-# Hourly. The evaluator judges the last *closed* shop-local day, so it does not
-# need to fire at midnight — it needs to fire within an hour of each store's local
-# midnight, for any UTC offset including the :30 and :45 zones. Every run is
-# idempotent per (rollout, day) and catches up days the schedule missed, so a late
-# or skipped run costs nothing.
-
 name: evaluator
 
 on:
-  schedule:
-    # Hourly, on the hour. GitHub may delay scheduled runs under load; catch-up
-    # makes that harmless.
-    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       base_url:

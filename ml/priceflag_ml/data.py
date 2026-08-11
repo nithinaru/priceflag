@@ -1,35 +1,36 @@
-"""Read-only data access for Lane C.
+"""Read-only data access for Priceflag's model-training lane.
 
-Two sources behind one shape:
-
-- ``load_golden`` — the synthetic golden store (always available; what tests
-  and the harness run against until Lane B provides real DB access).
-- ``SupabaseSource`` — read-only pull from Supabase PostgREST using
-  ``SUPABASE_URL`` + ``SUPABASE_ML_READONLY_KEY``, via Lane B's stable read
-  surface: the ``ml_product_days`` view (contracts/db/schema.md). View columns
-  map onto the canonical frame as sku=variant_gid, date=day,
-  price_cents=list_price_cents (the elasticity regressor — NOT the realized
-  price, which absorbs discounts), revenue_cents=net_revenue_cents,
-  promo=on_promo, stockout=had_stockout. Nothing in this module ever writes.
-
-Canonical tidy frame (one row per shop x SKU x *consecutive calendar day* —
-the harness enforces contiguity)::
-
-    shop_id, sku, date, units, price_cents, revenue_cents, promo, stockout
+The real worker reads through Priceflag's authenticated HTTPS export endpoint.
+It never receives a PostgreSQL login, a Supabase API key, or the application's
+service-role credential. The endpoint exposes only aggregate model inputs and
+performs all database access inside the application boundary.
 """
 
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
 
 from .golden import GoldenConfig, generate_store
+from .target import VercelTargetAttestor, clean_https_origin
 
 CANONICAL_COLUMNS = ["shop_id", "sku", "date", "units", "price_cents", "revenue_cents", "promo", "stockout"]
+SURFACES = {"product_days", "products", "price_history", "rollout_windows"}
+MAX_EXPORT_ROWS = 500_000
 
-_PAGE_SIZE = 1000  # stay at PostgREST's default max-rows so paging is explicit
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    project_ref: str
+    environment: str
+    source_authority: str
 
 
 def load_golden(cfg: GoldenConfig | None = None) -> pd.DataFrame:
@@ -38,76 +39,35 @@ def load_golden(cfg: GoldenConfig | None = None) -> pd.DataFrame:
 
 
 def densify_daily(orders: pd.DataFrame) -> pd.DataFrame:
-    """Fill missing calendar days per (shop_id, sku) with zero-order rows.
-
-    A real `order_days` table has no row on days with no orders; the harness
-    and forecasters require one row per consecutive day. Filled rows get
-    units=0, revenue=0, promo=False, stockout=False, and the price
-    forward-filled (a day with no orders still had a posted price).
-    """
+    """Fill missing calendar days per (shop_id, sku) with zero-order rows."""
     if orders.empty:
         return orders.copy()
     out = []
-    for (shop, sku), g in orders.groupby(["shop_id", "sku"]):
-        g = g.sort_values("date").set_index("date")
-        full = pd.date_range(g.index.min(), g.index.max(), freq="D")
-        g = g.reindex(full)
-        g.index.name = "date"
-        g["shop_id"] = shop
-        g["sku"] = sku
-        g["price_cents"] = g["price_cents"].ffill().bfill()
-        g["units"] = g["units"].fillna(0)
-        g["revenue_cents"] = g["revenue_cents"].fillna(0)
-        g["promo"] = g["promo"].fillna(False)
-        g["stockout"] = g["stockout"].fillna(False)
-        out.append(g.reset_index())
-    df = pd.concat(out, ignore_index=True)
-    df["units"] = df["units"].astype(int)
-    df["revenue_cents"] = df["revenue_cents"].astype(np.int64)
-    # A SKU with no observed price on ANY day survives as 0 (unregressable —
-    # the elasticity design matrix drops non-positive prices).
-    df["price_cents"] = df["price_cents"].fillna(0).astype(np.int64)
-    df["promo"] = df["promo"].astype(bool)
-    df["stockout"] = df["stockout"].astype(bool)
-    return df[CANONICAL_COLUMNS]
+    for (shop, sku), group in orders.groupby(["shop_id", "sku"]):
+        group = group.sort_values("date").set_index("date")
+        full = pd.date_range(group.index.min(), group.index.max(), freq="D")
+        group = group.reindex(full)
+        group.index.name = "date"
+        group["shop_id"] = shop
+        group["sku"] = sku
+        group["price_cents"] = group["price_cents"].ffill().bfill()
+        group["units"] = group["units"].fillna(0)
+        group["revenue_cents"] = group["revenue_cents"].fillna(0)
+        group["promo"] = group["promo"].fillna(False)
+        group["stockout"] = group["stockout"].fillna(False)
+        out.append(group.reset_index())
+    frame = pd.concat(out, ignore_index=True)
+    frame["units"] = frame["units"].astype(int)
+    frame["revenue_cents"] = frame["revenue_cents"].astype(np.int64)
+    frame["price_cents"] = frame["price_cents"].fillna(0).astype(np.int64)
+    frame["promo"] = frame["promo"].astype(bool)
+    frame["stockout"] = frame["stockout"].astype(bool)
+    return frame[CANONICAL_COLUMNS]
 
 
-class SupabaseSource:
-    """Read-only PostgREST client for Lane B's `ml_product_days` view.
+class PriceflagApiSource:
+    """Read model inputs from the pinned Priceflag server-to-server API."""
 
-    Missing optional columns are filled with safe defaults so the harness can
-    still run. Results are paginated (PostgREST caps responses at its max-rows
-    setting; a naive single GET silently truncates) and densified to one row
-    per calendar day. Note: until Lane B's B6 grants the read-only role its
-    SELECT policies, this role sees zero rows (RLS on, no policies).
-    """
-
-    def __init__(self, url: str, key: str, client=None) -> None:
-        if not url or not key:
-            raise ValueError("SupabaseSource needs both url and key")
-        self._base = url.rstrip("/") + "/rest/v1"
-        self._headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-        self._client = client  # injectable for tests; lazily created otherwise
-
-    @classmethod
-    def from_env(cls) -> "SupabaseSource":
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_ML_READONLY_KEY", "")
-        if not url or not key:
-            raise RuntimeError(
-                "SUPABASE_URL and SUPABASE_ML_READONLY_KEY are not set. "
-                "Lane B provides these (BUILD_BRIEF B6). Until then, use load_golden()."
-            )
-        return cls(url, key)
-
-    def _get_client(self):
-        if self._client is None:
-            import httpx  # lazy: keep golden-only workflows free of network deps
-
-            self._client = httpx.Client(timeout=60.0)
-        return self._client
-
-    # ml_product_days view column -> canonical frame column
     VIEW_COLUMN_MAP = {
         "shop_domain": "shop_id",
         "variant_gid": "sku",
@@ -119,42 +79,255 @@ class SupabaseSource:
         "had_stockout": "stockout",
     }
 
-    def order_days(self, shop_domain: str) -> pd.DataFrame:
-        client = self._get_client()
-        pages: list[pd.DataFrame] = []
-        offset = 0
-        while True:
-            resp = client.get(
-                f"{self._base}/ml_product_days",
-                params={
-                    "shop_domain": f"eq.{shop_domain}",
-                    "select": ",".join(self.VIEW_COLUMN_MAP),
-                    "order": "variant_gid,day",
-                    "limit": str(_PAGE_SIZE),
-                    "offset": str(offset),
-                },
-                headers=self._headers,
-            )
-            resp.raise_for_status()
-            batch = resp.json()
-            if batch:
-                pages.append(pd.DataFrame(batch))
-            if len(batch) < _PAGE_SIZE:
-                break
-            offset += _PAGE_SIZE
+    def __init__(
+        self,
+        base_url: str,
+        secret: str,
+        client: Any = None,
+        timeout: float = 120.0,
+        *,
+        vercel_token: str | None = None,
+        expected_target: str | None = None,
+        attestation_client: Any = None,
+    ) -> None:
+        if not secret:
+            raise ValueError("PriceflagApiSource needs an ML pipeline secret")
+        self._origin = clean_https_origin(base_url, "PRICEFLAG_APP_URL")
+        self._url = self._origin + "/api/ml/export"
+        self._secret = secret
+        self._client = client
+        self._owns_client = client is None
+        self._timeout = timeout
+        self._target = VercelTargetAttestor(
+            self._origin,
+            vercel_token,
+            expected_target,
+            attestation_client,
+        )
+        self._shops: list[str] | None = None
 
-        if not pages:
+    @classmethod
+    def from_env(cls, client: Any = None) -> "PriceflagApiSource":
+        base = os.environ.get("PRICEFLAG_APP_URL") or os.environ.get("APP_URL") or ""
+        expected_base = os.environ.get("PRICEFLAG_EXPECTED_APP_URL", "")
+        secret = os.environ.get("ML_INGEST_SECRET", "")
+        vercel_token = os.environ.get("VERCEL_TOKEN", "")
+        expected_target = os.environ.get("PRICEFLAG_EXPECTED_VERCEL_TARGET", "")
+        if not base or not expected_base or not secret or not vercel_token or not expected_target:
+            raise RuntimeError(
+                "PRICEFLAG_APP_URL, PRICEFLAG_EXPECTED_APP_URL, ML_INGEST_SECRET, "
+                "VERCEL_TOKEN and PRICEFLAG_EXPECTED_VERCEL_TARGET are required for real reads"
+            )
+        try:
+            origin = clean_https_origin(base, "PRICEFLAG_APP_URL")
+            expected_origin = clean_https_origin(expected_base, "PRICEFLAG_EXPECTED_APP_URL")
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+        if origin != expected_origin:
+            raise RuntimeError("PRICEFLAG_APP_URL does not match the protected expected app origin")
+        return cls(
+            origin,
+            secret,
+            client=client,
+            vercel_token=vercel_token,
+            expected_target=expected_target,
+        )
+
+    def _http(self) -> Any:
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=self._timeout)
+        return self._client
+
+    def _post(self, payload: dict) -> dict:
+        self._target.attest()
+        response = self._http().post(
+            self._url,
+            json=payload,
+            headers={"Authorization": f"Bearer {self._secret}", "Content-Type": "application/json"},
+        )
+        try:
+            body = response.json()
+        except (ValueError, TypeError) as error:
+            raise RuntimeError(f"ML export returned invalid JSON with HTTP {response.status_code}") from error
+        if response.status_code != 200:
+            raise RuntimeError(f"ML export failed with HTTP {response.status_code}")
+        if not isinstance(body, dict):
+            raise RuntimeError("ML export returned an invalid response object")
+        return body
+
+    def close(self) -> None:
+        if self._owns_client and self._client is not None:
+            close = getattr(self._client, "close", None)
+            if callable(close):
+                close()
+        self._client = None
+
+    def attest(self, expected_project_ref: str, expected_environment: str) -> SourceIdentity:
+        if not re.fullmatch(r"[a-z]{20}", expected_project_ref):
+            raise ValueError("expected ML project ref must be exactly 20 lowercase letters")
+        if expected_environment not in {"staging", "production"}:
+            raise ValueError("expected ML environment must be staging or production")
+        body = self._post({"operation": "attest"})
+        if body.get("schema_version") != 1 or body.get("source") != "priceflag-ml-export":
+            raise RuntimeError("ML export source attestation contract does not match")
+        if body.get("project_ref") != expected_project_ref:
+            raise RuntimeError("ML export Supabase project marker does not match")
+        if body.get("environment") != expected_environment:
+            raise RuntimeError("ML export environment marker does not match")
+        shops = body.get("shops")
+        if not isinstance(shops, list) or any(
+            not isinstance(shop, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", shop)
+            for shop in shops
+        ):
+            raise RuntimeError("ML export returned an invalid shop list")
+        if len(set(shops)) != len(shops):
+            raise RuntimeError("ML export returned duplicate shops")
+        self._shops = list(shops)
+        return SourceIdentity(
+            project_ref=expected_project_ref,
+            environment=expected_environment,
+            source_authority="priceflag-ml-export",
+        )
+
+    def list_shops(self) -> list[str]:
+        if self._shops is None:
+            raise RuntimeError("ML export source must be attested before reading shops")
+        return list(self._shops)
+
+    def _read(self, surface: str, shop_domain: str) -> list[dict]:
+        if surface not in SURFACES:
+            raise ValueError("unsupported ML export surface")
+        if self._shops is None or shop_domain not in self._shops:
+            raise ValueError("shop is outside the attested ML export scope")
+        rows: list[dict] = []
+        cursor: int | None = 0
+        while cursor is not None:
+            body = self._post(
+                {
+                    "operation": "read",
+                    "surface": surface,
+                    "shop_domain": shop_domain,
+                    "cursor": cursor,
+                    "limit": 1_000,
+                }
+            )
+            if (
+                body.get("schema_version") != 1
+                or body.get("surface") != surface
+                or body.get("shop_domain") != shop_domain
+                or not isinstance(body.get("rows"), list)
+            ):
+                raise RuntimeError("ML export page contract does not match the request")
+            page = body["rows"]
+            if any(not isinstance(row, dict) for row in page):
+                raise RuntimeError("ML export page contains a non-object row")
+            rows.extend(page)
+            if len(rows) > MAX_EXPORT_ROWS:
+                raise RuntimeError("ML export exceeded the per-surface safety limit")
+            next_cursor = body.get("next_cursor")
+            if next_cursor is not None and (
+                not isinstance(next_cursor, int)
+                or isinstance(next_cursor, bool)
+                or next_cursor <= cursor
+                or not page
+            ):
+                raise RuntimeError("ML export returned an invalid pagination cursor")
+            cursor = next_cursor
+        return rows
+
+    def verify_ingest_receipts(
+        self,
+        receipts: Sequence[tuple[str, str, int]],
+        expected_sha: str,
+    ) -> int:
+        if not receipts:
+            raise ValueError("at least one ingest receipt is required")
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+            raise ValueError("ingest receipt verification requires an exact lowercase commit SHA")
+        grouped: dict[str, list[dict]] = {}
+        seen: set[str] = set()
+        for shop_domain, run_id, rows_written in receipts:
+            canonical_id = str(UUID(run_id))
+            if (
+                self._shops is None
+                or shop_domain not in self._shops
+                or rows_written < 1
+                or canonical_id in seen
+            ):
+                raise ValueError("ingest receipts must be unique, positive and inside the attested shop scope")
+            seen.add(canonical_id)
+            grouped.setdefault(shop_domain, []).append(
+                {"id": canonical_id, "git_sha": expected_sha, "rows_written": rows_written}
+            )
+        verified = 0
+        for shop_domain, expected in grouped.items():
+            body = self._post(
+                {
+                    "operation": "verify_receipts",
+                    "shop_domain": shop_domain,
+                    "receipts": expected,
+                }
+            )
+            if (
+                body.get("schema_version") != 1
+                or body.get("shop_domain") != shop_domain
+                or body.get("verified") != len(expected)
+            ):
+                raise RuntimeError("model-run receipt read-back did not match")
+            verified += len(expected)
+        return verified
+
+    def rollout_windows(self, shop_domain: str, status: str | None = None) -> pd.DataFrame:
+        rows = self._read("rollout_windows", shop_domain)
+        if status is not None:
+            rows = [row for row in rows if row.get("status") == status]
+        if not rows:
+            return pd.DataFrame(
+                columns=["shop_domain", "rollout_id", "status", "start_day", "end_day", "variant_gids"]
+            )
+        frame = pd.DataFrame(rows)
+        for column in ("start_day", "end_day"):
+            if column in frame.columns:
+                frame[column] = pd.to_datetime(frame[column])
+        return frame.sort_values("start_day").reset_index(drop=True)
+
+    def price_history(self, shop_domain: str, rollout_id: str | None = None) -> pd.DataFrame:
+        rows = self._read("price_history", shop_domain)
+        if rollout_id is not None:
+            rows = [row for row in rows if row.get("rollout_id") == rollout_id]
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "variant_gid",
+                    "applied_at",
+                    "before_price_cents",
+                    "after_price_cents",
+                    "source",
+                    "rollout_id",
+                    "stage_index",
+                ]
+            )
+        frame = pd.DataFrame(rows)
+        frame["applied_at"] = pd.to_datetime(frame["applied_at"], format="mixed", utc=True)
+        return frame.sort_values(["variant_gid", "applied_at"]).reset_index(drop=True)
+
+    def products(self, shop_domain: str) -> pd.DataFrame:
+        rows = self._read("products", shop_domain)
+        if not rows:
+            return pd.DataFrame(columns=["variant_gid", "cogs_cents", "price_cents"])
+        return pd.DataFrame(rows).sort_values("variant_gid").reset_index(drop=True)
+
+    def order_days(self, shop_domain: str) -> pd.DataFrame:
+        rows = self._read("product_days", shop_domain)
+        if not rows:
             return pd.DataFrame(columns=CANONICAL_COLUMNS)
-        df = pd.concat(pages, ignore_index=True).rename(columns=self.VIEW_COLUMN_MAP)
-        df["date"] = pd.to_datetime(df["date"])
-        for col, default in (("promo", False), ("stockout", False)):
-            if col not in df.columns:
-                df[col] = default
-            df[col] = df[col].fillna(default)
-        # price_cents (list_price_cents) is genuinely nullable (e.g. an
-        # orders/create webhook for a not-yet-synced variant). Do NOT fill
-        # with 0 — a zero price poisons log-price regressors; leave NaN for
-        # densify_daily's ffill/bfill to repair from neighboring days.
-        if "price_cents" not in df.columns:
-            df["price_cents"] = np.nan
-        return densify_daily(df[CANONICAL_COLUMNS])
+        frame = pd.DataFrame(rows).rename(columns=self.VIEW_COLUMN_MAP)
+        missing = set(CANONICAL_COLUMNS) - set(frame.columns)
+        if missing:
+            raise RuntimeError(f"ML product-day export is missing required columns: {sorted(missing)}")
+        frame["date"] = pd.to_datetime(frame["date"])
+        for column, default in (("promo", False), ("stockout", False)):
+            frame[column] = frame[column].fillna(default)
+        return densify_daily(frame[CANONICAL_COLUMNS])
