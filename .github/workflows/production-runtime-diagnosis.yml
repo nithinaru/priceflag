@@ -25,6 +25,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Identify the deployment currently serving the production domain
+        run: |
+          set -euo pipefail
+          npx --yes vercel@54.14.0 inspect priceflag-app.vercel.app --format=json \
+            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW > /tmp/deployment.json
+          node - <<'NODE'
+          const deployment = require('/tmp/deployment.json');
+          const project = deployment.projectId ?? deployment.project?.id ?? 'unknown';
+          const target = deployment.target ?? deployment.readyState ?? 'unknown';
+          console.log(`Production domain deployment: project ${project}, target ${target}`);
+          NODE
+          rm -f /tmp/deployment.json
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
       - name: Pull production configuration into the ephemeral runner
         run: |
           set -euo pipefail
