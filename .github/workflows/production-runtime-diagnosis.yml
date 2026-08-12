@@ -1,0 +1,65 @@
+name: production-runtime-diagnosis
+
+on:
+  workflow_dispatch:
+
+# This is deliberately a read-only, approval-gated diagnostic. It reads Vercel
+# production variables only on the runner, proves whether Supabase accepts the
+# configured service key, and prints no values, URLs, response bodies, or logs.
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: priceflag-ml-production
+    steps:
+      - name: Check out the exact diagnostic revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify protected environment boundary
+        run: node scripts/github-environment-guard.mjs priceflag-ml-production main optional
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Pull production configuration into the ephemeral runner
+        run: |
+          set -euo pipefail
+          mkdir -p .vercel
+          printf '%s\n' '{"projectId":"prj_RU8NlBDoR7t89BNqn5BagOpmpnmm","orgId":"team_AqaBD6YaOf9DIJ7NzbytTZTW"}' > .vercel/project.json
+          npx --yes vercel@54.14.0 env pull .runtime.env --environment production --yes \
+            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Diagnose configuration without exposing credentials
+        run: |
+          set -euo pipefail
+          set -a
+          source .runtime.env
+          set +a
+          rm -f .runtime.env
+          required=(SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY ML_INGEST_SECRET PRICEFLAG_MODE)
+          for name in "${required[@]}"; do
+            test -n "${!name:-}" || { echo "::error::$name is missing from Vercel production configuration"; exit 1; }
+          done
+          status=$(curl --silent --show-error --output /tmp/supabase.json --write-out '%{http_code}' --max-time 20 \
+            "$SUPABASE_URL/rest/v1/shops?select=id&limit=1" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          code=$(node -e 'try { const body = JSON.parse(require("node:fs").readFileSync("/tmp/supabase.json", "utf8")); console.log(typeof body.code === "string" ? body.code : "none"); } catch { console.log("non_json"); }')
+          rm -f /tmp/supabase.json
+          echo "Supabase REST probe: HTTP $status, error code $code"
+          test "$status" -ge 200 && test "$status" -lt 300
+
+      - name: Confirm application health
+        run: |
+          set -euo pipefail
+          status=$(curl --silent --output /tmp/health.json --write-out '%{http_code}' --max-time 20 https://priceflag-app.vercel.app/api/health)
+          healthy=$(node -e 'try { console.log(JSON.parse(require("node:fs").readFileSync("/tmp/health.json", "utf8")).ok === true ? "yes" : "no"); } catch { console.log("no"); }')
+          rm -f /tmp/health.json
+          echo "Priceflag health: HTTP $status, adapter reachable $healthy"
+          test "$status" = 200 && test "$healthy" = yes
