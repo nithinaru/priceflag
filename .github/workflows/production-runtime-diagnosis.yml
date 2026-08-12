@@ -46,6 +46,8 @@ jobs:
           set -euo pipefail
           deployment_id=$(cat /tmp/deployment-id)
           test "$deployment_id" != unknown
+          mkdir -p .vercel
+          printf '%s\n' '{"projectId":"prj_RU8NlBDoR7t89BNqn5BagOpmpnmm","orgId":"team_AqaBD6YaOf9DIJ7NzbytTZTW"}' > .vercel/project.json
           npx --yes vercel@54.14.0 env pull .serving.env --id="$deployment_id" --yes \
             --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
           for file in .serving.env; do
