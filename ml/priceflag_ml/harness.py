@@ -23,6 +23,14 @@ from .metrics import elasticity_recovery, interval_coverage, mape, pinball_loss,
 ForecasterFactory = Callable[[], object]  # -> object with .fit(df) and .forecast(h)
 ElasticityEstimator = Callable[[pd.DataFrame], dict]  # sku history -> {"elasticity": ...}
 
+# The fitted elasticity range feeds merchant-facing forecast uncertainty. A
+# point-estimate win is not enough to promote it if that interval is badly
+# calibrated: under-coverage makes unsafe price changes look certain; severe
+# over-coverage hides useful signal. Five seeded stores leave a little sampling
+# noise, hence the deliberately explicit +/- 13-point acceptance band.
+ELASTICITY_CI80_COVERAGE_MIN = 0.67
+ELASTICITY_CI80_COVERAGE_MAX = 0.93
+
 
 def sku_frames(orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {str(sku): g.sort_values("date").reset_index(drop=True) for sku, g in orders.groupby("sku")}
@@ -192,6 +200,17 @@ def evaluate_elasticity(estimator: ElasticityEstimator, store: GoldenStore, tol:
     }
 
 
+def elasticity_challenger_wins(summary: dict) -> bool:
+    """R28 promotion rule for fitted elasticity, including interval honesty."""
+    return (
+        summary["challenger_within_0.3"] > summary["incumbent_within_0.3"]
+        and summary["challenger_mae"] <= summary["incumbent_mae"] * 1.02
+        and ELASTICITY_CI80_COVERAGE_MIN
+        <= summary["ci80_coverage_of_truth"]
+        <= ELASTICITY_CI80_COVERAGE_MAX
+    )
+
+
 def run_c1(cfg: GoldenConfig | None = None) -> dict:
     """C1 report: incumbent scores on golden data — the bar for every challenger."""
     store = generate_store(cfg)
@@ -250,12 +269,7 @@ def run_c2(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
         "incumbent_within_0.3": _mean("incumbent_identifiable", "pct_within_0.3"),
         "ci80_coverage_of_truth": float(np.mean([s["ci80_coverage_of_truth"] for s in per_seed])),
     }
-    summary["verdict"] = (
-        "challenger wins"
-        if summary["challenger_within_0.3"] > summary["incumbent_within_0.3"]
-        and summary["challenger_mae"] <= summary["incumbent_mae"] * 1.02
-        else "incumbent stays"
-    )
+    summary["verdict"] = "challenger wins" if elasticity_challenger_wins(summary) else "incumbent stays"
     return {"summary": summary, "per_seed": per_seed}
 
 

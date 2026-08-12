@@ -208,6 +208,22 @@ def test_beats_bracket_incumbent_on_golden(fast_bootstrap):
     assert 0.67 <= s["ci80_coverage_of_truth"] <= 0.93, s["ci80_coverage_of_truth"]
 
 
+@pytest.mark.parametrize("coverage", [0.66, 0.94])
+def test_r28_promotion_rejects_miscalibrated_elasticity_intervals(coverage):
+    """Accuracy cannot promote a model whose stated 80% range is dishonest."""
+    from priceflag_ml.harness import elasticity_challenger_wins
+
+    assert not elasticity_challenger_wins(
+        {
+            "challenger_within_0.3": 0.50,
+            "incumbent_within_0.3": 0.30,
+            "challenger_mae": 0.40,
+            "incumbent_mae": 0.50,
+            "ci80_coverage_of_truth": coverage,
+        }
+    )
+
+
 def test_ci_coverage_at_production_bootstrap():
     """One seed at the shipped BOOTSTRAP_B=200: the coverage the product
     actually serves, not just the trimmed test configuration."""
