@@ -32,11 +32,27 @@ jobs:
             --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW > /tmp/deployment.json
           node - <<'NODE'
           const deployment = require('/tmp/deployment.json');
-          const project = deployment.projectId ?? deployment.project?.id ?? 'unknown';
+          const project = deployment.projectId ?? deployment.project?.id ?? deployment.project?.name ?? 'unknown';
+          const id = deployment.id ?? deployment.uid ?? 'unknown';
           const target = deployment.target ?? deployment.readyState ?? 'unknown';
-          console.log(`Production domain deployment: project ${project}, target ${target}`);
+          console.log(`Production domain deployment: project ${project}, id ${id}, target ${target}`);
+          require('node:fs').writeFileSync('/tmp/deployment-id', id);
           NODE
-          rm -f /tmp/deployment.json
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Compare current production and serving-deployment configuration
+        run: |
+          set -euo pipefail
+          deployment_id=$(cat /tmp/deployment-id)
+          test "$deployment_id" != unknown
+          npx --yes vercel@54.14.0 env pull .serving.env --id="$deployment_id" --yes \
+            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
+          for file in .serving.env; do
+            echo "Serving deployment variables:"
+            awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print "  " $1}' "$file" | sort
+          done
+          rm -f .serving.env /tmp/deployment.json /tmp/deployment-id
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
