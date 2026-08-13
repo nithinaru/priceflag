@@ -98,6 +98,81 @@ async function main(): Promise<void> {
   );
   assert.equal(foreignCounterfactual.status, 500, 'counterfactual rollout ownership is checked at write time');
 
+  // Satisfies every `required` field of contracts/price_recommendation.schema.json.
+  const recommendation = {
+    contract_version: '1.0.0',
+    shop_domain: DEMO_SHOP_DOMAIN,
+    variant_gid: product.variant_gid,
+    current_price_cents: 2500,
+    recommended_price_cents: 2699,
+    robust_price_cents: 2599,
+    rounding: 'end_99',
+    elasticity: -1.4,
+    confidence: 'fitted',
+    expected: {
+      nominal_profit_delta_cents_per_day: 320,
+      robust_profit_delta_cents_per_day: -40,
+      nominal_revenue_delta_cents_per_day: 510,
+      robust_revenue_delta_cents_per_day: 120,
+    },
+    constraints: { binding: ['none'] },
+    candidates_evaluated: 48,
+    rationale: 'A small increase to $26.99 should add profit; demand looks steady near this price.',
+    model_version: 'optimizer-1.0',
+    computed_at: '2026-08-11T00:00:00Z',
+  };
+
+  // A valid recommendation row clears contract validation: with the gate closed
+  // the run is recorded and the rows discarded (200), which proves the 422s
+  // below are about the rows, not the kind. (The accepted write path lands with
+  // the recommendations table + RPC.)
+  const recGateClosed = await POST(
+    request({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      model_run: { kind: 'recommendation', model_version: 'optimizer-1.0', gate_passed: false },
+      recommendations: [recommendation],
+    }),
+  );
+  assert.equal(recGateClosed.status, 200, 'a valid recommendation row must clear contract validation');
+  assert.equal((await recGateClosed.json()).reason, 'gate_not_passed');
+
+  const recInvalidRow = await POST(
+    request({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      model_run: { kind: 'recommendation', model_version: 'optimizer-1.0', gate_passed: true },
+      recommendations: [{ ...recommendation, recommended_price_cents: 0 }],
+    }),
+  );
+  assert.equal(recInvalidRow.status, 422, 'a zero-cent recommendation must be rejected at the door');
+
+  const recForeignShop = await POST(
+    request({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      model_run: { kind: 'recommendation', model_version: 'optimizer-1.0', gate_passed: true },
+      recommendations: [{ ...recommendation, shop_domain: 'other.myshopify.com' }],
+    }),
+  );
+  assert.equal(recForeignShop.status, 422, 'recommendation rows must match the ingest shop');
+
+  const recWrongSurface = await POST(
+    request({
+      shop_domain: DEMO_SHOP_DOMAIN,
+      model_run: { kind: 'recommendation', model_version: 'optimizer-1.0', gate_passed: true },
+      recommendations: [recommendation],
+      fits: [fit],
+    }),
+  );
+  assert.equal(recWrongSurface.status, 400, 'a recommendation run cannot carry fits');
+
+  const fitCarryingRecommendations = await POST(
+    request({
+      ...payload,
+      model_run: { kind: 'elasticity', model_version: 'test-fit-1', gate_passed: true },
+      recommendations: [recommendation],
+    }),
+  );
+  assert.equal(fitCarryingRecommendations.status, 400, 'an elasticity run cannot carry recommendations');
+
   const unauthorized = await POST(request(payload, 'wrong'));
   assert.equal(unauthorized.status, 401);
 

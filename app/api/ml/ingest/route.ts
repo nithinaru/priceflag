@@ -31,11 +31,12 @@ import { isMlPipelineAuthorised } from '@/lib/ml-pipeline-auth';
 import {
   validateElasticityFits,
   validateExpectedBands,
+  validatePriceRecommendations,
   validateRolloutReports,
   type ValidationProblem,
 } from '@/lib/contracts/validate';
 import type { ElasticityFit, ExpectedBand, RolloutReport } from '@/lib/contracts';
-import type { ElasticityFitRow, ExpectedBandRow } from '@/lib/types';
+import type { ElasticityFitRow, ExpectedBandRow, ModelRun } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +45,7 @@ export const maxDuration = 60;
 interface IngestBody {
   shop_domain?: string;
   model_run?: {
-    kind?: 'elasticity' | 'baseline' | 'counterfactual' | 'report';
+    kind?: 'elasticity' | 'baseline' | 'counterfactual' | 'report' | 'recommendation';
     model_version?: string;
     git_sha?: string | null;
     gate_passed?: boolean;
@@ -55,6 +56,18 @@ interface IngestBody {
   fits?: unknown[];
   bands?: unknown[];
   reports?: unknown[];
+  recommendations?: unknown[];
+}
+
+/**
+ * The fields of a price recommendation the route itself cross-checks; the full
+ * shape is enforced by `contracts/price_recommendation.schema.json`. Local until
+ * a `PriceRecommendation` type joins `lib/contracts.ts` alongside its table.
+ */
+interface PriceRecommendationLike {
+  shop_domain: string;
+  variant_gid: string;
+  model_version: string;
 }
 
 const MAX_ROWS_PER_REQUEST = 20_000;
@@ -90,6 +103,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (run?.model_version === undefined || run.kind === undefined) {
     return fail('invalid_request', 'model_run.kind and model_run.model_version are required.', 400);
   }
+  // The registry's `ModelRun.kind` union gains 'recommendation' with the table +
+  // RPC (persistence lane); this cast is the seam until that lands.
+  const runKind = run.kind as ModelRun['kind'];
 
   const adapter = getAdapter();
 
@@ -107,14 +123,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const fitRows = Array.isArray(body.fits) ? body.fits : [];
   const bandRows = Array.isArray(body.bands) ? body.bands : [];
   const reportRows = Array.isArray(body.reports) ? body.reports : [];
-  if (fitRows.length + bandRows.length + reportRows.length > MAX_ROWS_PER_REQUEST) {
+  const recommendationRows = Array.isArray(body.recommendations) ? body.recommendations : [];
+  if (fitRows.length + bandRows.length + reportRows.length + recommendationRows.length > MAX_ROWS_PER_REQUEST) {
     return fail('payload_too_large', `A model run may contain at most ${MAX_ROWS_PER_REQUEST} rows.`, 413);
   }
   const wrongSurface =
-    (run.kind === 'elasticity' && (bandRows.length > 0 || reportRows.length > 0)) ||
+    (run.kind === 'elasticity' &&
+      (bandRows.length > 0 || reportRows.length > 0 || recommendationRows.length > 0)) ||
     ((run.kind === 'baseline' || run.kind === 'counterfactual') &&
-      (fitRows.length > 0 || reportRows.length > 0)) ||
-    (run.kind === 'report' && (fitRows.length > 0 || bandRows.length > 0));
+      (fitRows.length > 0 || reportRows.length > 0 || recommendationRows.length > 0)) ||
+    (run.kind === 'report' &&
+      (fitRows.length > 0 || bandRows.length > 0 || recommendationRows.length > 0)) ||
+    (run.kind === 'recommendation' &&
+      (fitRows.length > 0 || bandRows.length > 0 || reportRows.length > 0));
   if (wrongSurface) {
     return fail('invalid_request', `model_run.kind=${run.kind} contains rows from a different model surface.`, 400);
   }
@@ -123,15 +144,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const fits = validateElasticityFits<ElasticityFit>(fitRows);
   const bands = validateExpectedBands<ExpectedBand>(bandRows);
   const reports = validateRolloutReports<RolloutReport>(reportRows);
+  const recommendations = validatePriceRecommendations<PriceRecommendationLike>(recommendationRows);
   const problems: ValidationProblem[] = [
     ...fits.problems.map((problem) => ({ ...problem, path: `fits[${problem.index}]${problem.path}` })),
     ...bands.problems.map((problem) => ({ ...problem, path: `bands[${problem.index}]${problem.path}` })),
     ...reports.problems.map((problem) => ({ ...problem, path: `reports[${problem.index}]${problem.path}` })),
+    ...recommendations.problems.map((problem) => ({
+      ...problem,
+      path: `recommendations[${problem.index}]${problem.path}`,
+    })),
   ];
 
   for (const [surface, rows] of [
     ['fits', fits.valid],
     ['bands', bands.valid],
+    ['recommendations', recommendations.valid],
   ] as const) {
     rows.forEach((row, index) => {
       if (row.shop_domain.toLowerCase() !== shop.shop_domain.toLowerCase()) {
@@ -153,7 +180,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // rather than only in a CI log that nobody reads.
     const failed = await adapter.recordModelRun({
       shop_id: shop.id,
-      kind: run.kind,
+      kind: runKind,
       model_version: run.model_version,
       git_sha: run.git_sha ?? null,
       status: 'failed',
@@ -184,7 +211,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (run.gate_passed !== true) {
     const rejected = await adapter.recordModelRun({
       shop_id: shop.id,
-      kind: run.kind,
+      kind: runKind,
       model_version: run.model_version,
       git_sha: run.git_sha ?? null,
       status: 'rejected',
@@ -206,7 +233,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       rows_written: 0,
       message:
         `Recorded ${run.model_version} as rejected: it did not beat ` +
-        `${run.incumbent_version ?? 'the incumbent'}. No fits, bands or reports were stored.`,
+        `${run.incumbent_version ?? 'the incumbent'}. No fits, bands, reports or recommendations were stored.`,
     });
   }
 
@@ -253,16 +280,30 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }));
 
     const ingestKey = createHash('sha256')
-      .update(canonical({ shop_id: shop.id, run, fits: fits.valid, bands: bands.valid, reports: reports.valid }))
+      .update(
+        canonical({
+          shop_id: shop.id,
+          run,
+          fits: fits.valid,
+          bands: bands.valid,
+          reports: reports.valid,
+          // Omitted when empty so digests of pre-recommendation payloads are unchanged.
+          recommendations: recommendations.valid.length > 0 ? recommendations.valid : undefined,
+        }),
+      )
       .digest('hex');
-    const stored = await adapter.ingestModelRunAtomic({
+    // Recommendation rows ride the same all-or-nothing write as fits/bands/reports,
+    // passed through as contract rows (like `reports`) under the `recommendations`
+    // parameter that `pf_ingest_model_run` gains alongside its table. Built as a
+    // variable so the extra key type-checks before `AtomicModelIngestInput` learns it.
+    const ingestInput = {
       shopId: shop.id,
       ingestKey,
       run: {
-        kind: run.kind,
+        kind: runKind,
         model_version: run.model_version,
         git_sha: run.git_sha ?? null,
-        status: 'succeeded',
+        status: 'succeeded' as const,
         gate_passed: true,
         incumbent_version: run.incumbent_version ?? null,
         metrics: run.metrics ?? {},
@@ -273,13 +314,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       fits: fitPayload,
       bands: bandPayload,
       reports: reports.valid,
-    });
+      recommendations: recommendations.valid,
+    };
+    const stored = await adapter.ingestModelRunAtomic(ingestInput);
+    const recommendationsWritten =
+      (stored as { recommendations_written?: number }).recommendations_written ?? 0;
 
-    const expectedTotal = fitPayload.length + bandPayload.length + reports.valid.length;
+    const expectedTotal =
+      fitPayload.length + bandPayload.length + reports.valid.length + recommendations.valid.length;
     if (
       stored.fits_written !== fitPayload.length ||
       stored.bands_written !== bandPayload.length ||
       stored.reports_written !== reports.valid.length ||
+      recommendationsWritten !== recommendations.valid.length ||
       stored.rows_written !== expectedTotal
     ) {
       return fail(
@@ -296,6 +343,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       fits_written: stored.fits_written,
       bands_written: stored.bands_written,
       reports_written: stored.reports_written,
+      recommendations_written: recommendationsWritten,
       rows_written: stored.rows_written,
       deduplicated: stored.deduplicated,
     });
@@ -303,7 +351,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const message = cause instanceof Error ? cause.message : String(cause);
     const failed = await adapter.recordModelRun({
       shop_id: shop.id,
-      kind: run.kind,
+      kind: runKind,
       model_version: run.model_version,
       git_sha: run.git_sha ?? null,
       status: 'failed',

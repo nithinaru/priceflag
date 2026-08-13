@@ -10,7 +10,7 @@ from typing import Any
 from .target import VercelTargetAttestor, clean_https_origin
 
 MAX_ROWS_PER_REQUEST = 20_000
-VALID_KINDS = ("elasticity", "baseline", "counterfactual", "report")
+VALID_KINDS = ("elasticity", "baseline", "counterfactual", "report", "recommendation")
 def assert_bands_cannot_double_count(bands: list[dict]) -> None:
     if not bands:
         return
@@ -35,6 +35,7 @@ class IngestResult:
     fits_written: int = 0
     bands_written: int = 0
     reports_written: int = 0
+    recommendations_written: int = 0
     message: str | None = None
     problems: list[dict] = field(default_factory=list)
     dropped: str | None = None
@@ -144,24 +145,31 @@ class IngestClient:
         fits: list[dict] | None = None,
         bands: list[dict] | None = None,
         reports: list[dict] | None = None,
+        recommendations: list[dict] | None = None,
         notes: str | None = None,
         sha: str | None = None,
     ) -> IngestResult:
         self._attest_target()
         if kind not in VALID_KINDS:
             raise ValueError(f"kind must be one of {VALID_KINDS}, got {kind!r}")
-        fits, bands, reports = list(fits or []), list(bands or []), list(reports or [])
+        fits, bands, reports, recommendations = (
+            list(fits or []),
+            list(bands or []),
+            list(reports or []),
+            list(recommendations or []),
+        )
         if not gate_passed:
-            fits, bands, reports = [], [], []
+            fits, bands, reports, recommendations = [], [], [], []
         wrong_surface = (
-            (kind == "elasticity" and (bands or reports))
-            or (kind in ("baseline", "counterfactual") and (fits or reports))
-            or (kind == "report" and (fits or bands))
+            (kind == "elasticity" and (bands or reports or recommendations))
+            or (kind in ("baseline", "counterfactual") and (fits or reports or recommendations))
+            or (kind == "report" and (fits or bands or recommendations))
+            or (kind == "recommendation" and (fits or bands or reports))
         )
         if wrong_surface:
             raise ValueError(f"kind={kind} cannot carry rows from a different model surface")
         assert_bands_cannot_double_count(bands)
-        expected = (len(fits), len(bands), len(reports))
+        expected = (len(fits), len(bands), len(reports), len(recommendations))
         if sum(expected) > MAX_ROWS_PER_REQUEST:
             raise ValueError(
                 f"{sum(expected)} rows exceeds MAX_ROWS_PER_REQUEST={MAX_ROWS_PER_REQUEST}; "
@@ -182,6 +190,7 @@ class IngestClient:
             "fits": fits,
             "bands": bands,
             "reports": reports,
+            "recommendations": recommendations,
         }
         response = self._get_client().post(
             self._url,
@@ -208,14 +217,20 @@ class IngestClient:
             fits_written=int(body.get("fits_written") or 0),
             bands_written=int(body.get("bands_written") or 0),
             reports_written=int(body.get("reports_written") or 0),
+            recommendations_written=int(body.get("recommendations_written") or 0),
             message=message,
             problems=list(body.get("problems") or []),
         )
         if result.accepted:
-            actual = (result.fits_written, result.bands_written, result.reports_written)
+            actual = (
+                result.fits_written,
+                result.bands_written,
+                result.reports_written,
+                result.recommendations_written,
+            )
             if actual != expected or result.rows_written != sum(expected):
                 result.dropped = (
-                    f"endpoint accounted for fits/bands/reports={actual} and total={result.rows_written}; "
-                    f"sent {expected} and total={sum(expected)}"
+                    f"endpoint accounted for fits/bands/reports/recommendations={actual} "
+                    f"and total={result.rows_written}; sent {expected} and total={sum(expected)}"
                 )
         return result

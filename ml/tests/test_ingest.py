@@ -6,6 +6,31 @@ import pytest
 from priceflag_ml.ingest import IngestClient
 
 
+# Satisfies every `required` field of contracts/price_recommendation.schema.json.
+RECOMMENDATION_ROW = {
+    "contract_version": "1.0.0",
+    "shop_domain": "shop.myshopify.com",
+    "variant_gid": "gid://shopify/ProductVariant/1234567890",
+    "current_price_cents": 2500,
+    "recommended_price_cents": 2699,
+    "robust_price_cents": 2599,
+    "rounding": "end_99",
+    "elasticity": -1.4,
+    "confidence": "fitted",
+    "expected": {
+        "nominal_profit_delta_cents_per_day": 320,
+        "robust_profit_delta_cents_per_day": -40,
+        "nominal_revenue_delta_cents_per_day": 510,
+        "robust_revenue_delta_cents_per_day": 120,
+    },
+    "constraints": {"binding": ["none"]},
+    "candidates_evaluated": 48,
+    "rationale": "A small increase to $26.99 should add profit; demand looks steady near this price.",
+    "model_version": "optimizer-1.0",
+    "computed_at": "2026-08-11T00:00:00Z",
+}
+
+
 def _client(response_body):
     seen = []
 
@@ -69,6 +94,90 @@ def test_losing_run_is_recorded_without_model_rows():
     )
     assert seen[0]["bands"] == [] and seen[0]["reports"] == []
     assert not result.is_error
+
+
+def test_recommendation_kind_rides_its_own_payload_key():
+    client, seen = _client(
+        {
+            "accepted": True,
+            "model_run_id": "run",
+            "fits_written": 0,
+            "bands_written": 0,
+            "reports_written": 0,
+            "recommendations_written": 1,
+            "rows_written": 1,
+        }
+    )
+    result = client.post_run(
+        shop_domain="shop.myshopify.com",
+        kind="recommendation",
+        model_version="optimizer-1.0",
+        gate_passed=True,
+        recommendations=[RECOMMENDATION_ROW],
+    )
+    assert result.accepted and not result.is_error
+    assert seen[0]["recommendations"] == [RECOMMENDATION_ROW]
+    assert seen[0]["fits"] == [] and seen[0]["bands"] == [] and seen[0]["reports"] == []
+    assert seen[0]["model_run"]["kind"] == "recommendation"
+
+
+def test_recommendation_rows_cannot_cross_model_surfaces():
+    client, seen = _client({"accepted": True})
+    with pytest.raises(ValueError, match="different model surface"):
+        client.post_run(
+            shop_domain="shop.myshopify.com",
+            kind="elasticity",
+            model_version="fit-1.0",
+            gate_passed=True,
+            fits=[{"variant_gid": "fit"}],
+            recommendations=[RECOMMENDATION_ROW],
+        )
+    with pytest.raises(ValueError, match="different model surface"):
+        client.post_run(
+            shop_domain="shop.myshopify.com",
+            kind="recommendation",
+            model_version="optimizer-1.0",
+            gate_passed=True,
+            fits=[{"variant_gid": "fit"}],
+            recommendations=[RECOMMENDATION_ROW],
+        )
+    assert seen == []
+
+
+def test_losing_recommendation_run_sends_no_rows():
+    client, seen = _client({"accepted": False, "reason": "gate_not_passed", "rows_written": 0})
+    result = client.post_run(
+        shop_domain="shop.myshopify.com",
+        kind="recommendation",
+        model_version="optimizer-challenger",
+        gate_passed=False,
+        recommendations=[RECOMMENDATION_ROW],
+    )
+    assert seen[0]["recommendations"] == []
+    assert not result.is_error
+
+
+def test_unacknowledged_recommendations_turn_the_nightly_red():
+    # An endpoint that accepts but does not account for the recommendation rows
+    # (e.g. one deployed before the recommendations surface) must read as a drop.
+    client, _ = _client(
+        {
+            "accepted": True,
+            "model_run_id": "run",
+            "fits_written": 0,
+            "bands_written": 0,
+            "reports_written": 0,
+            "rows_written": 0,
+        }
+    )
+    result = client.post_run(
+        shop_domain="shop.myshopify.com",
+        kind="recommendation",
+        model_version="optimizer-1.0",
+        gate_passed=True,
+        recommendations=[RECOMMENDATION_ROW],
+    )
+    assert result.is_error and result.dropped
 
 
 def test_duplicate_bands_never_reach_the_endpoint():
