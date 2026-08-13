@@ -13,6 +13,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.strict.json --noEmit",
     "smoke": "tsx scripts/smoke.ts",
+    "test:auth": "tsx tests/auth-account.test.ts",
     "test:merchant-api": "tsx tests/merchant-api.test.ts",
     "test:pricing-safety": "tsx tests/pricing-safety.test.ts",
     "test:ml-ingest": "tsx tests/ml-ingest-api.test.ts",
