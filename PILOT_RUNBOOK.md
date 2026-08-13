@@ -171,7 +171,7 @@ There is a second, separate way in, for people who cannot be handed a secret URL
 for **7 days**, so a reviewer authenticates once and then browses normally.
 
 They are deliberately separate from `APP_ACCESS_SECRET` so a review ending does
-not break `cp4-chain.ts`, `smoke-browser.ts`, or any `?access=` link.
+not break `smoke-browser.ts` or any `?access=` link.
 
 **To revoke, the moment a review is over:**
 
@@ -532,26 +532,15 @@ restrict it to `main`, and do not require interactive review so the scheduled
 merchants. The scheduled job also verifies the live exact-main branch policy
 before its secret-bearing step.
 
-### Attested CP4 test-store chain
+### Attested CP4 test-store chain (retired)
 
-`scripts/cp4-chain.ts` intentionally performs temporary Shopify price writes,
-so it never has a default URL or shop. It loads staging values from the ignored
-`.env.preview.local`, verifies the requested URL through Vercel's API as a READY,
-non-production deployment belonging to the pinned Priceflag project/team, and
-then requires an exact shop acknowledgement:
-
-```bash
-export PRICEFLAG_URL='https://<exact-preview-deployment>.vercel.app'
-export PRICEFLAG_CP4_SHOP_DOMAIN='<test-store>.myshopify.com'
-export PRICEFLAG_CP4_CONFIRM="WRITE_TEST_PRICES:$PRICEFLAG_CP4_SHOP_DOMAIN"
-npx --no-install tsx scripts/cp4-chain.ts
-```
-
-The script pauses its rollout before cleanup, restores the frozen baselines,
-and exits successfully only after Shopify verifies every price and managed
-compare-at value. Any failure leaves the rollout paused and requires the manual
-restore procedure in this runbook. CP4 proves the ML-to-evaluator chain; it does
-not replace the separate merchant-session API and browser end-to-end gate.
+The CP4 chain (`scripts/cp4-chain.ts`, deleted 2026-08-13 along with
+`scripts/simulate-rollout.ts` as manual-only orphans) proved the
+ML-to-evaluator chain by performing attested, temporary Shopify price writes
+against a READY non-production deployment, restoring frozen baselines on exit.
+If that proof is needed again, recover the script from git history
+(`git log --diff-filter=D -- scripts/cp4-chain.ts`); it never replaced the
+separate merchant-session API and browser end-to-end gate.
 
 | | |
 |---|---|
