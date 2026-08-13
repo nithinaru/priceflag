@@ -451,6 +451,9 @@ function signInRequired(request: NextRequest): NextResponse {
   }
 
   const target = new URL(SIGNIN_URL);
+  // The screen distinguishes "arrived cold" from "was bounced here"; this code
+  // is what lets it say why the app sent the visitor back.
+  target.searchParams.set('error', 'sign_in_required');
   // Only the path, never the full URL: this value is echoed back into a redirect
   // after sign-in, and `?next=` is exactly where open redirects come from.
   if (pathname !== '/') target.searchParams.set('next', `${pathname}${search}`);
