@@ -22,6 +22,27 @@ from .golden import GoldenConfig, generate_store
 from .target import VercelTargetAttestor, clean_https_origin
 
 CANONICAL_COLUMNS = ["shop_id", "sku", "date", "units", "price_cents", "revenue_cents", "promo", "stockout"]
+# Every column the products surface serves (app/api/ml/export/route.ts
+# productRows) — the empty frame must declare the same shape the non-empty
+# path returns, or downstream column access breaks only on empty stores.
+PRODUCTS_COLUMNS = [
+    "shop_domain",
+    "variant_gid",
+    "product_gid",
+    "title",
+    "variant_title",
+    "sku",
+    "vendor",
+    "product_type",
+    "status",
+    "price_cents",
+    "compare_at_cents",
+    "cogs_cents",
+    "cogs_source",
+    "inventory_quantity",
+    "excluded_from_pricing",
+    "last_synced_at",
+]
 SURFACES = {"product_days", "products", "price_history", "rollout_windows"}
 MAX_EXPORT_ROWS = 500_000
 
@@ -316,7 +337,7 @@ class PriceflagApiSource:
     def products(self, shop_domain: str) -> pd.DataFrame:
         rows = self._read("products", shop_domain)
         if not rows:
-            return pd.DataFrame(columns=["variant_gid", "cogs_cents", "price_cents"])
+            return pd.DataFrame(columns=PRODUCTS_COLUMNS)
         return pd.DataFrame(rows).sort_values("variant_gid").reset_index(drop=True)
 
     def order_days(self, shop_domain: str) -> pd.DataFrame:
