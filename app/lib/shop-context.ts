@@ -13,7 +13,13 @@
  *      after a prior token verification and refreshed by App Bridge on each
  *      embedded page load. This is page-render identity only; API writes still
  *      require a fresh bearer token.
- *   4. Non-production only: `?shop=` or `SHOPIFY_SHOP_DOMAIN`, so local dev
+ *   4. The `pf_user` account session — a person who signed in with a magic link
+ *      at signin.priceflag.org, resolved to whichever store they connected. Last
+ *      because it is the weakest of the four: the other three are Shopify
+ *      asserting the shop, whereas this is us remembering an earlier install.
+ *      Good enough to decide which store to *render*, never enough to write a
+ *      price — those go through `resolveShopFromRequest` and a session token.
+ *   5. Non-production only: `?shop=` or `SHOPIFY_SHOP_DOMAIN`, so local dev
  *      works without an admin iframe.
  *
  * Server Components cannot *set* cookies in Next 15, so verifying 1/2 here does
@@ -23,6 +29,8 @@
 
 import { cookies } from 'next/headers';
 
+import { USER_COOKIE, verifyUserCookie } from '@/lib/auth/account';
+import { getShopDomainForAccount } from '@/lib/auth/account-shops';
 import { getAdapter } from '@/lib/adapters';
 import { env, getMode, hasShopifyConfig, isProductionRuntime, requireEnv } from '@/lib/config';
 import { verifyOAuthHmac } from '@/lib/shopify/hmac';
@@ -88,6 +96,25 @@ function shopFromLaunchParams(searchParams: PageSearchParams): string | null {
   }
 }
 
+/**
+ * The store belonging to whoever holds the `pf_user` cookie, if they have one.
+ *
+ * Note what this does *not* do: it never reads a shop domain out of the request.
+ * The account session carries a user id, that id is looked up against a row we
+ * wrote ourselves at install time, and the domain comes back from the database.
+ * Accepting a caller-supplied domain here would let anyone with an account
+ * render any store's dashboard.
+ */
+async function shopFromAccountCookie(): Promise<string | null> {
+  const value = (await cookies()).get(USER_COOKIE)?.value;
+  if (value === undefined) return null;
+
+  const session = verifyUserCookie(value);
+  if (session === null) return null;
+
+  return getShopDomainForAccount(session.userId);
+}
+
 export async function resolveShopForPage(searchParams: PageSearchParams): Promise<PageShopContext> {
   if (getMode() === 'demo') return { mode: 'demo', shop: null };
 
@@ -104,6 +131,12 @@ export async function resolveShopForPage(searchParams: PageSearchParams): Promis
       if (fromCookie !== null) return { mode: 'real', shop: await connectedShop(fromCookie) };
     }
   }
+
+  // The account session. Reached only when nothing Shopify-signed was present,
+  // which is exactly the signin.priceflag.org path: a real person, verified by
+  // email, who is not inside the admin iframe.
+  const fromAccount = await shopFromAccountCookie();
+  if (fromAccount !== null) return { mode: 'real', shop: await connectedShop(fromAccount) };
 
   if (!isProductionRuntime()) {
     const raw = firstValue(searchParams['shop']) ?? env('SHOPIFY_SHOP_DOMAIN');

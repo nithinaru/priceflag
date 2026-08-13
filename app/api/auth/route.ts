@@ -9,6 +9,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getMode, hasShopifyConfig } from '@/lib/config';
+import { USER_COOKIE, verifyUserCookie } from '@/lib/auth/account';
+import {
+  INSTALL_INITIATOR_COOKIE,
+  installInitiatorCookieOptions,
+} from '@/lib/auth/link-binding';
 import {
   buildAuthorizeUrl,
   createOAuthState,
@@ -94,6 +99,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     path: '/',
     maxAge: 600,
   });
+
+  // If a signed-in account is starting this install, record it here — at the
+  // start, where the intent is. The callback links the store to this value
+  // rather than to whatever session cookie happens to be present when Shopify
+  // redirects back, so the ownership row reflects somebody having *asked* to
+  // connect a store rather than merely having been signed in at the time.
+  const accountCookie = request.cookies.get(USER_COOKIE)?.value;
+  const account = accountCookie === undefined ? null : verifyUserCookie(accountCookie);
+  if (account !== null) {
+    response.cookies.set(
+      INSTALL_INITIATOR_COOKIE,
+      account.userId,
+      installInitiatorCookieOptions(request.nextUrl.protocol === 'https:'),
+    );
+  }
 
   return response;
 }

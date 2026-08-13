@@ -22,6 +22,24 @@
  * their tenant only from the signed `dest` claim. This gate remains the
  * invite-only preview boundary; it is not merchant authentication.
  *
+ * ## Two gates, in order
+ *
+ * A request that is not Shopify-signed now has to clear both:
+ *
+ *   1. **The preview gate** (this file's original job) — the shared
+ *      `APP_ACCESS_SECRET`. Answers "is this deployment open to you at all".
+ *   2. **An account session** — the `pf_user` cookie minted by `/auth/callback`
+ *      after a magic link. Answers "who are you".
+ *
+ * The first is shared by every pilot merchant, so it can never identify anyone;
+ * the second identifies a person but says nothing about which store they may
+ * touch. Neither is authorisation for a price write — that still comes from a
+ * Shopify session token, every time, in the route handler.
+ *
+ * A merchant arriving from the Shopify admin skips both: `isShopifyAuthenticated`
+ * returns first, because a signed session token is a stronger claim than either
+ * and the embedded iframe can present neither cookie.
+ *
  * ## The exemptions, and why each one is safe
  *
  * These paths bypass the gate because each already authenticates itself, and each
@@ -90,12 +108,30 @@ const EXEMPT_EXACT = new Set([
   '/api/ml/export',
   '/api/auth',
   '/api/auth/callback',
+  // The sign-in screen is public and lives on another host, so the endpoint that
+  // emails a link has to be reachable without a gate cookie it could never have.
+  // Requesting a link is not entry: the link lands on `/auth/callback`, which is
+  // gated like everything else.
+  '/api/auth/magic-link',
 ]);
 const EXEMPT_PREFIX = ['/api/webhooks/'];
 
 function isExempt(pathname: string): boolean {
   if (EXEMPT_EXACT.has(pathname)) return true;
   return EXEMPT_PREFIX.some((prefix) => pathname.startsWith(prefix));
+}
+
+/**
+ * Paths that pass the preview gate without an account session.
+ *
+ * `/auth/*` is the sign-in machinery itself — requiring a session to reach the
+ * route that creates one would be a closed loop, and requiring one to sign out
+ * would strand anybody whose cookie had already expired.
+ */
+const ACCOUNT_EXEMPT_PREFIX = ['/auth/'];
+
+function needsAccount(pathname: string): boolean {
+  return !ACCOUNT_EXEMPT_PREFIX.some((prefix) => pathname.startsWith(prefix));
 }
 
 /**
@@ -167,6 +203,12 @@ function isDemoLogin(header: string | null): boolean {
 /** Cookie minted by `POST /api/auth/session`: `{shop_domain}.{expiry}.{sig}`. */
 const SHOP_COOKIE = 'pf_shop';
 
+/** Cookie minted by `/auth/callback` after a magic link. See `lib/auth/account.ts`. */
+const USER_COOKIE = 'pf_user';
+
+/** Where an unauthenticated browser is sent to sign in. */
+const SIGNIN_URL = process.env.SIGNIN_URL ?? 'https://signin.priceflag.org';
+
 /** Clock skew tolerance for session tokens, matching `lib/shopify/session.ts`. */
 const JWT_LEEWAY_SECONDS = 5;
 
@@ -225,6 +267,45 @@ async function isValidShopCookie(value: string, clientSecret: string): Promise<b
   const expected = toBase64Url(await hmacSha256(clientSecret, payload));
   if (!safeEqual(expected, sig)) return false;
   return Number(expiryRaw) >= Math.floor(Date.now() / 1000);
+}
+
+/**
+ * `pf_user` account session: `{userId}.{emailBase64Url}.{expiry}.{sig}`.
+ *
+ * The edge-runtime twin of `verifyUserCookie` in `lib/auth/account.ts` — same
+ * reason as `isValidShopCookie` above, that module needs node:crypto.
+ *
+ * The two must accept **exactly** the same set of values. A cookie this admits
+ * but `verifyUserCookie` then rejects is not a security hole (both need the
+ * signing secret) but it is a trap: middleware waves the request through, the
+ * route handler sees no session, and the person is bounced back to a sign-in
+ * they have already completed with no way out. `tests/auth-account.test.ts`
+ * pins the agreement, including the shape checks below.
+ */
+async function isValidUserCookie(value: string): Promise<boolean> {
+  const secret = process.env.AUTH_SESSION_SECRET;
+  if (!secret) return false;
+
+  const parts = value.split('.');
+  if (parts.length !== 4) return false;
+  const [userId, emailEncoded, expiryRaw, sig] = parts as [string, string, string, string];
+  if (!/^\d+$/.test(expiryRaw)) return false;
+
+  const expected = toBase64Url(await hmacSha256(secret, `${userId}.${emailEncoded}.${expiryRaw}`));
+  if (!safeEqual(expected, sig)) return false;
+  if (Number(expiryRaw) < Math.floor(Date.now() / 1000)) return false;
+
+  // Shape checks after the signature, mirroring `verifyUserCookie` exactly:
+  // a UUID user id, and an email segment that round-trips through base64url.
+  if (!/^[0-9a-fA-F-]{36}$/.test(userId)) return false;
+  const email = decodeBase64UrlUtf8(emailEncoded);
+  if (email === null || !email.includes('@')) return false;
+  return toBase64Url(new TextEncoder().encode(email)) === emailEncoded;
+}
+
+async function hasAccountSession(request: NextRequest): Promise<boolean> {
+  const cookie = request.cookies.get(USER_COOKIE)?.value;
+  return cookie !== undefined && (await isValidUserCookie(cookie));
 }
 
 /**
@@ -347,6 +428,38 @@ function unauthorized(): NextResponse {
   return response;
 }
 
+/**
+ * Not signed in. An API caller gets a JSON 401 it can act on; a browser gets the
+ * sign-in screen, with the path it was reaching for so it can be returned there
+ * afterwards.
+ */
+function signInRequired(request: NextRequest): NextResponse {
+  const { pathname, search } = request.nextUrl;
+
+  if (pathname.startsWith('/api/')) {
+    return new NextResponse(
+      JSON.stringify({
+        error: {
+          code: 'sign_in_required',
+          message: 'Sign in at signin.priceflag.org, or open Priceflag from your Shopify admin.',
+          retryable: false,
+          details: null,
+        },
+      }),
+      { status: 401, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } },
+    );
+  }
+
+  const target = new URL(SIGNIN_URL);
+  // Only the path, never the full URL: this value is echoed back into a redirect
+  // after sign-in, and `?next=` is exactly where open redirects come from.
+  if (pathname !== '/') target.searchParams.set('next', `${pathname}${search}`);
+
+  const response = NextResponse.redirect(target, { status: 303 });
+  response.headers.set('cache-control', 'no-store');
+  return response;
+}
+
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname, searchParams } = request.nextUrl;
 
@@ -354,8 +467,26 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   // Shopify-signed credentials are stronger than the shared secret, and the
   // embedded admin can never present the SameSite=Lax gate cookie. No pf_access
-  // is minted here — see the header comment.
+  // is minted here — see the header comment. An embedded merchant is already
+  // identified by Shopify and never needs a Priceflag account session.
   if (await isShopifyAuthenticated(request)) return NextResponse.next();
+
+  /**
+   * Past the preview gate. The second question is who this is: the gate secret
+   * is shared by every pilot merchant, so on its own it says "allowed in the
+   * building", not "is a particular person". `carry` preserves any cookie the
+   * gate minted on the way through, so a first visit on an `?access=` link does
+   * not have to be repeated after signing in.
+   */
+  async function admit(carry?: NextResponse): Promise<NextResponse> {
+    if (!needsAccount(pathname) || (await hasAccountSession(request))) {
+      return carry ?? NextResponse.next();
+    }
+    const response = signInRequired(request);
+    const minted = carry?.headers.get('set-cookie');
+    if (minted !== null && minted !== undefined) response.headers.append('set-cookie', minted);
+    return response;
+  }
 
   const secret = process.env.APP_ACCESS_SECRET;
 
@@ -366,8 +497,9 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     const isProduction = process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
     if (isProduction) return unauthorized();
     // Locally, an unset secret means "developer has not configured it", and
-    // blocking would just make people disable the middleware.
-    return NextResponse.next();
+    // blocking would just make people disable the middleware. The account check
+    // still applies, so local development exercises the real sign-in path.
+    return admit();
   }
 
   // 1. The cookie, which is how every request after the first one arrives. It
@@ -375,9 +507,9 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   //    working the moment DEMO_PASSWORD is cleared.
   const cookie = request.cookies.get(COOKIE)?.value;
   if (cookie !== undefined) {
-    if (safeEqual(cookie, secret)) return NextResponse.next();
+    if (safeEqual(cookie, secret)) return admit();
     const demoPassword = process.env.DEMO_PASSWORD;
-    if (demoPassword && safeEqual(cookie, demoPassword)) return NextResponse.next();
+    if (demoPassword && safeEqual(cookie, demoPassword)) return admit();
   }
 
   // 2. Demo credentials over Basic — what a reviewer types into the browser
@@ -391,12 +523,12 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       path: '/',
       maxAge: 60 * 60 * 24 * DEMO_COOKIE_DAYS,
     });
-    return response;
+    return admit(response);
   }
 
   // 3. The access secret over Basic, for curl and for scripts.
   const basic = secretFromBasicAuth(request.headers.get('authorization'));
-  if (basic !== null && safeEqual(basic, secret)) return NextResponse.next();
+  if (basic !== null && safeEqual(basic, secret)) return admit();
 
   // 4. `?access=…` — the way a person gets in the first time. Mint the cookie and
   //    redirect to the same URL without the parameter, so the secret does not sit

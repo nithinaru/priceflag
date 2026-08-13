@@ -12,6 +12,11 @@
 import { after, NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
+import { linkAccountToShop } from '@/lib/auth/account-shops';
+import {
+  INSTALL_INITIATOR_COOKIE,
+  installInitiatorCookieOptions,
+} from '@/lib/auth/link-binding';
 import { getAppUrl, getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
 import { encryptSecret } from '@/lib/crypto';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
@@ -154,6 +159,33 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     ...(existing === null ? {} : { name: existing.name ?? undefined }),
   });
 
+  // If a signed-in account *started* this install, remember that this is their
+  // store, so a later visit from signin.priceflag.org lands on their data
+  // instead of asking them to connect a store they have already connected.
+  //
+  // The account id comes from the initiator cookie set by `GET /api/auth`, not
+  // from the `pf_user` session on this request. That distinction is the point:
+  // the end of an OAuth round-trip is reachable by sending somebody a link, so a
+  // cookie read here would record "whoever was signed in when the redirect
+  // landed" rather than "whoever asked to connect this store".
+  //
+  // Before `after()` rather than inside it: it is one cheap insert, and a
+  // merchant who installs and is immediately redirected should find the link
+  // already there. Non-fatal all the same — a missing link costs one extra trip
+  // through the connect screen, whereas throwing here would lose an install that
+  // Shopify already considers complete.
+  const initiator = request.cookies.get(INSTALL_INITIATOR_COOKIE)?.value;
+  if (initiator !== undefined && initiator !== '') {
+    try {
+      await linkAccountToShop(initiator, installedShop.id);
+    } catch (cause) {
+      console.error(
+        `[install] account link failed for ${shop}: ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+      );
+    }
+  }
+
   // Post-install work runs via `after()` — once the redirect below has been
   // sent — so a slow or failing Shopify call can never strand the merchant on
   // the callback URL. The install itself is already durable at this point.
@@ -205,7 +237,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }, after);
 
   const response = NextResponse.redirect(postInstallUrl(shop));
-  // The nonce is single-use.
+  // Both are single-use: the state nonce, and the record of who started this.
   response.cookies.delete(OAUTH_STATE_COOKIE);
+  response.cookies.set(INSTALL_INITIATOR_COOKIE, '', {
+    ...installInitiatorCookieOptions(request.nextUrl.protocol === 'https:'),
+    maxAge: 0,
+  });
   return response;
 }
