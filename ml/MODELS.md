@@ -133,7 +133,29 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Challengers
 
-(none in flight)
+### optimizer-lattice-1.0 — constrained price recommendation (planned, Lane B)
+
+- **Status:** planned — this entry precedes the code per R28 discipline (no
+  model ships without an eval-harness gate; the gate here is `run_c7`).
+- **What (planned):** per-SKU constrained price optimization over the app's
+  rounding lattice (`lib/money.ts applyRounding` styles make the candidate
+  set discrete — grid search, not a continuous program). Objective = expected
+  profit under the SAME demand model the forecast uses
+  (`units1 = units0 · (P1/P0)^ε`), with ε from the fitted champion
+  (`elasticity-poisson-eb-1.0`, EB-shrunk posterior mean). Robustness:
+  every candidate is also evaluated at the pessimistic elasticity bound
+  (`fit.low`/`fit.high`, CI80) and the recommendation reports both the
+  nominal argmax and the robust (worst-case-profit) argmax.
+- **Constraints v1:** margin floor over `cogs_cents`; max |Δ%| cap;
+  optional inventory-aware cap using `inventory_quantity` (don't recommend
+  demand increases a thin stock position can't serve).
+- **Gate (`run_c7`):** on the golden store, where true elasticities are
+  known, the optimizer must recover the true-optimal lattice price within
+  tolerance on identifiable SKUs. Snapshot: `eval/c7_optimizer.json`.
+- **Surface:** `kind="recommendation"` model-run rows
+  (`contracts/price_recommendation.schema.json`) → `recommendations` table →
+  read-only `/api/recommend` → "Suggested" prefill card in the propose flow.
+  The merchant always approves; nothing auto-applies (PRD v1.1 amendment).
 
 ## Rejected
 

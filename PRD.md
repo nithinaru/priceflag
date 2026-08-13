@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Product** | Priceflag — pricing change management for Shopify |
-| **Version** | v1 (first release on real stores) |
+| **Version** | v1.1 (amended Aug 2026: constrained price recommendations — Priceflag may propose; the merchant always approves) |
 | **Author** | Nithin |
 | **Date** | July 30, 2026 |
 | **Status** | Draft for build — three-lane parallel execution |
@@ -98,8 +98,17 @@ Shopify Plus teams needing approval workflows.
 - No public Shopify App Store listing yet (custom-app distribution to pilots).
 - No multi-currency / Shopify Markets price lists, no B2B catalogs.
 - No subscription-contract price changes (flagged and excluded from selection).
-- No competitor scraping; no AI price *recommendations* — v1 predicts the impact
-  of the merchant's proposal, it does not originate proposals.
+- No competitor scraping.
+- ~~No AI price *recommendations* — v1 predicts the impact of the merchant's
+  proposal, it does not originate proposals.~~ **Amended in v1.1:** Priceflag
+  may *propose* a constrained, per-SKU price suggestion derived from the same
+  fitted elasticity models that power forecasts — but **the merchant always
+  approves**. Suggestions are read-only prefills in the propose flow: nothing
+  auto-applies, every suggestion shows its rationale (expected profit range,
+  the pessimistic-bound check, and the constraints that bound it — margin
+  floor, max change cap, rounding), and suggestions respect the kill switch
+  and review mode. Optimizer models are subject to the same R28 eval-harness
+  discipline as every other model (golden-data recovery gate `run_c7`).
 - No team roles/approvals (single user per store).
 - No deep learning. The data (daily aggregates, ≤500 SKUs, ≤180 days) rewards
   small-data statistics; model complexity must earn its place on the eval harness.
