@@ -89,7 +89,7 @@ const COOKIE = 'pf_access';
 /**
  * Demo credentials for reviewers (YC and similar), separate from
  * `APP_ACCESS_SECRET` on purpose so they can be revoked the day the review ends
- * without breaking `cp4-chain.ts`, `smoke-browser.ts` or any `?access=` link.
+ * without breaking `smoke-browser.ts` or any `?access=` link.
  *
  * The cookie a demo login mints holds the **demo password**, not the access
  * secret. If it held the secret, clearing `DEMO_PASSWORD` would leave every

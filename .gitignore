@@ -33,3 +33,6 @@ __pycache__/
 
 # vercel
 .vercel/
+
+# agent worktrees
+.claude/worktrees/
