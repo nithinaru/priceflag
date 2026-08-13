@@ -511,7 +511,7 @@ export interface ExpectedBandRow {
 export interface ModelRun {
   id: string;
   shop_id: string | null;
-  kind: 'elasticity' | 'baseline' | 'counterfactual' | 'report';
+  kind: 'elasticity' | 'baseline' | 'counterfactual' | 'report' | 'recommendation';
   model_version: string;
   git_sha: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'rejected';
@@ -524,6 +524,7 @@ export interface ModelRun {
   fits_written?: number;
   bands_written?: number;
   reports_written?: number;
+  recommendations_written?: number;
   notes: string | null;
   error: string | null;
   started_at: string;
@@ -535,6 +536,52 @@ export interface ModelRun {
 export interface RolloutReportRow extends RolloutReport {
   id: string;
   shop_id: string;
+  created_at?: string;
+}
+
+/** Which constraints the nominal optimum is pressed against; ['none'] = interior. */
+export type RecommendationBinding = 'margin_floor' | 'max_change' | 'inventory' | 'lattice_edge' | 'none';
+
+/**
+ * One constrained price suggestion per (shop, variant, model_version), from the
+ * optimizer (`model_runs.kind = 'recommendation'`). Maps 1:1 onto
+ * `recommendations`; `expected` and `constraints` from
+ * `contracts/price_recommendation.schema.json` are flattened into typed columns.
+ * Never auto-applied — the merchant always approves.
+ */
+export interface RecommendationRow {
+  id: string;
+  shop_id: string;
+  variant_gid: string;
+  /** Live price the optimizer started from; if it has moved since `computed_at`, the row is stale. */
+  current_price_cents: Cents;
+  recommended_price_cents: Cents;
+  /** Worst-case optimum with elasticity at its pessimistic credible bound. */
+  robust_price_cents: Cents;
+  rounding: Rounding;
+  elasticity: number;
+  elasticity_low: number | null;
+  elasticity_high: number | null;
+  /** model_version of the elasticity fit the objective was built on (R31). */
+  fit_model_version: string | null;
+  confidence: Confidence;
+  // `expected`: daily deltas at the recommended price, integer cents per day.
+  nominal_profit_delta_cents_per_day: Cents;
+  robust_profit_delta_cents_per_day: Cents;
+  nominal_revenue_delta_cents_per_day: Cents;
+  robust_revenue_delta_cents_per_day: Cents;
+  // `constraints`: what bounded the search.
+  margin_floor_pct: number | null;
+  max_change_pct: number | null;
+  inventory_cap_applied: boolean;
+  binding: RecommendationBinding[];
+  candidates_evaluated: number;
+  baseline_units_per_day: number | null;
+  /** Merchant-facing, plain language — no statistics jargon (R25). */
+  rationale: string;
+  model_version: string;
+  model_run_id: string | null;
+  computed_at: string;
   created_at?: string;
 }
 

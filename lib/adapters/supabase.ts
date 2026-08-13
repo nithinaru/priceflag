@@ -32,6 +32,7 @@ import type {
   Product,
   ProductQuery,
   ProductUpsert,
+  RecommendationRow,
   Rollout,
   RolloutCreate,
   RolloutEvent,
@@ -702,6 +703,23 @@ export class SupabaseAdapter implements StoreAdapter {
     return latest;
   }
 
+  async getLatestRecommendations(
+    shopId: string,
+    variantGids?: readonly string[],
+  ): Promise<Map<string, RecommendationRow>> {
+    let builder = this.db.from('recommendations').select('*').eq('shop_id', shopId);
+    if (variantGids?.length) builder = builder.in('variant_gid', [...variantGids]);
+
+    const result = await builder.order('computed_at', { ascending: false });
+    const latest = new Map<string, RecommendationRow>();
+    for (const row of unwrap(result, `getLatestRecommendations(${shopId})`)) {
+      const recommendation = mapRecommendation(row as Row);
+      // Ordered newest-first, so the first row per variant wins.
+      if (!latest.has(recommendation.variant_gid)) latest.set(recommendation.variant_gid, recommendation);
+    }
+    return latest;
+  }
+
   async getExpectedBands(
     shopId: string,
     query: { variantGids?: readonly string[]; fromDay: DayString; toDay: DayString; rolloutId?: string | null },
@@ -1124,6 +1142,38 @@ function mapFit(row: Row): ElasticityFitRow {
   };
 }
 
+function mapRecommendation(row: Row): RecommendationRow {
+  return {
+    id: String(row.id),
+    shop_id: String(row.shop_id),
+    variant_gid: String(row.variant_gid),
+    current_price_cents: num(row.current_price_cents) as Cents,
+    recommended_price_cents: num(row.recommended_price_cents) as Cents,
+    robust_price_cents: num(row.robust_price_cents) as Cents,
+    rounding: (row.rounding as RecommendationRow['rounding']) ?? 'none',
+    elasticity: num(row.elasticity),
+    elasticity_low: numOrNull(row.elasticity_low),
+    elasticity_high: numOrNull(row.elasticity_high),
+    fit_model_version: (row.fit_model_version as string | null) ?? null,
+    confidence: row.confidence as RecommendationRow['confidence'],
+    nominal_profit_delta_cents_per_day: num(row.nominal_profit_delta_cents_per_day) as Cents,
+    robust_profit_delta_cents_per_day: num(row.robust_profit_delta_cents_per_day) as Cents,
+    nominal_revenue_delta_cents_per_day: num(row.nominal_revenue_delta_cents_per_day) as Cents,
+    robust_revenue_delta_cents_per_day: num(row.robust_revenue_delta_cents_per_day) as Cents,
+    margin_floor_pct: numOrNull(row.margin_floor_pct),
+    max_change_pct: numOrNull(row.max_change_pct),
+    inventory_cap_applied: Boolean(row.inventory_cap_applied),
+    binding: (row.binding as RecommendationRow['binding']) ?? [],
+    candidates_evaluated: num(row.candidates_evaluated),
+    baseline_units_per_day: numOrNull(row.baseline_units_per_day),
+    rationale: String(row.rationale ?? ''),
+    model_version: String(row.model_version),
+    model_run_id: (row.model_run_id as string | null) ?? null,
+    computed_at: String(row.computed_at),
+    created_at: (row.created_at as string | undefined) ?? undefined,
+  };
+}
+
 function mapBand(row: Row): ExpectedBandRow {
   return {
     id: String(row.id),
@@ -1161,6 +1211,7 @@ function mapModelRun(row: Row): ModelRun {
     fits_written: num(row.fits_written),
     bands_written: num(row.bands_written),
     reports_written: num(row.reports_written),
+    recommendations_written: num(row.recommendations_written),
     notes: (row.notes as string | null) ?? null,
     error: (row.error as string | null) ?? null,
     started_at: String(row.started_at),
