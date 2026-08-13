@@ -46,6 +46,13 @@ jobs:
       - name: Run authenticated merchant API suite
         run: npm run test:merchant-api
 
+      # All three are hermetic: test:auth signs cookies with fixed in-test
+      # secrets, test:founder-lab is pure engine logic, and
+      # test:shopify-journey stubs global fetch with a fake Shopify boundary
+      # and generates its own credentials. No network, database, or secrets.
+      - name: Run account-auth, founder-lab, and Shopify journey suites
+        run: npm run test:auth && npm run test:founder-lab && npm run test:shopify-journey
+
       - name: Run price-write, ML-ingest, and Shopify-webhook safety suites
         run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:webhooks && npm run test:deployment-safety
 
