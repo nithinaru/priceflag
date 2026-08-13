@@ -71,6 +71,8 @@ jobs:
             echo "::warning::Production serves $serving_sha, not the dispatched $GITHUB_SHA (a newer push may simply not have promoted yet)."
           fi
           rm -f /tmp/deployment.json /tmp/deployment-id
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
       - name: Verify required variables exist for the production environment
         # The project's variable VALUES are not readable off-platform:
