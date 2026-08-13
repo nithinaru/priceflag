@@ -8,6 +8,75 @@ true before-and-after of every price change Priceflag ever made. Whatever else i
 broken, that table can restore the store. Everything below is a faster path to the
 same answer.
 
+## ⚠️ Deployment targets — do not deploy over the company homepage
+
+> **`priceflagv1` (`prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh`) is the COMPANY HOMEPAGE,
+> not this app.** It was the app's original Vercel project, later repurposed:
+> Git disconnected, an old static deployment promoted to production, and it
+> still holds `priceflag.vercel.app`. Do not touch it — not its domains, not
+> its deployments, not its Git settings — and never link or deploy this repo
+> to it. Any older note pointing at `priceflagv1.vercel.app` as *the app* is
+> stale by definition.
+>
+> **The app is `priceflag-app` (`prj_RU8NlBDoR7t89BNqn5BagOpmpnmm`)**, team
+> `team_AqaBD6YaOf9DIJ7NzbytTZTW`, git-linked to `nithinaru/priceflag@main`.
+> When linking locally, write the link file directly from the pinned id —
+> `vercel link --project <name>` will offer to create a new project when the
+> name does not resolve cleanly.
+
+| | |
+|---|---|
+| **Production app URL** | https://dashboard.priceflag.org |
+| **Vercel deployment** | https://priceflag-app.vercel.app (project `priceflag-app`) |
+
+## Product invariants
+
+These are load-bearing product promises, not style preferences. Anything that
+violates one is a bug, whoever wrote it.
+
+- **Prices change by SKU cohort and time, NEVER by traffic.** No per-visitor
+  price variation in any form — it breaks ad feeds, funnel consistency, and
+  trust. "Every visitor sees the same price" is a product promise.
+- **Money is integer cents everywhere.** Never introduce float dollar math.
+- **Forecasts show their work**: confidence tiers (`fitted|partial|assumption`),
+  visible breakeven arithmetic, ranges not point estimates. No merchant-facing
+  black boxes, no statistics jargon in UI copy.
+- **Every price write is journaled and reversible.** Rollback correctness is
+  sacred: pre-rollout prices captured at rollout creation are the single source
+  of truth.
+- **`ForecastResult`, the `Rollout` state machine, and everything in
+  `contracts/` are stable public shapes.** Upgrade internals behind them.
+- **Demo mode stays first-class**: seeded, deterministic (`lib/rng.ts`), no
+  `Date.now()`/`Math.random()` in engine logic. `Product.hiddenElasticity` is
+  demo-simulator ground truth — it must never reach the client or influence a
+  forecast.
+- **No ML model ships unless it beats the incumbent on the eval harness**
+  (golden-data recovery + backtests). Band calibration is a safety property —
+  it drives auto-rollback.
+- **Beta posture:** automatic rollback is disabled by default — a guardrail
+  breach pauses and alerts. Every merchant API request authenticates with a
+  Shopify App Bridge session token; no route derives the shop from an
+  unauthenticated parameter.
+
+## Before any deploy
+
+All of these must be green before merging or promoting:
+
+```bash
+npm ci
+npm run typecheck
+npm run smoke
+npm run test:merchant-api
+npm run test:pricing-safety
+npm run test:ml-ingest
+npm run test:webhooks
+npm run test:deployment-safety
+npx tsx tests/integration/run.ts --demo
+npm run build
+npm audit --audit-level=high
+cd ml && uv sync --locked && uv run --locked pytest && uv run --locked python nightly.py
+```
+
 ## Merchant API authentication
 
 Every merchant-facing API command below requires a **fresh Shopify App Bridge
@@ -486,8 +555,9 @@ not replace the separate merchant-session API and browser end-to-end gate.
 
 | | |
 |---|---|
+| Production app | https://dashboard.priceflag.org |
 | Deployment | https://priceflag-app.vercel.app (project `priceflag-app`) |
-| Vercel project | `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`). **`prj_gzNZ…` / `priceflag.vercel.app` is the company homepage — not this app, do not deploy to it.** |
+| Vercel project | `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`). **`prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` (`priceflagv1`) / `priceflag.vercel.app` is the company homepage — not this app, do not deploy to it.** |
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
 | Evaluator | `/api/cron/evaluate`; `evaluator.yml` is disabled for beta. If enabled after a later safety approval, it needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass`. |

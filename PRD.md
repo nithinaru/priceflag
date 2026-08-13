@@ -6,7 +6,7 @@
 | **Version** | v1 (first release on real stores) |
 | **Author** | Nithin |
 | **Date** | July 30, 2026 |
-| **Status** | Draft for build — three-lane parallel execution (see `BUILD_BRIEF.md`) |
+| **Status** | Draft for build — three-lane parallel execution |
 | **Predecessor** | v0 demo (in repo) — full core loop against a simulated store |
 
 ## 1. Summary
@@ -32,9 +32,8 @@ carrying the product's weight:
    confidence, and power both the forecast and the auto-rollback safety system.
 
 v1 is built in three parallel lanes — Product UI (A), Platform & Shopify (B),
-Machine Learning (C) — by three concurrent Claude Code sessions. Lane ownership,
-contracts, and sprints are specified in `BUILD_BRIEF.md`; requirements below are
-tagged with their owning lane.
+Machine Learning (C) — by three concurrent Claude Code sessions. Requirements
+below are tagged with their owning lane.
 
 ## 2. Problem
 
@@ -253,7 +252,7 @@ rollbacks; hence R29's calibration-as-safety-property and breach probabilities.
 demand shift. (4) **platform motion** — Shopify Smart Pricing could grow
 measurement; speed, the journal, and the guardrail habit are the defense.
 (5) **three-lane drift** — parallel chats diverging; mitigated by frozen
-contracts, lane-status files, and the integration checkpoints in BUILD_BRIEF §5.
+contracts and integration checkpoints.
 
 Open questions for pilots: is SKU-cohort staging comprehensible, or does
 everyone want the time canary on everything? Auto-rollback on by default, or
@@ -262,8 +261,8 @@ leaning flat $99–199/mo.
 
 ## 10. Release plan
 
-Execution is sprint-based across three parallel lanes (7 sprints each — see
-`BUILD_BRIEF.md` §4), with five integration checkpoints; CP3 is the demo-able
+Execution is sprint-based across three parallel lanes (7 sprints each), with
+five integration checkpoints; CP3 is the demo-able
 product, CP5 is pilot-ready. Every sprint ends with a push to GitHub, so `main`
 always reflects the true state of all three lanes. After CP5: dogfood on the dev
 store, then 2–3 friendly pilots via custom-app install links, then 5–10 pilots

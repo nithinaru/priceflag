@@ -41,10 +41,8 @@ sessions with non-overlapping file ownership:
 | **C — Machine Learning** | Python models that actually work: elasticity, demand baselines, counterfactual bands, calibration | `ml/`, `.github/workflows/ml-*` |
 
 Read in this order: `PRD.md` (what and why, requirements R1–R32) →
-`BUILD_BRIEF.md` (lane rules, contracts, 7 sprints per lane, integration
-checkpoints) → `CLAUDE.md` (ground rules for agents) → `PROMPTS.md` (kickoff
-prompt for each lane's chat). Lanes coordinate only through `contracts/` and
-`docs/lane-status/` — see BUILD_BRIEF §2 before touching anything.
+`CLAUDE.md` (product invariants) → `PILOT_RUNBOOK.md` (deployment targets and
+operations). Cross-cutting shapes live in `contracts/`.
 
 The v0 demo (full core loop against a simulated store, no Shopify account
 needed) ships in this repo permanently — it's the sales demo and the test
@@ -194,8 +192,7 @@ supabase/       migrations (Lane B)
 ml/             Python models: elasticity, demand baselines, counterfactual, eval harness (Lane C)
 scripts/        smoke test, store simulator (Lane B)
 lib/auth/       magic-link accounts: the pf_user session cookie and account→shop link
-docs/lane-status/  one status file per lane — how the three chats communicate
-PRD.md · BUILD_BRIEF.md · CLAUDE.md · PROMPTS.md
+PRD.md · CLAUDE.md · PILOT_RUNBOOK.md
 ```
 
 ## Signing in

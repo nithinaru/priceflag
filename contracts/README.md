@@ -4,10 +4,8 @@ Lane B owns this directory. Lanes A and C treat it as **read-only**. It holds
 every cross-lane surface: JSON Schemas for payloads, `db/` schema docs mirroring
 `supabase/migrations/`, and `api.md` for the HTTP surface.
 
-If you need a change: append to your own `contracts/requests-lane-a.md` /
-`contracts/requests-lane-c.md` (yours alone, so no merge conflicts), keep moving
-behind your own mock, and Lane B lands it and notes it in
-`docs/lane-status/lane-b.md`.
+If you need a change, land it under the versioning rules below — never edit a
+shape's meaning in place.
 
 ## Unit conventions — read this once, save yourself a bug
 
@@ -35,8 +33,8 @@ Every schema carries `contract_version` (semver) and each file's `$id` is stable
 - **Minor** — new **optional** field, or a new enum member that consumers may
   ignore. Existing fields never change meaning. Consumers must tolerate unknown
   enum members by falling back (`confidence` → treat unknown as `assumption`).
-- **Major** — anything else. Lane B announces it in `lane-status/lane-b.md`
-  before landing, and keeps the old shape served for one sprint.
+- **Major** — anything else. Announce it before landing, and keep the old
+  shape served for one sprint.
 
 `additionalProperties: false` is deliberate: it turns a typo in a producer into a
 loud validation failure instead of a silently-missing number in the UI.
