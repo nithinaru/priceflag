@@ -50,7 +50,13 @@ jobs:
           set -euo pipefail
           deployment_id=$(cat /tmp/deployment-id)
           test "$deployment_id" != unknown
-          serving_sha=$(node -e 'const d = require("/tmp/deployment.json"); console.log(d.meta?.githubCommitSha ?? "unknown");')
+          # `vercel inspect --format=json` omits git metadata entirely; the REST
+          # API is the only read-only source for the deployment's commit.
+          curl --silent --fail --max-time 20 \
+            "https://api.vercel.com/v13/deployments/$deployment_id?teamId=team_AqaBD6YaOf9DIJ7NzbytTZTW" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" > /tmp/deployment-api.json
+          serving_sha=$(node -e 'const d = require("/tmp/deployment-api.json"); console.log(d.gitSource?.sha ?? d.meta?.githubCommitSha ?? "unknown");')
+          rm -f /tmp/deployment-api.json
           echo "Serving deployment $deployment_id is commit $serving_sha; workflow dispatched from $GITHUB_SHA"
           if [ "$serving_sha" = "$GITHUB_SHA" ]; then
             echo "Production serves the dispatched revision."
@@ -66,6 +72,9 @@ jobs:
           printf '%s\n' '{"projectId":"prj_RU8NlBDoR7t89BNqn5BagOpmpnmm","orgId":"team_AqaBD6YaOf9DIJ7NzbytTZTW"}' > .vercel/project.json
           npx --yes vercel@54.14.0 env pull .runtime.env --environment production --yes \
             --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
+          # Names only, never values — shows what this token can actually pull.
+          echo "Pulled variable names:"
+          awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print "  " $1}' .runtime.env | sort
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
