@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://priceflag.app/contracts/price_recommendation.schema.json",
+  "title": "PriceRecommendation",
+  "description": "One constrained price suggestion for one variant. Written by the ML lane's optimizer (model_runs kind=\"recommendation\") into `recommendations`, read by /api/recommend and the propose flow's Suggested prefill card. Suggestions never auto-apply: the merchant always approves (PRD v1.1). One row per (shop, variant, model_version); the freshest row wins.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "shop_domain",
+    "variant_gid",
+    "current_price_cents",
+    "recommended_price_cents",
+    "robust_price_cents",
+    "rounding",
+    "elasticity",
+    "confidence",
+    "expected",
+    "constraints",
+    "candidates_evaluated",
+    "rationale",
+    "model_version",
+    "computed_at"
+  ],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "shop_domain": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.myshopify\\.com$" },
+    "variant_gid": { "type": "string", "pattern": "^gid://shopify/ProductVariant/[0-9]+$" },
+    "current_price_cents": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The live price the optimizer started from. If the storefront price has moved since `computed_at`, the recommendation is stale and must not be prefilled."
+    },
+    "recommended_price_cents": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Nominal optimum: argmax of expected profit on the rounding lattice within constraints, at the fitted elasticity point estimate."
+    },
+    "robust_price_cents": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Robust optimum: argmax of worst-case profit with elasticity at its pessimistic credible bound. Shown beside the nominal so the merchant sees what caution looks like; when the two agree the suggestion is sturdy."
+    },
+    "rounding": {
+      "enum": ["none", "end_99", "end_95", "end_00"],
+      "description": "The lattice the candidates were drawn from (lib/money.ts applyRounding endings)."
+    },
+    "elasticity": {
+      "type": "number",
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Point estimate used for the nominal objective, from the champion fit."
+    },
+    "elasticity_low": {
+      "type": ["number", "null"],
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Lower credible bound (CI80) used in the robust evaluation. Send with `elasticity_high` or not at all."
+    },
+    "elasticity_high": {
+      "type": ["number", "null"],
+      "minimum": -12,
+      "maximum": 2,
+      "description": "Upper credible bound (CI80) used in the robust evaluation."
+    },
+    "fit_model_version": {
+      "type": ["string", "null"],
+      "description": "model_version of the elasticity fit the objective was built on (R31 traceability)."
+    },
+    "confidence": {
+      "enum": ["fitted", "partial", "assumption"],
+      "description": "Inherited from the underlying fit after staleness demotion. The propose flow only prefills `fitted`/`partial`; `assumption` rows exist for audit but are not surfaced."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nominal_profit_delta_cents_per_day",
+        "robust_profit_delta_cents_per_day",
+        "nominal_revenue_delta_cents_per_day",
+        "robust_revenue_delta_cents_per_day"
+      ],
+      "properties": {
+        "nominal_profit_delta_cents_per_day": { "type": "integer" },
+        "robust_profit_delta_cents_per_day": {
+          "type": "integer",
+          "description": "Profit delta with elasticity at its pessimistic bound. May be negative even when the nominal is positive — that is the honesty the card shows, not a bug."
+        },
+        "nominal_revenue_delta_cents_per_day": { "type": "integer" },
+        "robust_revenue_delta_cents_per_day": { "type": "integer" }
+      },
+      "description": "Daily expected deltas at `recommended_price_cents` under the same demand model the forecast uses (units1 = units0 * (P1/P0)^elasticity). Integer cents per day; multiply by a horizon in the UI, never here."
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding"],
+      "properties": {
+        "margin_floor_pct": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 95,
+          "description": "Minimum gross margin over cogs_cents, in percent. null = no floor applied."
+        },
+        "max_change_pct": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "maximum": 400,
+          "description": "Cap on |price change| from current, in percent. null = uncapped."
+        },
+        "inventory_cap_applied": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when a price cut's projected demand increase was capped by inventory_quantity (thin stock cannot serve the demand a deep cut buys)."
+        },
+        "binding": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["margin_floor", "max_change", "inventory", "lattice_edge", "none"] },
+          "description": "Which constraints the nominal optimum is pressed against. ['none'] means the optimum is interior."
+        }
+      }
+    },
+    "candidates_evaluated": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Size of the constrained lattice actually searched."
+    },
+    "baseline_units_per_day": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Demand baseline the deltas were computed from."
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Plain-language, merchant-facing explanation: what the suggestion expects and which constraint bounds it. No statistics jargon (R25)."
+    },
+    "model_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Matches model_runs.model_version (R31) — every number is traceable to the run that made it."
+    },
+    "model_run_id": { "type": ["string", "null"], "format": "uuid" },
+    "computed_at": { "type": "string", "format": "date-time" }
+  }
+}
