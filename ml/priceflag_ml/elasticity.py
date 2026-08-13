@@ -38,6 +38,7 @@ model_version, fitted_at — plus low/high and a plain-language explanation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -456,6 +457,9 @@ def fits_frame(fits: list[SkuFit], fitted_at: str | None = None) -> pd.DataFrame
 
 
 CONTRACT_METHOD = "poisson_irls_eb_shrunk"
+# Nominal coverage of the [low, high] bounds we emit — the fits' bounds are
+# built at 80% (Z80) and the R28 calibration gate audits CI80 coverage.
+CONTRACT_INTERVAL = 0.80
 
 
 def fits_contract_rows(
@@ -469,8 +473,12 @@ def fits_contract_rows(
     """Rows shaped exactly for `contracts/elasticity_fit.schema.json`.
 
     The schema is `additionalProperties: false`, so this emits only contract
-    fields — notably NOT the internal low/high credible bounds (Lane B derives
-    the served range from `se`; a request to add explicit bounds is on file).
+    fields. `low`/`high` are the fit's credible bounds on the elasticity
+    itself, sent together with `interval` (nominal coverage 0.80, matching
+    the CI80 calibration gate) — Lane B's forecast uses them verbatim
+    instead of deriving a range from `se`. Per the schema, bounds are sent
+    together or not at all: a row whose fit lacks finite bounds omits all
+    three fields rather than emitting nulls.
     `variant_gids` maps internal sku ids to Shopify variant gids; entries
     missing from the map are passed through unchanged.
     """
@@ -493,6 +501,10 @@ def fits_contract_rows(
             "model_version": f.model_version,
             "fitted_at": fitted_at,
         }
+        if math.isfinite(f.low) and math.isfinite(f.high):
+            row["low"] = f.low
+            row["high"] = f.high
+            row["interval"] = CONTRACT_INTERVAL
         if window_start is not None:
             row["window_start"] = window_start
         if window_end is not None:

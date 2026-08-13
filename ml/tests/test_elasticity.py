@@ -131,6 +131,16 @@ def test_contract_rows_validate_against_lane_b_schema():
     validator = jsonschema.Draft202012Validator(schema)
     for row in rows:
         validator.validate(row)
+    # Interval bounds ship on every row whose fit has finite bounds (all of
+    # them here), together and at the CI80 nominal coverage — Lane B's
+    # forecast prefers these verbatim over deriving a range from `se`.
+    for row, fit in zip(rows, fits):
+        assert "low" in row and "high" in row, "bounds must be sent together"
+        assert row["interval"] == 0.80
+        assert row["low"] == fit.low
+        assert row["high"] == fit.high
+        assert row["low"] <= row["elasticity"] <= row["high"]
+        assert row["low"] < row["high"]
     tiers = {r["confidence"] for r in rows}
     assert tiers <= {"fitted", "partial", "assumption"}
     shrunk = [r for r in rows if r["confidence"] != "assumption"]
