@@ -237,6 +237,32 @@ async function main(): Promise<void> {
       ]);
     }
 
+    // Third door: the account gate. The middleware bounces any browser without
+    // a `pf_user` session to the sign-in screen — deliberately, even outside
+    // production — so when a signing secret is configured the smoke mints its
+    // own session the same way `/auth/callback` would. Without the secret the
+    // target server could not verify a cookie anyway, so none is sent.
+    const sessionSecret = process.env.AUTH_SESSION_SECRET ?? '';
+    if (sessionSecret !== '') {
+      const { signUserCookie } = await import('../lib/auth/account');
+      const { hostname } = new URL(BASE_URL);
+      await context.addCookies([
+        {
+          name: 'pf_user',
+          value: signUserCookie(
+            // The edge verifier requires a UUID-shaped user id; this nil-based
+            // one is obviously synthetic in any log line it reaches.
+            { userId: '00000000-0000-4000-8000-000000000000', email: 'smoke@priceflag.invalid' },
+            { secret: sessionSecret },
+          ),
+          domain: hostname,
+          path: '/',
+          httpOnly: true,
+          secure: BASE_URL.startsWith('https'),
+        },
+      ]);
+    }
+
     for (const check of CHECKS) {
       const page = await context.newPage();
       const consoleErrors: string[] = [];

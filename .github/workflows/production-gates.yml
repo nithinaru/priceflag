@@ -69,6 +69,10 @@ jobs:
         env:
           PRICEFLAG_MODE: demo
           APP_ACCESS_SECRET: local-ci-browser-gate
+          # The account gate has no local bypass by design. `npm start` below
+          # verifies sessions with this throwaway secret, and the smoke signs
+          # its own pf_user cookie with the same one.
+          AUTH_SESSION_SECRET: local-ci-session-signing-secret
           PRICEFLAG_URL: http://127.0.0.1:3000
         run: |
           npm start >/tmp/priceflag-next.log 2>&1 &
