@@ -16,6 +16,10 @@ from priceflag_ml import harness  # noqa: E402
 
 BAND_HORIZON_DAYS = 14
 REAL_INGEST_EVIDENCE_FILE = "real_ingest_evidence.json"
+# The tolerated cohort demand drop for counterfactual monitoring. Matches the
+# C5 eval-harness default; the ML export does not yet carry each rollout's own
+# guardrail settings, so every active rollout is monitored at this drop.
+COUNTERFACTUAL_GUARDRAIL_DROP = 0.20
 
 
 def _utc_now_iso() -> str:
@@ -126,6 +130,67 @@ def _close_source(source) -> None:
     close = getattr(source, "close", None)
     if callable(close):
         close()
+
+
+def _counterfactuals_for_shop(source, client, shop_domain, orders, generated_at, gates_ok, sink, receipts) -> bool:
+    """C5 counterfactual monitoring for every ACTIVE (running) rollout.
+
+    Fits the counterfactual on pre-change days only, assesses the days since
+    the rollout went live, and posts kind="counterfactual" band rows scoped to
+    the rollout (rollout_id set, cohort-level numbers stamped per variant row —
+    Lane B consumes exactly one row per day, never a sum)."""
+    from priceflag_ml import counterfactual  # noqa: PLC0415
+
+    windows = source.rollout_windows(shop_domain, status="running")
+    if windows.empty:
+        return True
+    rows: list[dict] = []
+    for window_index, window in enumerate(windows.itertuples(), start=1):
+        rollout_id = str(window.rollout_id)
+        variant_gids = sorted(str(gid) for gid in (window.variant_gids or []))
+        treated = orders[orders["sku"].astype(str).isin(variant_gids)]
+        pre = treated[treated["date"] < window.start_day]
+        during = treated[(treated["date"] >= window.start_day) & (treated["date"] <= window.end_day)]
+        if not variant_gids or pre.empty or during.empty:
+            print(f"    (counterfactual {window_index} skipped: no pre/during history for the cohort)")
+            continue
+        try:
+            monitor = counterfactual.CounterfactualMonitor(COUNTERFACTUAL_GUARDRAIL_DROP).fit(pre)
+            assessments = monitor.assess(during)
+        except (ValueError, RuntimeError, IndexError, KeyError) as error:
+            print(f"    (counterfactual {window_index} skipped: {type(error).__name__})")
+            continue
+        if not assessments:
+            print(f"    (counterfactual {window_index} skipped: no assessable days)")
+            continue
+        for gid in variant_gids:
+            rows.extend(
+                monitor.contract_rows(
+                    assessments,
+                    shop_domain=shop_domain,
+                    variant_gid=gid,
+                    rollout_id=rollout_id,
+                    generated_at=generated_at,
+                )
+            )
+
+    sink.extend(rows)
+    if not rows or client is None:
+        return True
+    result = client.post_run(
+        shop_domain=shop_domain,
+        kind="counterfactual",
+        model_version=counterfactual.MODEL_VERSION,
+        gate_passed=gates_ok,
+        bands=rows,
+        notes="active-rollout counterfactual monitoring; fitted on pre-change days only",
+    )
+    print(f"    -> counterfactual: {result.describe()}")
+    if result.accepted:
+        if result.model_run_id is None:
+            return False
+        receipts.append((shop_domain, result.model_run_id, result.rows_written))
+    return not result.is_error
 
 
 def _reports_for_shop(source, client, shop_domain, orders, generated_at, gates_ok, sink, receipts) -> bool:
@@ -250,6 +315,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
 
     all_fits: list[dict] = []
     all_bands: list[dict] = []
+    all_counterfactuals: list[dict] = []
     all_reports: list[dict] = []
     receipts: list[tuple[str, str, int]] = []
     ok = True
@@ -306,6 +372,16 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
                         ok = False
                     else:
                         receipts.append((shop_domain, result.model_run_id, result.rows_written))
+        ok &= _counterfactuals_for_shop(
+            source,
+            client,
+            shop_domain,
+            orders,
+            generated_at,
+            gates_ok,
+            all_counterfactuals,
+            receipts,
+        )
         ok &= _reports_for_shop(
             source,
             client,
@@ -319,6 +395,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
 
     (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
     (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
+    (out_dir / "counterfactual_bands.json").write_text(json.dumps(all_counterfactuals, indent=2, default=str))
     (out_dir / "rollout_reports.json").write_text(json.dumps(all_reports, indent=2, default=str))
     (out_dir / "calibration_summary.json").write_text(json.dumps(reports.calibration_summary(all_reports), indent=2))
     evidence["fits_generated"] = len(all_fits)

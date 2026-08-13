@@ -116,6 +116,11 @@ async function expectedBandForDay(
   variantGids: readonly string[],
   day: DayString,
   now: Date,
+  /** True when every non-excluded variant of the rollout is live. C5's
+   * counterfactual is fitted on the whole treated cohort, so its band and
+   * breach probability only describe what this evaluator measures once the
+   * final stage is live. */
+  cohortComplete = false,
 ): Promise<{
   band: BandEstimate;
   variantBands: {
@@ -134,6 +139,27 @@ async function expectedBandForDay(
     toDay: day,
     rolloutId: undefined,
   });
+
+  // Prefer C5's rollout-scoped counterfactual rows when they exist and can be
+  // consumed safely (whole cohort live, every monitored variant covered). They
+  // carry the calibrated breach probability that drives the guardrail path in
+  // lib/engine/guardrails.ts. Otherwise fall back to per-variant baseline rows
+  // exactly as before.
+  if (cohortComplete) {
+    const counterfactualRows = selectCounterfactualBandsForRollout(modelBands, rollout.id, now);
+    const cohort = counterfactualCohortBand(rollout, variantGids, counterfactualRows);
+    if (cohort !== null) {
+      return {
+        band: cohort.band,
+        variantBands: cohort.variantBands,
+        source: 'model',
+        modelVersion: cohort.modelVersion,
+        // Every selected row passed the freshness gate.
+        stale: false,
+        breachProbability: cohort.breachProbability,
+      };
+    }
+  }
 
   const usable = selectExpectedBandsForRollout(modelBands, rollout.id, now);
 
@@ -168,10 +194,9 @@ async function expectedBandForDay(
       // Every selected row passed the freshness gate. Irrelevant stale versions
       // or another rollout's rows must not make this chosen band look stale.
       stale: false,
-      // The current Python counterfactual contract stamps a cohort-level result
-      // onto variant rows, so neither its total nor its probability can be
-      // safely combined for a partially-live stage. Beta monitoring uses fresh
-      // per-variant baseline rows and the ordinary metric thresholds instead.
+      // Baseline rows carry no calibrated breach probability. When C5's
+      // rollout-scoped counterfactual rows are usable, the branch above
+      // supplies one; here the ordinary metric thresholds apply.
       breachProbability: null,
     };
   }
@@ -218,23 +243,49 @@ async function expectedBandForDay(
 /**
  * Return exactly one independent baseline output per variant/day.
  *
- * Counterfactual rows are intentionally ineligible here. Lane C currently
- * describes them as cohort-level totals stamped onto variant rows, so summing
- * them would multiply the expected cohort and using one would not match a
- * partially-live stage. They remain useful for offline reporting, but the beta
- * evaluator uses per-variant baselines conditioned by the approved response.
+ * Counterfactual rows are intentionally ineligible here. Lane C stamps them as
+ * cohort-level totals onto variant rows, so summing them would multiply the
+ * expected cohort. They are consumed separately — see
+ * `selectCounterfactualBandsForRollout` and `counterfactualCohortBand`.
  */
 export function selectExpectedBandsForRollout(
   bands: readonly ExpectedBandRow[],
   _rolloutId: string,
   now: Date,
 ): ExpectedBandRow[] {
-  const eligible = bands.filter((band) => {
-    const ageDays = (now.getTime() - Date.parse(band.generated_at)) / 86_400_000;
-    if (!Number.isFinite(ageDays) || ageDays > MAX_BAND_AGE_DAYS || ageDays < -1) return false;
-    return band.band_kind === 'baseline' && band.rollout_id === null;
-  });
+  return latestBandPerVariantDay(
+    bands.filter(
+      (band) => bandRowIsFresh(band, now) && band.band_kind === 'baseline' && band.rollout_id === null,
+    ),
+  );
+}
 
+/**
+ * Fresh C5 counterfactual rows scoped to THIS rollout, newest per variant/day.
+ * Another rollout's rows or unscoped rows never qualify.
+ */
+export function selectCounterfactualBandsForRollout(
+  bands: readonly ExpectedBandRow[],
+  rolloutId: string,
+  now: Date,
+): ExpectedBandRow[] {
+  return latestBandPerVariantDay(
+    bands.filter(
+      (band) =>
+        bandRowIsFresh(band, now) &&
+        band.band_kind === 'counterfactual' &&
+        band.rollout_id === rolloutId,
+    ),
+  );
+}
+
+function bandRowIsFresh(band: ExpectedBandRow, now: Date): boolean {
+  const ageDays = (now.getTime() - Date.parse(band.generated_at)) / 86_400_000;
+  return Number.isFinite(ageDays) && ageDays <= MAX_BAND_AGE_DAYS && ageDays >= -1;
+}
+
+/** Keep the newest row per (variant, day), sorted for determinism. */
+function latestBandPerVariantDay(eligible: readonly ExpectedBandRow[]): ExpectedBandRow[] {
   const grouped = new Map<string, ExpectedBandRow[]>();
   for (const band of eligible) {
     const key = `${band.variant_gid}\u0000${band.day}`;
@@ -257,6 +308,89 @@ export function selectExpectedBandsForRollout(
   return selected.sort((a, b) =>
     a.variant_gid.localeCompare(b.variant_gid) || a.day.localeCompare(b.day),
   );
+}
+
+/**
+ * Build the cohort band from C5 counterfactual rows without double counting.
+ *
+ * The Python contract stamps identical cohort-level numbers onto every variant
+ * row of a rollout, so the cohort band is ONE row, never a sum. Per-variant
+ * bands (needed for revenue/profit economics) are the cohort split by each
+ * variant's frozen baseline share, then conditioned by that variant's approved
+ * demand response.
+ *
+ * Returns null unless every monitored variant is covered — a partial set would
+ * mean the monitor's cohort and the live cohort disagree.
+ */
+export function counterfactualCohortBand(
+  rollout: Rollout,
+  variantGids: readonly string[],
+  rows: readonly ExpectedBandRow[],
+): {
+  band: BandEstimate;
+  variantBands: {
+    variant_gid: string;
+    counterfactual: BandEstimate;
+    conditioned: BandEstimate;
+  }[];
+  modelVersion: string | null;
+  breachProbability: number | null;
+} | null {
+  const uniqueGids = [...new Set(variantGids)];
+  if (uniqueGids.length === 0 || rows.length !== uniqueGids.length) return null;
+  const covered = new Set(rows.map((row) => row.variant_gid));
+  if (!uniqueGids.every((gid) => covered.has(gid))) return null;
+
+  const cohortRow = [...rows].sort(
+    (a, b) => b.generated_at.localeCompare(a.generated_at) || b.id.localeCompare(a.id),
+  )[0] as ExpectedBandRow;
+  const cohortCounterfactual: BandEstimate = {
+    expected_units: cohortRow.expected_units,
+    low: cohortRow.low,
+    high: cohortRow.high,
+    interval: cohortRow.interval_nominal,
+    floored: cohortRow.is_floored,
+    source: 'bracket',
+    n_obs: 0,
+  };
+
+  const weights = uniqueGids.map((gid) => {
+    const product = rollout.forecast?.products.find(
+      (line) => line.variant_gid === gid && !line.excluded,
+    );
+    return Math.max(0, product?.baseline_units_per_day ?? 0);
+  });
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  const variantBands = uniqueGids.map((gid, index) => {
+    const share = totalWeight > 0 ? (weights[index] as number) / totalWeight : 1 / uniqueGids.length;
+    const counterfactual: BandEstimate = {
+      ...cohortCounterfactual,
+      expected_units: cohortCounterfactual.expected_units * share,
+      low: cohortCounterfactual.low * share,
+      high: cohortCounterfactual.high * share,
+    };
+    return {
+      variant_gid: gid,
+      counterfactual,
+      conditioned: conditionBandOnDemandEffect(
+        counterfactual,
+        forecastDemandMultiplier(rollout, [gid]),
+      ),
+    };
+  });
+
+  return {
+    // The cohort band keeps the row's own width; recombining the split bands
+    // would shrink the interval as if the shares were independent.
+    band: conditionBandOnDemandEffect(
+      cohortCounterfactual,
+      forecastDemandMultiplier(rollout, variantGids),
+    ),
+    variantBands,
+    modelVersion: cohortRow.model_version,
+    breachProbability: cohortRow.breach_probability,
+  };
 }
 
 const FALLBACK_ELASTICITY = -1.5;
@@ -642,7 +776,11 @@ export async function evaluateRollout(
     const cogs = new Map(variants.map((variant) => [variant.variant_gid, variant.cogs_cents_at_creation]));
 
     const actual = await actualsForDay(adapter, shop, variantGids, cogs, day);
-    const expected = await expectedBandForDay(adapter, shop, rollout, variantGids, day, now);
+    // C5's counterfactual describes the whole treated cohort; only once every
+    // non-excluded variant is live does it measure what this evaluator measures.
+    const cohortComplete =
+      variants.length === allVariants.filter((variant) => !variant.excluded).length;
+    const expected = await expectedBandForDay(adapter, shop, rollout, variantGids, day, now, cohortComplete);
 
     // Preserve the conditioned SKU mix. Multiplying aggregate units by an old
     // baseline-weighted average price can be wildly wrong when expensive and

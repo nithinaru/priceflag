@@ -270,6 +270,7 @@ def test_real_refit_requires_receipt_readback_and_emits_redacted_evidence(monkey
     monkeypatch.setattr(elasticity_module, "fits_contract_rows", lambda *_args, **_kwargs: [{"fit": 1}])
     monkeypatch.setattr(nightly, "_forecast_one", lambda *_args: object())
     monkeypatch.setattr(forecaster_module, "bands_contract_rows", lambda *_args, **_kwargs: [{"band": 1}])
+    monkeypatch.setattr(nightly, "_counterfactuals_for_shop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(nightly, "_reports_for_shop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(reports_module, "calibration_summary", lambda _reports: {"n": 0})
     _set_real_attestation_env(monkeypatch)
@@ -310,3 +311,124 @@ def test_partial_attestation_or_target_configuration_fails_closed(monkeypatch, t
     stale_evidence.write_text(json.dumps(_valid_real_evidence()))
     assert nightly.main() == 1
     assert not stale_evidence.exists()
+
+
+# --- C5 counterfactual monitoring of active rollouts -------------------------
+
+
+ROLLOUT_ID = "123e4567-e89b-42d3-a456-426614174000"
+SHOP = "golden.myshopify.com"
+GENERATED_AT = "2026-08-12T00:00:00Z"
+
+
+def _active_rollout_fixture():
+    """A golden cohort with a known null effect, shaped like the real export."""
+    import pandas as pd
+
+    from priceflag_ml.harness import _c5_scenario
+
+    pre, during, treated = _c5_scenario(seed=7, rep=0, effect_ratio=1.0)
+    orders = pd.concat([pre, during], ignore_index=True)
+    windows = pd.DataFrame(
+        [
+            {
+                "shop_domain": SHOP,
+                "rollout_id": ROLLOUT_ID,
+                "status": "running",
+                "start_day": during["date"].min(),
+                "end_day": during["date"].max(),
+                "variant_gids": list(treated),
+            }
+        ]
+    )
+    return orders, windows, list(treated), during
+
+
+class _WindowSource:
+    def __init__(self, windows):
+        self._windows = windows
+
+    def rollout_windows(self, shop_domain, status=None):
+        assert shop_domain == SHOP
+        assert status == "running", "the nightly step must monitor active rollouts only"
+        return self._windows
+
+
+class _CaptureResult:
+    accepted = True
+    is_error = False
+    model_run_id = "00000000-0000-4000-8000-000000000001"
+
+    def __init__(self, rows_written):
+        self.rows_written = rows_written
+
+    def describe(self):
+        return f"accepted: {self.rows_written} rows"
+
+
+class _CaptureClient:
+    def __init__(self):
+        self.calls = []
+
+    def post_run(self, **kwargs):
+        self.calls.append(kwargs)
+        return _CaptureResult(len(kwargs["bands"]))
+
+
+def test_counterfactual_step_posts_rollout_scoped_rows_for_an_active_rollout():
+    from priceflag_ml import ingest
+    from priceflag_ml.counterfactual import MODEL_VERSION
+
+    orders, windows, treated, during = _active_rollout_fixture()
+    client = _CaptureClient()
+    sink, receipts = [], []
+
+    ok = nightly._counterfactuals_for_shop(
+        _WindowSource(windows), client, SHOP, orders, GENERATED_AT, True, sink, receipts
+    )
+
+    assert ok
+    monitored_days = during["date"].nunique()
+    assert len(sink) == len(treated) * monitored_days
+    assert all(row["band_kind"] == "counterfactual" for row in sink)
+    assert all(row["rollout_id"] == ROLLOUT_ID for row in sink)
+    assert all(0.0 <= row["breach_probability"] <= 1.0 for row in sink)
+    assert all(row["model_version"] == MODEL_VERSION for row in sink)
+    assert {row["variant_gid"] for row in sink} == set(treated)
+    # cohort numbers are stamped per variant: no (variant, day, rollout) duplicates
+    ingest.assert_bands_cannot_double_count(sink)
+
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["kind"] == "counterfactual"
+    assert call["model_version"] == MODEL_VERSION
+    assert call["gate_passed"] is True
+    assert call["bands"] == sink
+    assert receipts == [(SHOP, _CaptureResult.model_run_id, len(sink))]
+
+
+def test_counterfactual_step_is_a_quiet_noop_without_active_rollouts():
+    import pandas as pd
+
+    orders, _windows, _treated, _during = _active_rollout_fixture()
+    empty = pd.DataFrame(
+        columns=["shop_domain", "rollout_id", "status", "start_day", "end_day", "variant_gids"]
+    )
+    client = _CaptureClient()
+    sink, receipts = [], []
+    assert nightly._counterfactuals_for_shop(
+        _WindowSource(empty), client, SHOP, orders, GENERATED_AT, True, sink, receipts
+    )
+    assert sink == [] and receipts == [] and client.calls == []
+
+
+def test_counterfactual_step_skips_a_rollout_with_no_prechange_history():
+    orders, windows, _treated, _during = _active_rollout_fixture()
+    # Pretend the rollout started before any readable history: no pre days.
+    windows.loc[0, "start_day"] = orders["date"].min()
+    client = _CaptureClient()
+    sink, receipts = [], []
+    assert nightly._counterfactuals_for_shop(
+        _WindowSource(windows), client, SHOP, orders, GENERATED_AT, True, sink, receipts
+    )
+    assert sink == [] and client.calls == []
