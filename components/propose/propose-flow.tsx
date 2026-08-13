@@ -21,6 +21,7 @@ import { cn } from "@/components/cn";
 import { IconArrowRight, IconTag } from "@/components/ui/icons";
 import { readSelection } from "@/components/catalog/selection";
 import { ForecastCard } from "@/components/propose/forecast-card";
+import { SuggestedCard } from "@/components/propose/suggested-card";
 import {
   DEFAULT_GUARDRAIL_DRAFT,
   GuardrailBuilder,
@@ -32,6 +33,7 @@ import { useToast } from "@/components/ui/toast";
 import { merchantJson } from "@/components/lib/merchant-api";
 import { countOf, formatMoney, formatPct, parseMoneyToCents } from "@/components/format";
 import type { ForecastRequest, ForecastReply } from "@/app/propose/actions";
+import type { RecommendResponse, RecommendSuggestion } from "@/app/api/recommend/route";
 import { normalizeStages } from "@/lib/engine/rollout";
 import { CONTRACT_VERSION, type ForecastResult } from "@/lib/contracts";
 
@@ -55,6 +57,7 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
   const [draft, setDraft] = useState<GuardrailDraft>(DEFAULT_GUARDRAIL_DRAFT);
 
   const [forecast, setForecast] = useState<ForecastResult | null>(null);
+  const [suggestions, setSuggestions] = useState<RecommendSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -119,6 +122,45 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
 
     return () => window.clearTimeout(timer);
   }, [gids, change, demoMode]);
+
+  // Suggestions depend only on the selection, not on the change being typed —
+  // one quiet fetch per selection. Any failure (including the kill switch's
+  // 409) renders no card at all: an offer that cannot be made is not an error
+  // the merchant needs to hear about while proposing their own change.
+  const suggestionsRequestId = useRef(0);
+  useEffect(() => {
+    if (gids === null || gids.length === 0) {
+      setSuggestions([]);
+      return;
+    }
+    const id = suggestionsRequestId.current + 1;
+    suggestionsRequestId.current = id;
+    void (async () => {
+      try {
+        let next: RecommendResponse;
+        if (demoMode) {
+          const reply = await fetch("/api/demo/recommend", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ variant_gids: gids }),
+          });
+          const body = (await reply.json()) as { ok: boolean; response?: RecommendResponse };
+          if (!body.ok || !body.response) throw new Error("no suggestions");
+          next = body.response;
+        } else {
+          next = await merchantJson<RecommendResponse>("/api/recommend", {
+            method: "POST",
+            body: JSON.stringify({ contract_version: CONTRACT_VERSION, variant_gids: gids }),
+          });
+        }
+        if (suggestionsRequestId.current !== id) return;
+        setSuggestions(next.suggestions);
+      } catch {
+        if (suggestionsRequestId.current !== id) return;
+        setSuggestions([]);
+      }
+    })();
+  }, [gids, demoMode]);
 
   if (gids === null) return <SkeletonCard />;
 
@@ -205,6 +247,28 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
           )}
         </CardBody>
       </Card>
+
+      {/* 1½. An offer, below the merchant's own change and above its forecast.
+          Selecting one narrows the wizard to that product and prefills the
+          suggested move as an absolute change — the merchant still walks the
+          same forecast → draft → confirm path. */}
+      {forecast !== null && suggestions.length > 0 ? (
+        <SuggestedCard
+          suggestions={suggestions}
+          currency={forecast.currency}
+          titleByGid={
+            new Map(forecast.products.map((line) => [line.variant_gid, line.title]))
+          }
+          onUse={(suggestion) => {
+            const deltaCents =
+              suggestion.recommended_price_cents - suggestion.current_price_cents;
+            setGids([suggestion.variant_gid]);
+            setKind("absolute");
+            setDirection(deltaCents >= 0 ? "up" : "down");
+            setAmount((Math.abs(deltaCents) / 100).toFixed(2));
+          }}
+        />
+      ) : null}
 
       {/* 2. What would happen. */}
       {error ? (
