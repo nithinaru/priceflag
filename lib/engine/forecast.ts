@@ -431,10 +431,10 @@ function fitSe(fit: ElasticityFitRow): number {
  * believe. Falls back to the symmetric interval per variant, so a mixed selection
  * where only some fits carry bounds still works.
  */
-const pickLow: ElasticityPick = (fit) =>
+export const pickLow: ElasticityPick = (fit) =>
   fit.low !== null && fit.low !== undefined ? fit.low : fit.elasticity - Z_95 * fitSe(fit);
 
-const pickHigh: ElasticityPick = (fit) =>
+export const pickHigh: ElasticityPick = (fit) =>
   fit.high !== null && fit.high !== undefined ? fit.high : fit.elasticity + Z_95 * fitSe(fit);
 
 type LineElasticityPick = (line: VariantLine) => number;
