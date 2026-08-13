@@ -41,22 +41,23 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
-      - name: Compare current production and serving-deployment configuration
+      - name: Compare the serving deployment against the dispatched revision
+        # `vercel env pull --id=<deployment>` only works while a deployment is
+        # INITIALIZING, so a per-deployment variable listing is not obtainable
+        # here. The useful, always-answerable question is whether production is
+        # serving the commit this workflow was dispatched from.
         run: |
           set -euo pipefail
           deployment_id=$(cat /tmp/deployment-id)
           test "$deployment_id" != unknown
-          mkdir -p .vercel
-          printf '%s\n' '{"projectId":"prj_RU8NlBDoR7t89BNqn5BagOpmpnmm","orgId":"team_AqaBD6YaOf9DIJ7NzbytTZTW"}' > .vercel/project.json
-          npx --yes vercel@54.14.0 env pull .serving.env --id="$deployment_id" --yes \
-            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
-          for file in .serving.env; do
-            echo "Serving deployment variables:"
-            awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print "  " $1}' "$file" | sort
-          done
-          rm -f .serving.env /tmp/deployment.json /tmp/deployment-id
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          serving_sha=$(node -e 'const d = require("/tmp/deployment.json"); console.log(d.meta?.githubCommitSha ?? "unknown");')
+          echo "Serving deployment $deployment_id is commit $serving_sha; workflow dispatched from $GITHUB_SHA"
+          if [ "$serving_sha" = "$GITHUB_SHA" ]; then
+            echo "Production serves the dispatched revision."
+          else
+            echo "::warning::Production serves $serving_sha, not the dispatched $GITHUB_SHA (a newer push may simply not have promoted yet)."
+          fi
+          rm -f /tmp/deployment.json /tmp/deployment-id
 
       - name: Pull production configuration into the ephemeral runner
         run: |
