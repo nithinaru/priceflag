@@ -50,8 +50,13 @@ function destinationFrom(raw: string | null): string {
  * a reason it knows how to phrase. An expired link is the common case by a wide
  * margin, and the useful response to it is a fresh one.
  */
-function failure(reason: string): NextResponse {
-  return NextResponse.redirect(signInScreenUrl({ error: reason }), { status: 303 });
+function failure(reason: string, next?: string): NextResponse {
+  const params: Record<string, string> = { error: reason };
+  // Carry the destination through the retry: the screen forwards `next` when it
+  // mints a fresh link, so an expired link re-request keeps where it was going.
+  // Already sanitized by `destinationFrom`; the default is noise, so drop it.
+  if (next !== undefined && next !== DEFAULT_DESTINATION) params.next = next;
+  return NextResponse.redirect(signInScreenUrl(params), { status: 303 });
 }
 
 async function establishSession(
@@ -77,16 +82,16 @@ async function establishSession(
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  if (!hasAuthConfig()) return failure('auth_not_configured');
-
   const params = request.nextUrl.searchParams;
   const destination = destinationFrom(params.get('next'));
+
+  if (!hasAuthConfig()) return failure('auth_not_configured', destination);
 
   // Supabase sends `error_description` when a link has already been used or has
   // expired. Both are ordinary and deserve a real message, not a generic one.
   const supabaseError = params.get('error') ?? params.get('error_code');
   if (supabaseError !== null) {
-    return failure(supabaseError === 'otp_expired' ? 'link_expired' : 'link_invalid');
+    return failure(supabaseError === 'otp_expired' ? 'link_expired' : 'link_invalid', destination);
   }
 
   // Was this link opened in the browser that asked for it? A link is otherwise
@@ -97,7 +102,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // an unbound link is refused without being spent, so the person who genuinely
   // requested it can still use it.
   if (!linkNonceMatches(params.get(LINK_NONCE_PARAM), request.cookies.get(LINK_NONCE_COOKIE)?.value)) {
-    return failure('link_unbound');
+    return failure('link_unbound', destination);
   }
 
   const tokenHash = params.get('token_hash');
@@ -126,7 +131,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { data, error } = await client.auth.verifyOtp({ token_hash: tokenHash, type });
 
   if (error !== null || data.user === null || typeof data.user.email !== 'string') {
-    return failure(error?.code === 'otp_expired' ? 'link_expired' : 'link_invalid');
+    return failure(error?.code === 'otp_expired' ? 'link_expired' : 'link_invalid', destination);
   }
 
   return establishSession(data.user.id, data.user.email, destination);
