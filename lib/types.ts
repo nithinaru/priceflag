@@ -20,6 +20,7 @@ import type {
   JournalActor,
   JournalSource,
   JournalStatus,
+  RecommendationBinding,
   RolloutReport,
   StageSpec,
 } from './contracts';
@@ -40,6 +41,7 @@ export type {
   JournalActor,
   JournalSource,
   JournalStatus,
+  RecommendationBinding,
   StageSpec,
 } from './contracts';
 
@@ -538,9 +540,6 @@ export interface RolloutReportRow extends RolloutReport {
   shop_id: string;
   created_at?: string;
 }
-
-/** Which constraints the nominal optimum is pressed against; ['none'] = interior. */
-export type RecommendationBinding = 'margin_floor' | 'max_change' | 'inventory' | 'lattice_edge' | 'none';
 
 /**
  * One constrained price suggestion per (shop, variant, model_version), from the

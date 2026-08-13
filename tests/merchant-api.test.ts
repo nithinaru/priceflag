@@ -450,6 +450,7 @@ test('rollout listing and reports remain tenant-scoped', async () => {
     fits: [],
     bands: [],
     reports: [report],
+    recommendations: [],
   });
   const readyReport = await getRolloutReport(
     authGet(`/api/rollouts/${fixture.rollout.id}/report`, token(DEMO_SHOP_DOMAIN)),

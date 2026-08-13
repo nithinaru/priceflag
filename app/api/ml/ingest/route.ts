@@ -35,7 +35,7 @@ import {
   validateRolloutReports,
   type ValidationProblem,
 } from '@/lib/contracts/validate';
-import type { ElasticityFit, ExpectedBand, RolloutReport } from '@/lib/contracts';
+import type { ElasticityFit, ExpectedBand, PriceRecommendationContract, RolloutReport } from '@/lib/contracts';
 import type { ElasticityFitRow, ExpectedBandRow, ModelRun } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -57,17 +57,6 @@ interface IngestBody {
   bands?: unknown[];
   reports?: unknown[];
   recommendations?: unknown[];
-}
-
-/**
- * The fields of a price recommendation the route itself cross-checks; the full
- * shape is enforced by `contracts/price_recommendation.schema.json`. Local until
- * a `PriceRecommendation` type joins `lib/contracts.ts` alongside its table.
- */
-interface PriceRecommendationLike {
-  shop_domain: string;
-  variant_gid: string;
-  model_version: string;
 }
 
 const MAX_ROWS_PER_REQUEST = 20_000;
@@ -144,7 +133,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const fits = validateElasticityFits<ElasticityFit>(fitRows);
   const bands = validateExpectedBands<ExpectedBand>(bandRows);
   const reports = validateRolloutReports<RolloutReport>(reportRows);
-  const recommendations = validatePriceRecommendations<PriceRecommendationLike>(recommendationRows);
+  const recommendations = validatePriceRecommendations<PriceRecommendationContract>(recommendationRows);
   const problems: ValidationProblem[] = [
     ...fits.problems.map((problem) => ({ ...problem, path: `fits[${problem.index}]${problem.path}` })),
     ...bands.problems.map((problem) => ({ ...problem, path: `bands[${problem.index}]${problem.path}` })),
@@ -294,8 +283,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .digest('hex');
     // Recommendation rows ride the same all-or-nothing write as fits/bands/reports,
     // passed through as contract rows (like `reports`) under the `recommendations`
-    // parameter that `pf_ingest_model_run` gains alongside its table. Built as a
-    // variable so the extra key type-checks before `AtomicModelIngestInput` learns it.
+    // parameter of `pf_ingest_model_run`.
     const ingestInput = {
       shopId: shop.id,
       ingestKey,
@@ -317,8 +305,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       recommendations: recommendations.valid,
     };
     const stored = await adapter.ingestModelRunAtomic(ingestInput);
-    const recommendationsWritten =
-      (stored as { recommendations_written?: number }).recommendations_written ?? 0;
+    const recommendationsWritten = stored.recommendations_written;
 
     const expectedTotal =
       fitPayload.length + bandPayload.length + reports.valid.length + recommendations.valid.length;

@@ -22,7 +22,7 @@
 
 import type { DayString } from '../dates';
 import type { Cents } from '../money';
-import type { Confidence, RolloutReport } from '../contracts';
+import type { Confidence, PriceRecommendationContract, RolloutReport } from '../contracts';
 import type {
   ElasticityFitRow,
   ExpectedBandRow,
@@ -41,6 +41,7 @@ import type {
   RolloutEvent,
   RolloutEventCreate,
   RolloutPatch,
+  RecommendationRow,
   RolloutReading,
   RolloutReadingUpsert,
   RolloutReportRow,
@@ -62,6 +63,8 @@ export interface AtomicModelIngestInput {
   fits: readonly Omit<ElasticityFitRow, 'id'>[];
   bands: readonly Omit<ExpectedBandRow, 'id'>[];
   reports: readonly RolloutReport[];
+  /** Contract rows, untransformed — the RPC flattens them (like `reports`). */
+  recommendations: readonly PriceRecommendationContract[];
 }
 
 export interface AtomicModelIngestResult {
@@ -69,6 +72,7 @@ export interface AtomicModelIngestResult {
   fits_written: number;
   bands_written: number;
   reports_written: number;
+  recommendations_written: number;
   rows_written: number;
   deduplicated: boolean;
 }
@@ -201,6 +205,11 @@ export interface StoreAdapter {
 
   // -- ML outputs (written by Lane C, read here) ---------------------------
   getLatestFits(shopId: string, variantGids?: readonly string[]): Promise<Map<string, ElasticityFitRow>>;
+  /** Freshest optimizer suggestion per variant (never auto-applied — PRD v1.1). */
+  getLatestRecommendations(
+    shopId: string,
+    variantGids?: readonly string[],
+  ): Promise<Map<string, RecommendationRow>>;
   getExpectedBands(
     shopId: string,
     query: { variantGids?: readonly string[]; fromDay: DayString; toDay: DayString; rolloutId?: string | null },

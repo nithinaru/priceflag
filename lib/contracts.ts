@@ -370,6 +370,53 @@ export interface JournalEntryContract {
 }
 
 // ---------------------------------------------------------------------------
+// price_recommendation.schema.json
+// ---------------------------------------------------------------------------
+
+/** Which constraints the nominal optimum is pressed against; ['none'] = interior. */
+export type RecommendationBinding = 'margin_floor' | 'max_change' | 'inventory' | 'lattice_edge' | 'none';
+
+/**
+ * One constrained price suggestion for one variant, from the optimizer
+ * (`model_runs.kind = 'recommendation'`). Posted to `/api/ml/ingest` and handed
+ * untransformed to `pf_ingest_model_run`, which flattens it into the
+ * `recommendations` table (`RecommendationRow` in `lib/types.ts`). Suggestions
+ * never auto-apply — the merchant always approves (PRD v1.1).
+ */
+export interface PriceRecommendationContract {
+  contract_version: typeof CONTRACT_VERSION;
+  shop_domain: string;
+  variant_gid: string;
+  current_price_cents: Cents;
+  recommended_price_cents: Cents;
+  robust_price_cents: Cents;
+  rounding: Rounding;
+  elasticity: number;
+  elasticity_low?: number | null;
+  elasticity_high?: number | null;
+  fit_model_version?: string | null;
+  confidence: Confidence;
+  expected: {
+    nominal_profit_delta_cents_per_day: Cents;
+    robust_profit_delta_cents_per_day: Cents;
+    nominal_revenue_delta_cents_per_day: Cents;
+    robust_revenue_delta_cents_per_day: Cents;
+  };
+  constraints: {
+    margin_floor_pct?: number | null;
+    max_change_pct?: number | null;
+    inventory_cap_applied?: boolean;
+    binding: RecommendationBinding[];
+  };
+  candidates_evaluated: number;
+  baseline_units_per_day?: number;
+  rationale: string;
+  model_version: string;
+  model_run_id?: string | null;
+  computed_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // rollout_report.schema.json
 // ---------------------------------------------------------------------------
 

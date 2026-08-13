@@ -776,6 +776,7 @@ export class SupabaseAdapter implements StoreAdapter {
       p_fits: input.fits,
       p_bands: input.bands,
       p_reports: input.reports,
+      p_recommendations: input.recommendations,
     });
     const raw = unwrap(result, `ingestModelRunAtomic(${input.shopId})`) as unknown;
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -787,6 +788,7 @@ export class SupabaseAdapter implements StoreAdapter {
       fits_written: num(row.fits_written),
       bands_written: num(row.bands_written),
       reports_written: num(row.reports_written),
+      recommendations_written: num(row.recommendations_written),
       rows_written: num(row.rows_written),
       deduplicated: Boolean(row.deduplicated),
     };

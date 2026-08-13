@@ -39,6 +39,7 @@ import type {
   RolloutPatch,
   RolloutReading,
   RolloutReadingUpsert,
+  RecommendationRow,
   RolloutReportRow,
   RolloutStatus,
   RolloutVariant,
@@ -81,6 +82,7 @@ interface DemoState {
   bands: ExpectedBandRow[];
   modelRuns: ModelRun[];
   reports: RolloutReportRow[];
+  recommendations: RecommendationRow[];
   complianceAudits: {
     webhook_id: string;
     shop_id: string;
@@ -108,6 +110,7 @@ function emptyState(): DemoState {
     bands: [],
     modelRuns: [],
     reports: [],
+    recommendations: [],
     complianceAudits: [],
     locks: {},
   };
@@ -1151,6 +1154,21 @@ export class DemoAdapter implements StoreAdapter {
     return latest;
   }
 
+  async getLatestRecommendations(
+    shopId: string,
+    variantGids?: readonly string[],
+  ): Promise<Map<string, RecommendationRow>> {
+    const wanted = variantGids ? new Set(variantGids) : null;
+    const latest = new Map<string, RecommendationRow>();
+    for (const rec of this.state.recommendations) {
+      if (rec.shop_id !== shopId) continue;
+      if (wanted && !wanted.has(rec.variant_gid)) continue;
+      const current = latest.get(rec.variant_gid);
+      if (!current || rec.computed_at > current.computed_at) latest.set(rec.variant_gid, clone(rec));
+    }
+    return latest;
+  }
+
   async getExpectedBands(
     shopId: string,
     query: { variantGids?: readonly string[]; fromDay: DayString; toDay: DayString; rolloutId?: string | null },
@@ -1211,6 +1229,7 @@ export class DemoAdapter implements StoreAdapter {
         fits_written: prior.fits_written ?? 0,
         bands_written: prior.bands_written ?? 0,
         reports_written: prior.reports_written ?? 0,
+        recommendations_written: prior.recommendations_written ?? 0,
         rows_written: prior.rows_written,
         deduplicated: true,
       };
@@ -1284,8 +1303,51 @@ export class DemoAdapter implements StoreAdapter {
         else this.state.reports.push(row);
       }
 
+      for (const rec of input.recommendations) {
+        if (!this.state.products.some((product) => product.shop_id === input.shopId && product.variant_gid === rec.variant_gid)) {
+          throw new Error(`recommendation variant ${rec.variant_gid} is not owned by shop ${input.shopId}`);
+        }
+        // Flatten the contract row exactly as pf_ingest_model_run does.
+        const row: Omit<RecommendationRow, 'id' | 'created_at'> = {
+          shop_id: input.shopId,
+          variant_gid: rec.variant_gid,
+          current_price_cents: rec.current_price_cents,
+          recommended_price_cents: rec.recommended_price_cents,
+          robust_price_cents: rec.robust_price_cents,
+          rounding: rec.rounding,
+          elasticity: rec.elasticity,
+          elasticity_low: rec.elasticity_low ?? null,
+          elasticity_high: rec.elasticity_high ?? null,
+          fit_model_version: rec.fit_model_version ?? null,
+          confidence: rec.confidence,
+          nominal_profit_delta_cents_per_day: rec.expected.nominal_profit_delta_cents_per_day,
+          robust_profit_delta_cents_per_day: rec.expected.robust_profit_delta_cents_per_day,
+          nominal_revenue_delta_cents_per_day: rec.expected.nominal_revenue_delta_cents_per_day,
+          robust_revenue_delta_cents_per_day: rec.expected.robust_revenue_delta_cents_per_day,
+          margin_floor_pct: rec.constraints.margin_floor_pct ?? null,
+          max_change_pct: rec.constraints.max_change_pct ?? null,
+          inventory_cap_applied: rec.constraints.inventory_cap_applied ?? false,
+          binding: rec.constraints.binding,
+          candidates_evaluated: rec.candidates_evaluated,
+          baseline_units_per_day: rec.baseline_units_per_day ?? null,
+          rationale: rec.rationale,
+          model_version: rec.model_version,
+          model_run_id: runId,
+          computed_at: rec.computed_at,
+        };
+        const existing = this.state.recommendations.find(
+          (candidate) =>
+            candidate.shop_id === input.shopId &&
+            candidate.variant_gid === row.variant_gid &&
+            candidate.model_version === row.model_version,
+        );
+        if (existing) Object.assign(existing, row, { id: existing.id, created_at: existing.created_at });
+        else this.state.recommendations.push({ ...row, id: randomUUID(), created_at: nowIso() });
+      }
+
       const now = nowIso();
-      const rowsWritten = input.fits.length + input.bands.length + input.reports.length;
+      const rowsWritten =
+        input.fits.length + input.bands.length + input.reports.length + input.recommendations.length;
       this.state.modelRuns.push({
         ...input.run,
         id: runId,
@@ -1296,6 +1358,7 @@ export class DemoAdapter implements StoreAdapter {
         fits_written: input.fits.length,
         bands_written: input.bands.length,
         reports_written: input.reports.length,
+        recommendations_written: input.recommendations.length,
         started_at: now,
         finished_at: now,
         created_at: now,
@@ -1306,6 +1369,7 @@ export class DemoAdapter implements StoreAdapter {
         fits_written: input.fits.length,
         bands_written: input.bands.length,
         reports_written: input.reports.length,
+        recommendations_written: input.recommendations.length,
         rows_written: rowsWritten,
         deduplicated: false,
       };
