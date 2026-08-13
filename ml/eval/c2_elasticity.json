@@ -2,10 +2,10 @@
   "summary": {
     "model_version": "elasticity-poisson-eb-1.0",
     "n_seeds": 5,
-    "challenger_mae": 0.4857073454421129,
-    "incumbent_mae": 0.4914276891814261,
-    "challenger_within_0.3": 0.4391950464396285,
-    "incumbent_within_0.3": 0.33090962700869825,
+    "challenger_mae": 0.4913950362271958,
+    "incumbent_mae": 0.5076661130980542,
+    "challenger_within_0.3": 0.4274303405572756,
+    "incumbent_within_0.3": 0.3697154651334218,
     "ci80_coverage_of_truth": 0.8597807017543859,
     "verdict": "challenger wins"
   },
@@ -20,9 +20,9 @@
       },
       "incumbent_identifiable": {
         "n": 19,
-        "mae": 0.463735915582569,
-        "rmse": 0.5918236303652729,
-        "pct_within_0.3": 0.3157894736842105
+        "mae": 0.45836974923593227,
+        "rmse": 0.5654224274564033,
+        "pct_within_0.3": 0.47368421052631576
       },
       "ci80_coverage_of_truth": 0.8947368421052632,
       "tiers": {
@@ -40,9 +40,9 @@
       },
       "incumbent_identifiable": {
         "n": 15,
-        "mae": 0.5379999761573883,
-        "rmse": 0.6146923912960144,
-        "pct_within_0.3": 0.26666666666666666
+        "mae": 0.44823000469162755,
+        "rmse": 0.5888103117028481,
+        "pct_within_0.3": 0.4666666666666667
       },
       "ci80_coverage_of_truth": 0.8,
       "tiers": {
@@ -54,15 +54,15 @@
       "seed": 42,
       "challenger_identifiable": {
         "n": 17,
-        "mae": 0.49841205951308504,
-        "rmse": 0.6403664022929152,
-        "pct_within_0.3": 0.4117647058823529
+        "mae": 0.5160591183366146,
+        "rmse": 0.6507087412189134,
+        "pct_within_0.3": 0.35294117647058826
       },
       "incumbent_identifiable": {
         "n": 17,
-        "mae": 0.4918283080424514,
-        "rmse": 0.5884051092361923,
-        "pct_within_0.3": 0.47058823529411764
+        "mae": 0.5687962828034502,
+        "rmse": 0.6741598922918434,
+        "pct_within_0.3": 0.23529411764705882
       },
       "ci80_coverage_of_truth": 0.9375,
       "tiers": {
@@ -74,14 +74,14 @@
       "seed": 99,
       "challenger_identifiable": {
         "n": 19,
-        "mae": 0.5022986460471438,
-        "rmse": 0.6351858449271046,
+        "mae": 0.5130900411490288,
+        "rmse": 0.6377291557756515,
         "pct_within_0.3": 0.42105263157894735
       },
       "incumbent_identifiable": {
         "n": 19,
-        "mae": 0.4667613376461965,
-        "rmse": 0.5869461780648442,
+        "mae": 0.5250243787629739,
+        "rmse": 0.609160529397014,
         "pct_within_0.3": 0.3157894736842105
       },
       "ci80_coverage_of_truth": 0.6666666666666666,
@@ -101,9 +101,9 @@
       },
       "incumbent_identifiable": {
         "n": 14,
-        "mae": 0.4968129084785253,
-        "rmse": 0.6236021475237983,
-        "pct_within_0.3": 0.2857142857142857
+        "mae": 0.5379101499962872,
+        "rmse": 0.6771220648581714,
+        "pct_within_0.3": 0.35714285714285715
       },
       "ci80_coverage_of_truth": 1.0,
       "tiers": {

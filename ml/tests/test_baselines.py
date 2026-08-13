@@ -125,7 +125,8 @@ def test_bracket_elasticity_is_fixed_assumption():
     df = _daily_frame([1, 2, 3])
     df["price_cents"] = [5000, 5000, 4000]
     est = BracketElasticity().estimate(df, fitted_at="2026-07-29T00:00:00Z")
-    assert est["elasticity"] == -1.2
+    # Mirrors lib/engine/forecast.ts DEFAULT_ELASTICITY (app is canonical)
+    assert est["elasticity"] == -1.5
     assert est["low"] < est["elasticity"] < est["high"]
     assert est["confidence"] == "assumption"
     assert est["model_version"].startswith("bracket-v0")

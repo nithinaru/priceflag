@@ -77,9 +77,9 @@ the champion only by beating it here AND on real-data backtests.
   proved unstable, see Rejected). SKUs with no permanent price variation
   honestly degrade to the bracket (`assumption`).
 - **Scores (5 golden seeds, identifiable slice, vs bracket incumbent):**
-  recovery MAE **0.486 vs 0.491** · within ±0.3 **43.9% vs 33.1%** ·
+  recovery MAE **0.491 vs 0.508** · within ±0.3 **42.7% vs 37.0%** ·
   80% CI covers true elasticity **86.0%** (bracket has no per-SKU CI) ·
-  per-SKU differentiation (bracket gives every SKU −1.2 forever).
+  per-SKU differentiation (bracket gives every SKU −1.5 forever).
   Snapshot: `eval/c2_elasticity.json`.
 - **Scope honesty:** the brief's aspiration of ±0.3 recovery for most
   identifiable SKUs is statistically unreachable on this data: an unbiased
@@ -90,15 +90,22 @@ the champion only by beating it here AND on real-data backtests.
 
 ### bracket-v0-standin-0.1 — elasticity (incumbent C1→C2, now the assumption-tier fallback)
 
-- **What:** fixed assumption bracket, point −1.2, range [−2.2, −0.6],
-  `confidence: assumption`, ignores the data. Stand-in for v0's transparent
-  bracket math until `lib/forecast.ts` is committed (see
-  contracts/requests-lane-c.md); constants to be reconciled then.
-- **Scores (golden recovery):** all SKUs MAE **0.519**, 29.2% within ±0.3;
-  identifiable slice (≥2 permanent price levels, n=19) MAE **0.464**, 31.6%
+- **What:** fixed assumption bracket, point −1.5, range [−2.5, −0.5],
+  `confidence: assumption`, ignores the data. Constants mirror the app's
+  canonical fallback (`lib/engine/forecast.ts` `DEFAULT_ELASTICITY_*`,
+  `lib/evaluator/index.ts` `FALLBACK_ELASTICITY`) and must stay in lockstep
+  with it.
+- **Scores (golden recovery):** all SKUs MAE **0.473**, 45.8% within ±0.3;
+  identifiable slice (≥2 permanent price levels, n=19) MAE **0.458**, 47.4%
   within ±0.3.
 - **Role:** the bar C2's ridge log-log estimator must beat on the identifiable
   slice while degrading honestly to `assumption` elsewhere.
+- **History:** 2026-08-12 — fallback constants reconciled from the PRD's
+  provisional −1.2 / [−2.2, −0.6] to the app's canonical −1.5 / [−2.5, −0.5]
+  (app is source of truth). Affected eval snapshots re-baselined:
+  `eval/c1_incumbents.json` (bracket recovery scores), `eval/c2_elasticity.json`
+  (incumbent scores + EB-prior thin-store fallback in the challenger),
+  `eval/c4_hier.json` (prior fallback). No verdict flipped; c3/c5/c6 unmoved.
 
 ### counterfactual-cleanlevel-1.0 — rollout monitor (champion since C5)
 
@@ -168,8 +175,9 @@ category means ~ N(-1.3, 0.45), within-category sd 0.3). Verdict snapshot:
 `eval/c4_hier.json`; pinned by a test so a future flip is deliberate.
 
 - **elasticity-hier-em-1.0 (two-level EM EB, category means + estimated
-  tau):** thin-slice MAE **0.830 vs C2's 0.457**; identifiable slice 0.728 vs
-  0.533 (5 seeds). Implementation verified correct (EM recovers known
+  tau):** thin-slice MAE **0.830 vs C2's 0.550**; identifiable slice 0.728 vs
+  0.530 (5 seeds; champion-side figures re-baselined 2026-08-12 with the
+  reconciled −1.5 bracket fallback — see bracket-v0-standin History). Implementation verified correct (EM recovers known
   hyperparameters on clean data — tests) — the loss is informational, not a
   bug: with only ~4-6 identifiable SKUs per category and stage-1 fit noise
   sd ≈ 1.0, a category mean's own SE (~0.45) exceeds the between-category

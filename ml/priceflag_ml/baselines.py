@@ -14,10 +14,9 @@ Two incumbents at kickoff:
 
 2. ``BracketElasticity`` — elasticity "estimator" that ignores the data and
    returns a fixed assumption bracket. This is the stand-in for v0's
-   transparent bracket math (`lib/forecast.ts` is not committed to the repo
-   yet — see contracts/requests-lane-c.md; constants below are from the PRD's
-   description of the v0 scenario table and will be reconciled when the v0
-   source lands). This is the incumbent for C2's fitted elasticity.
+   transparent bracket math. Constants below are reconciled to the app's
+   canonical fallback (lib/engine/forecast.ts DEFAULT_ELASTICITY_*) and must
+   stay in lockstep with it. This is the incumbent for C2's fitted elasticity.
 """
 
 from __future__ import annotations
@@ -166,9 +165,14 @@ class BracketBand:
 # estimate". These constants therefore live on only as (a) the EB prior
 # fallback for stores with too few identifiable SKUs and (b) a scorable
 # strawman on the recovery harness — they are never served as if they were v0's.
-BRACKET_POINT = -1.2
-BRACKET_LOW = -2.2  # more price-sensitive scenario
-BRACKET_HIGH = -0.6  # less price-sensitive scenario
+#
+# CANONICAL VALUES: these mirror the app's fallback elasticity constants
+# (DEFAULT_ELASTICITY / DEFAULT_ELASTICITY_LOW / DEFAULT_ELASTICITY_HIGH in
+# lib/engine/forecast.ts, and FALLBACK_ELASTICITY in lib/evaluator/index.ts).
+# The app is the source of truth — keep these in lockstep with it.
+BRACKET_POINT = -1.5
+BRACKET_LOW = -2.5  # more price-sensitive scenario
+BRACKET_HIGH = -0.5  # less price-sensitive scenario
 
 
 class BracketElasticity:
