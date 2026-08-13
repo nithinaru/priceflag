@@ -51,11 +51,18 @@ jobs:
           deployment_id=$(cat /tmp/deployment-id)
           test "$deployment_id" != unknown
           # `vercel inspect --format=json` omits git metadata entirely; the REST
-          # API is the only read-only source for the deployment's commit.
-          curl --silent --fail --max-time 20 \
+          # API is the only read-only source for the deployment's commit. The
+          # comparison is informational, so an API refusal downgrades to a
+          # warning rather than failing the whole diagnosis.
+          api_status=$(curl --silent --output /tmp/deployment-api.json --write-out '%{http_code}' --max-time 20 \
             "https://api.vercel.com/v13/deployments/$deployment_id?teamId=team_AqaBD6YaOf9DIJ7NzbytTZTW" \
-            -H "Authorization: Bearer $VERCEL_TOKEN" > /tmp/deployment-api.json
-          serving_sha=$(node -e 'const d = require("/tmp/deployment-api.json"); console.log(d.gitSource?.sha ?? d.meta?.githubCommitSha ?? "unknown");')
+            -H "Authorization: Bearer $VERCEL_TOKEN")
+          if [ "$api_status" = 200 ]; then
+            serving_sha=$(node -e 'const d = require("/tmp/deployment-api.json"); console.log(d.gitSource?.sha ?? d.meta?.githubCommitSha ?? "unknown");')
+          else
+            echo "::warning::Deployment lookup returned HTTP $api_status; cannot resolve the serving commit."
+            serving_sha=unknown
+          fi
           rm -f /tmp/deployment-api.json
           echo "Serving deployment $deployment_id is commit $serving_sha; workflow dispatched from $GITHUB_SHA"
           if [ "$serving_sha" = "$GITHUB_SHA" ]; then
