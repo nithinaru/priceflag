@@ -65,44 +65,37 @@ jobs:
           fi
           rm -f /tmp/deployment.json /tmp/deployment-id
 
-      - name: Pull production configuration into the ephemeral runner
+      - name: Verify required variables exist for the production environment
+        # The project's variable VALUES are not readable off-platform:
+        # `vercel env pull` writes them as empty strings, so sourcing a pulled
+        # file and testing ${!name} reports every variable missing even when
+        # production is demonstrably configured. Presence has to come from the
+        # name listing; whether the values WORK is proved by the runtime itself
+        # in the health step below (its adapter probe uses the real key).
         run: |
           set -euo pipefail
           mkdir -p .vercel
           printf '%s\n' '{"projectId":"prj_RU8NlBDoR7t89BNqn5BagOpmpnmm","orgId":"team_AqaBD6YaOf9DIJ7NzbytTZTW"}' > .vercel/project.json
-          npx --yes vercel@54.14.0 env pull .runtime.env --environment production --yes \
-            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW >/dev/null
-          # Names only, never values — shows what this token can actually pull.
-          echo "Pulled variable names:"
-          awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print "  " $1}' .runtime.env | sort
+          npx --yes vercel@54.14.0 env ls production \
+            --token="$VERCEL_TOKEN" --scope=team_AqaBD6YaOf9DIJ7NzbytTZTW > /tmp/env-ls.txt
+          required=(SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY ML_INGEST_SECRET PRICEFLAG_MODE APP_ACCESS_SECRET AUTH_SESSION_SECRET SIGNIN_URL SUPABASE_PUBLISHABLE_KEY)
+          for name in "${required[@]}"; do
+            grep -qE "(^|[[:space:]])$name([[:space:]]|$)" /tmp/env-ls.txt \
+              || { echo "::error::$name is not defined for the production environment"; exit 1; }
+          done
+          rm -f /tmp/env-ls.txt
+          echo "All required variables are defined for the production environment."
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-
-      - name: Diagnose configuration without exposing credentials
-        run: |
-          set -euo pipefail
-          set -a
-          source .runtime.env
-          set +a
-          rm -f .runtime.env
-          required=(SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY ML_INGEST_SECRET PRICEFLAG_MODE)
-          for name in "${required[@]}"; do
-            test -n "${!name:-}" || { echo "::error::$name is missing from Vercel production configuration"; exit 1; }
-          done
-          status=$(curl --silent --show-error --output /tmp/supabase.json --write-out '%{http_code}' --max-time 20 \
-            "$SUPABASE_URL/rest/v1/shops?select=id&limit=1" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
-          code=$(node -e 'try { const body = JSON.parse(require("node:fs").readFileSync("/tmp/supabase.json", "utf8")); console.log(typeof body.code === "string" ? body.code : "none"); } catch { console.log("non_json"); }')
-          rm -f /tmp/supabase.json
-          echo "Supabase REST probe: HTTP $status, error code $code"
-          test "$status" -ge 200 && test "$status" -lt 300
 
       - name: Confirm application health
         run: |
           set -euo pipefail
           status=$(curl --silent --output /tmp/health.json --write-out '%{http_code}' --max-time 20 https://priceflag-app.vercel.app/api/health)
-          healthy=$(node -e 'try { console.log(JSON.parse(require("node:fs").readFileSync("/tmp/health.json", "utf8")).ok === true ? "yes" : "no"); } catch { console.log("no"); }')
+          # adapter.ok is the Supabase probe: the runtime queries Supabase with
+          # its real service key to answer it, which is exactly the check the
+          # old sourced-env REST probe tried (and failed) to do from outside.
+          healthy=$(node -e 'try { const j = JSON.parse(require("node:fs").readFileSync("/tmp/health.json", "utf8")); console.log(j.ok === true && j.adapter?.ok === true && j.configured?.supabase === true ? "yes" : "no"); } catch { console.log("no"); }')
           rm -f /tmp/health.json
           echo "Priceflag health: HTTP $status, adapter reachable $healthy"
           test "$status" = 200 && test "$healthy" = yes
