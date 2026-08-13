@@ -218,6 +218,34 @@ async function engineTests(): Promise<void> {
     assert(row.elasticity_low === -3 && row.elasticity_high === -1, 'bounds must be reported');
   });
 
+  await test('asymmetric rule blocks cuts the cautious bound rejects', () => {
+    // Point estimate -3 wants a deep cut, but the cautious end (-0.4, near
+    // inelastic) says cuts give away margin; raises also lose at the point
+    // estimate. Mirrors ml/priceflag_ml/optimize.py's asymmetric selection:
+    // with no move left to suggest, the SKU is skipped as already optimal.
+    const base = product({ price_cents: 2000, cogs_cents: 1000 });
+    const result = run({
+      products: [base],
+      fits: new Map([[base.variant_gid, fit({ elasticity: -3, low: -3.5, high: -0.4 })]]),
+    });
+    assert(result.recommendations.length === 0, 'no cut should survive the cautious bound');
+    assert(
+      result.skipped.some((s) => s.variant_gid === base.variant_gid && s.reason === 'current_price_optimal'),
+      `expected current_price_optimal skip, got ${JSON.stringify(result.skipped)}`,
+    );
+  });
+
+  await test('asymmetric rule still cuts when the cautious bound agrees', () => {
+    const base = product({ price_cents: 2000, cogs_cents: 1000 });
+    const result = run({
+      products: [base],
+      fits: new Map([[base.variant_gid, fit({ elasticity: -3, low: -3.5, high: -2.5 })]]),
+    });
+    const row = result.recommendations[0]!;
+    assert(row.recommended_price_cents < 2000, 'the cautious bound agrees, so the cut goes through');
+    assert(row.expected.robust_profit_delta_cents_per_day >= 0, 'a surviving cut must not lose at the bound');
+  });
+
   await test('inventory cap changes the answer and is recorded', () => {
     // Cheap COGS + elastic demand → the uncapped answer is the deepest allowed
     // cut; 450 units of stock (15/day over 30 days vs baseline 10/day) cannot

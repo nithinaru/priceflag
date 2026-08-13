@@ -1,0 +1,59 @@
+{
+  "summary": {
+    "model_version": "optimizer-lattice-1.0",
+    "n_seeds": 3,
+    "n_recommended": 50,
+    "n_identifiable_scored": 50,
+    "constraint_violations": 0,
+    "pct_within_one_step": 0.43267543859649127,
+    "portfolio_capture_of_true_optimum": 0.530868757463743,
+    "realized_profit_delta_at_recommended": 57022.26678651549,
+    "realized_profit_delta_at_robust": 1046.226313849945,
+    "realized_profit_delta_at_true_optimum": 107413.11479496883,
+    "pct_recommended_lose_at_truth": 0.12,
+    "n_robust_lose_at_truth": 0,
+    "acceptance_met": true,
+    "verdict": "challenger wins"
+  },
+  "per_seed": [
+    {
+      "seed": 7,
+      "n_recommended": 19,
+      "n_skipped": 5,
+      "n_identifiable_scored": 19,
+      "median_gap_cents": 401.0,
+      "pct_within_one_step": 0.21052631578947367,
+      "realized_profit_delta_at_recommended": 6506.611427548369,
+      "realized_profit_delta_at_robust": 0.0,
+      "realized_profit_delta_at_true_optimum": 35924.11109765678,
+      "n_recommended_lose_at_truth": 0,
+      "n_robust_lose_at_truth": 0
+    },
+    {
+      "seed": 11,
+      "n_recommended": 15,
+      "n_skipped": 9,
+      "n_identifiable_scored": 15,
+      "median_gap_cents": 500.0,
+      "pct_within_one_step": 0.4,
+      "realized_profit_delta_at_recommended": 14319.38760263082,
+      "realized_profit_delta_at_robust": 538.3410515835949,
+      "realized_profit_delta_at_true_optimum": 31468.12289101663,
+      "n_recommended_lose_at_truth": 2,
+      "n_robust_lose_at_truth": 0
+    },
+    {
+      "seed": 42,
+      "n_recommended": 16,
+      "n_skipped": 8,
+      "n_identifiable_scored": 16,
+      "median_gap_cents": 0.0,
+      "pct_within_one_step": 0.6875,
+      "realized_profit_delta_at_recommended": 36196.267756336296,
+      "realized_profit_delta_at_robust": 507.8852622663501,
+      "realized_profit_delta_at_true_optimum": 40020.88080629543,
+      "n_recommended_lose_at_truth": 4,
+      "n_robust_lose_at_truth": 0
+    }
+  ]
+}

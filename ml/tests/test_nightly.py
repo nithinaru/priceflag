@@ -270,6 +270,7 @@ def test_real_refit_requires_receipt_readback_and_emits_redacted_evidence(monkey
     monkeypatch.setattr(elasticity_module, "fits_contract_rows", lambda *_args, **_kwargs: [{"fit": 1}])
     monkeypatch.setattr(nightly, "_forecast_one", lambda *_args: object())
     monkeypatch.setattr(forecaster_module, "bands_contract_rows", lambda *_args, **_kwargs: [{"band": 1}])
+    monkeypatch.setattr(nightly, "_recommendations_for_shop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(nightly, "_counterfactuals_for_shop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(nightly, "_reports_for_shop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(reports_module, "calibration_summary", lambda _reports: {"n": 0})
@@ -430,5 +431,120 @@ def test_counterfactual_step_skips_a_rollout_with_no_prechange_history():
     sink, receipts = [], []
     assert nightly._counterfactuals_for_shop(
         _WindowSource(windows), client, SHOP, orders, GENERATED_AT, True, sink, receipts
+    )
+    assert sink == [] and client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# recommendations step (kind="recommendation")
+# ---------------------------------------------------------------------------
+
+
+class _RecommendationCaptureClient:
+    def __init__(self):
+        self.calls = []
+
+    def post_run(self, **kwargs):
+        self.calls.append(kwargs)
+        return _CaptureResult(len(kwargs["recommendations"]))
+
+
+class _ProductsSource:
+    def __init__(self, products):
+        self._products = products
+
+    def products(self, shop_domain):
+        assert shop_domain == SHOP
+        return self._products
+
+
+def _recommendation_fixture():
+    import pandas as pd
+
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Fit:
+        sku: str
+        elasticity: float
+        low: float
+        high: float
+        se: float | None = 0.2
+        confidence: str = "fitted"
+        model_version: str = "elasticity-test-1.0"
+
+    sku = "gid://shopify/ProductVariant/1001"
+    dates = pd.date_range("2026-06-01", periods=40, freq="D")
+    orders = pd.DataFrame(
+        {
+            "shop_id": "s1",
+            "sku": sku,
+            "date": dates,
+            "units": 5,
+            "price_cents": 2000,
+            "revenue_cents": 5 * 2000,
+            "promo": False,
+            "stockout": False,
+        }
+    )
+    products = pd.DataFrame(
+        [
+            {
+                "variant_gid": sku,
+                "price_cents": 2000,
+                "cogs_cents": 1000,
+                "inventory_quantity": 10_000,
+            }
+        ]
+    )
+    # Solidly elastic even at the cautious end: the optimizer must recommend.
+    fits = [_Fit(sku=sku, elasticity=-3.0, low=-3.5, high=-2.5)]
+    return fits, products, orders
+
+
+def test_recommendation_step_posts_contract_rows_for_fitted_skus():
+    from priceflag_ml.optimize import MODEL_VERSION
+
+    fits, products, orders = _recommendation_fixture()
+    client = _RecommendationCaptureClient()
+    sink, receipts = [], []
+
+    ok = nightly._recommendations_for_shop(
+        _ProductsSource(products), client, SHOP, fits, orders, GENERATED_AT, True, sink, receipts
+    )
+
+    assert ok
+    assert len(sink) == 1
+    row = sink[0]
+    assert row["shop_domain"] == SHOP
+    assert row["variant_gid"] == fits[0].sku
+    assert row["model_version"] == MODEL_VERSION
+    assert row["computed_at"] == GENERATED_AT
+    assert row["recommended_price_cents"] < row["current_price_cents"]
+
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["kind"] == "recommendation"
+    assert call["model_version"] == MODEL_VERSION
+    assert call["gate_passed"] is True
+    assert call["recommendations"] == sink
+    assert receipts == [(SHOP, _CaptureResult.model_run_id, 1)]
+
+
+def test_recommendation_step_is_a_quiet_noop_when_nothing_is_recommendable():
+    import pandas as pd
+
+    fits, products, orders = _recommendation_fixture()
+    products = products.assign(cogs_cents=None)  # profit undefined -> optimizer skips
+    client = _RecommendationCaptureClient()
+    sink, receipts = [], []
+    assert nightly._recommendations_for_shop(
+        _ProductsSource(products), client, SHOP, fits, orders, GENERATED_AT, True, sink, receipts
+    )
+    assert sink == [] and receipts == [] and client.calls == []
+
+    empty_products = pd.DataFrame(columns=products.columns)
+    assert nightly._recommendations_for_shop(
+        _ProductsSource(empty_products), client, SHOP, fits, orders, GENERATED_AT, True, sink, receipts
     )
     assert sink == [] and client.calls == []

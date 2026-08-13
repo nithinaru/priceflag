@@ -468,7 +468,16 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
       robust: evaluateRobust(objective, price, eLow, eHigh),
     }));
 
-    const nominalBest = argmax(scored, (candidate) => candidate.nominal.profitDelta, currentCents);
+    // Asymmetric selection (mirrors ml/priceflag_ml/optimize.py, gated by
+    // run_c7): CUT candidates are scored at their worst-case (pessimistic
+    // bound) profit, RAISE candidates at the point estimate. A wrong raise is
+    // self-limiting — margin cushions every sale you keep — while a wrong cut
+    // compounds, giving away margin on every unit without buying the volume.
+    // So a cut is only suggested when even the cautious end says it wins.
+    const selectionScore = (candidate: ScoredCandidate): number =>
+      candidate.price < currentCents ? candidate.robust.profitDelta : candidate.nominal.profitDelta;
+
+    const nominalBest = argmax(scored, selectionScore, currentCents);
     const robustBest = argmax(scored, (candidate) => candidate.robust.profitDelta, currentCents);
 
     if (nominalBest.price === currentCents) {
@@ -488,7 +497,7 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
           nominal: evaluateAt(uncapped, price, elasticity),
           robust: evaluateRobust(uncapped, price, eLow, eHigh),
         }));
-    const uncappedBest = argmax(uncappedScored, (candidate) => candidate.nominal.profitDelta, currentCents);
+    const uncappedBest = argmax(uncappedScored, selectionScore, currentCents);
     const inventoryCapApplied =
       capUnitsPerDay !== null &&
       (nominalBest.nominal.capApplied ||

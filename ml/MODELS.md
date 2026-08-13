@@ -140,29 +140,52 @@ the champion only by beating it here AND on real-data backtests.
 
 ## Challengers
 
-### optimizer-lattice-1.0 — constrained price recommendation (planned, Lane B)
+### optimizer-lattice-1.0 — constrained price recommendation (SHIPPED behind run_c7, Lane B)
 
-- **Status:** planned — this entry precedes the code per R28 discipline (no
-  model ships without an eval-harness gate; the gate here is `run_c7`).
-- **What (planned):** per-SKU constrained price optimization over the app's
-  rounding lattice (`lib/money.ts applyRounding` styles make the candidate
-  set discrete — grid search, not a continuous program). Objective = expected
-  profit under the SAME demand model the forecast uses
+- **Status:** champion for the recommendation surface (the first model on it);
+  gated by `run_c7` in every nightly. `ml/priceflag_ml/optimize.py`, mirrored
+  for demo/on-demand serving in `lib/engine/optimize.ts`.
+- **What:** per-SKU constrained price optimization over the app's rounding
+  lattice (`lib/money.ts applyRounding` styles make the candidate set
+  discrete — grid search, not a continuous program). Objective = expected
+  daily profit under the SAME demand model the forecast uses
   (`units1 = units0 · (P1/P0)^ε`), with ε from the fitted champion
-  (`elasticity-poisson-eb-1.0`, EB-shrunk posterior mean). Robustness:
-  every candidate is also evaluated at the pessimistic elasticity bound
-  (`fit.low`/`fit.high`, CI80) and the recommendation reports both the
-  nominal argmax and the robust (worst-case-profit) argmax.
+  (`elasticity-poisson-eb-1.0`, EB-shrunk posterior mean). Every candidate is
+  also evaluated at the pessimistic elasticity bound (`fit.low`/`fit.high`,
+  CI80); the row reports both the recommendation and the robust
+  (worst-case-profit) argmax.
+- **Selection rule (asymmetric, the load-bearing design decision):**
+  `recommended_price_cents` maximizes an asymmetric score — cut candidates
+  are scored at their worst-case (pessimistic-bound) profit, raise candidates
+  at the point estimate. Rationale: the failure modes are not symmetric. A
+  wrong raise is self-limiting (margin cushions every retained sale); a wrong
+  cut compounds (margin given away on every unit, volume never arrives).
+  On C7 golden data the plain nominal argmax realized only 43% of the
+  true-optimal profit with 15/50 money-losing recommendations (worst single
+  −$127/day); the asymmetric rule realizes 53% with 6/50 and worst −$12/day.
+  Chance-constrained ("worst-case ≥ 0") and Hurwicz blends were evaluated and
+  rejected: they collapse capture to ≈0–16% (see the c7 sweep in the Lane B
+  session notes).
 - **Constraints v1:** margin floor over `cogs_cents`; max |Δ%| cap;
   optional inventory-aware cap using `inventory_quantity` (don't recommend
   demand increases a thin stock position can't serve).
-- **Gate (`run_c7`):** on the golden store, where true elasticities are
-  known, the optimizer must recover the true-optimal lattice price within
-  tolerance on identifiable SKUs. Snapshot: `eval/c7_optimizer.json`.
+- **Gate (`run_c7`)**, snapshot `eval/c7_optimizer.json`, on golden stores
+  with KNOWN true elasticities (identifiable slice, 3 seeds, 50 SKUs; the
+  true-optimal price is computed by the same `optimize_sku` code pinned at the
+  true ε, so constraints match exactly):
+  - hard safety: zero margin-floor/max-change violations, and the robust
+    price must NEVER lose money at the true elasticity (measured: 0/50);
+  - realized capture of true-optimal profit ≥ 0.40 (measured: 0.53);
+  - money-losing recommendations ≤ 15% (measured: 12%);
+  - aggregate realized profit > 0 (measured: +$570/day over 50 SKUs).
+  All fits on golden stores land in the `partial` tier, so this measures the
+  realistic serving condition, not a best case.
 - **Surface:** `kind="recommendation"` model-run rows
   (`contracts/price_recommendation.schema.json`) → `recommendations` table →
   read-only `/api/recommend` → "Suggested" prefill card in the propose flow.
   The merchant always approves; nothing auto-applies (PRD v1.1 amendment).
+  Skips are honest and machine-readable (no cogs, assumption-tier fit,
+  positive-ε confounding, zero baseline demand, infeasible constraints).
 
 ## Rejected
 

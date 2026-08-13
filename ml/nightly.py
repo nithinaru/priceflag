@@ -49,6 +49,7 @@ CHECKS = [
     ("baseline-cleanlevel-1.0", "c3_baseline.json", harness.run_c3, lambda s: s["verdict"] == "challenger wins"),
     ("counterfactual-cleanlevel-1.0", "c5_counterfactual.json", harness.run_c5, lambda s: s["verdict"] == "challenger wins"),
     ("rollout-report-1.0", "c6_reports.json", harness.run_c6, lambda s: s["acceptance_met"]),
+    ("optimizer-lattice-1.0", "c7_optimizer.json", harness.run_c7, lambda s: s["acceptance_met"]),
     ("elasticity-hier-em-1.0 (recorded loser)", "c4_hier.json", harness.run_c4, lambda s: s["verdict"] == "incumbent stays"),
 ]
 
@@ -193,6 +194,47 @@ def _counterfactuals_for_shop(source, client, shop_domain, orders, generated_at,
     return not result.is_error
 
 
+def _recommendations_for_shop(source, client, shop_domain, fits, orders, generated_at, gates_ok, sink, receipts) -> bool:
+    """C7 price recommendations for every fitted SKU (kind="recommendation").
+
+    Reuses the fits already computed for this shop's nightly refit. The
+    optimizer's own skips (no cogs, assumption fit, zero demand, ...) are
+    counts in the log, never rows — a suggestion the data cannot support is
+    not posted at all. Nothing here writes prices: rows land in the
+    `recommendations` table for /api/recommend and the propose flow's
+    prefill card, and the merchant always approves (PRD v1.1)."""
+    from priceflag_ml import optimize  # noqa: PLC0415
+
+    products = source.products(shop_domain)
+    if products.empty:
+        print("    (recommendations skipped: no products readable)")
+        return True
+    result = optimize.optimize_store(fits, products, orders, optimize.OptimizerConfig())
+    rows = optimize.contract_rows(result.recommendations, shop_domain=shop_domain, computed_at=generated_at)
+    best = optimize.top_n(result, 1)
+    print(
+        f"    recommendations: {len(rows)} suggested, {len(result.skips)} skipped"
+        + (f", top nominal delta {best[0].nominal_profit_delta_cents_per_day} c/day" if best else "")
+    )
+    sink.extend(rows)
+    if not rows or client is None:
+        return True
+    result_post = client.post_run(
+        shop_domain=shop_domain,
+        kind="recommendation",
+        model_version=optimize.MODEL_VERSION,
+        gate_passed=gates_ok,
+        recommendations=rows,
+        notes="nightly constrained per-SKU price suggestions; merchant always approves",
+    )
+    print(f"    -> recommendation: {result_post.describe()}")
+    if result_post.accepted:
+        if result_post.model_run_id is None:
+            return False
+        receipts.append((shop_domain, result_post.model_run_id, result_post.rows_written))
+    return not result_post.is_error
+
+
 def _reports_for_shop(source, client, shop_domain, orders, generated_at, gates_ok, sink, receipts) -> bool:
     from priceflag_ml import elasticity, reports as report_model  # noqa: PLC0415
 
@@ -316,6 +358,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     all_fits: list[dict] = []
     all_bands: list[dict] = []
     all_counterfactuals: list[dict] = []
+    all_recommendations: list[dict] = []
     all_reports: list[dict] = []
     receipts: list[tuple[str, str, int]] = []
     ok = True
@@ -372,6 +415,17 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
                         ok = False
                     else:
                         receipts.append((shop_domain, result.model_run_id, result.rows_written))
+        ok &= _recommendations_for_shop(
+            source,
+            client,
+            shop_domain,
+            fits,
+            orders,
+            generated_at,
+            gates_ok,
+            all_recommendations,
+            receipts,
+        )
         ok &= _counterfactuals_for_shop(
             source,
             client,
@@ -396,6 +450,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
     (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
     (out_dir / "counterfactual_bands.json").write_text(json.dumps(all_counterfactuals, indent=2, default=str))
+    (out_dir / "recommendations.json").write_text(json.dumps(all_recommendations, indent=2, default=str))
     (out_dir / "rollout_reports.json").write_text(json.dumps(all_reports, indent=2, default=str))
     (out_dir / "calibration_summary.json").write_text(json.dumps(reports.calibration_summary(all_reports), indent=2))
     evidence["fits_generated"] = len(all_fits)

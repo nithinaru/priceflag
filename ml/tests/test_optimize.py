@@ -286,6 +286,27 @@ def test_robust_and_nominal_agree_when_bounds_are_degenerate():
     assert out.robust_price_cents == out.recommended_price_cents
 
 
+def test_asymmetric_rule_blocks_cuts_the_cautious_bound_rejects():
+    # Point estimate e=-3 says cut hard (P* = c*e/(1+e) = $15 on $10 cogs),
+    # but the cautious end (high=-0.4, near-inelastic) says every cut just
+    # gives away margin. The asymmetric rule scores cuts at that cautious
+    # bound, and raises at the point estimate (where they also lose, since
+    # P* < P0) — so the only honest recommendation is to stay.
+    out = rec_of(run(fit(e=-3.0, low=-3.5, high=-0.4), p0=2000, cogs=1000, max_change_pct=15.0, margin_floor_pct=None, rounding="none"))
+    assert out.recommended_price_cents == 2000
+    assert out.nominal_profit_delta_cents_per_day == 0
+
+
+def test_asymmetric_rule_still_cuts_when_the_cautious_bound_agrees():
+    # Same point estimate, but now even the least-elastic bound (-2.5) puts
+    # the optimum well below P0 (P*(-2.5) = $16.67) — the cautious read
+    # agrees the cut wins, so the cut goes through.
+    out = rec_of(run(fit(e=-3.0, low=-3.5, high=-2.5), p0=2000, cogs=1000, max_change_pct=15.0, margin_floor_pct=None, rounding="none"))
+    assert out.recommended_price_cents < 2000
+    assert out.nominal_profit_delta_cents_per_day > 0
+    assert out.robust_profit_delta_cents_per_day >= 0
+
+
 # ---------------------------------------------------------------------------
 # baselines from the canonical frame
 # ---------------------------------------------------------------------------

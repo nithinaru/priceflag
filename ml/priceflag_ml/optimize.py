@@ -41,6 +41,19 @@ that worst-case profit. When the fit lacks `low`/`high`, bounds fall back to
 ``elasticity ± 1.2816 * se`` (CI80, matching the fits' Z80 convention) and
 the recommendation notes it.
 
+Selection rule (asymmetric, gate-driven): `recommended_price_cents` is the
+argmax of an asymmetric score — CUT candidates are scored at their worst-case
+(pessimistic-bound) profit, RAISE candidates at the point estimate. The two
+failure modes are not symmetric: a wrong raise is self-limiting (you lose
+some sales but margin cushions every one you keep), while a wrong cut is
+compounding (you give away margin on every unit and the volume never comes).
+On the C7 golden gate this rule beats the plain nominal argmax on every axis
+that matters — higher realized profit capture, under half the money-losing
+recommendations, and a ~10x smaller worst single loss — so a cut is only
+suggested when even the cautious end of the fitted range says it wins.
+Deltas reported in `expected` still describe the *recommended* price at both
+the point estimate (`nominal_*`) and the pessimistic bound (`robust_*`).
+
 Determinism: no ``datetime.now()``/randomness in here — `computed_at` is
 passed by the caller (same convention as `elasticity.fits_contract_rows`).
 """
@@ -434,12 +447,19 @@ def optimize_sku(
         return nom_profit, nom_rev, capped, worst_profit, worst_rev
 
     scored = {p: score(p) for p in eval_prices}
+
+    def selection_score(p: int) -> float:
+        # Asymmetric rule (see module docstring): cuts must win at the
+        # pessimistic bound; raises are scored at the point estimate.
+        nom_profit_p, _, _, worst_profit_p, _ = scored[p]
+        return worst_profit_p if p < p0 else nom_profit_p
+
     # Strict improvement over a deterministic order (P0 first, then ascending
     # lattice): ties keep the earlier candidate, so "stay" wins a dead heat.
     best_nominal = eval_prices[0]
     best_robust = eval_prices[0]
     for p in eval_prices[1:]:
-        if scored[p][0] > scored[best_nominal][0]:
+        if selection_score(p) > selection_score(best_nominal):
             best_nominal = p
         if scored[p][3] > scored[best_robust][3]:
             best_robust = p

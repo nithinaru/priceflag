@@ -570,6 +570,163 @@ def run_c3(seeds: tuple[int, ...] = (7, 11, 42, 99, 123)) -> dict:
     return {"summary": summary, "per_seed": per_seed}
 
 
+def run_c7(seeds: tuple[int, ...] = (7, 11, 42)) -> dict:
+    """C7 report: the R28 gate for optimizer-lattice-1.0 (price recommendation).
+
+    The golden store has KNOWN true elasticities, so the true-optimal price is
+    computable exactly: run the SAME `optimize_sku` code (same lattice, same
+    constraints, same baseline) with a degenerate "fit" pinned at the true
+    elasticity. The gate then asks, on the identifiable slice (>=2 permanent
+    price levels, the C2 acceptance slice):
+
+    - closeness: is the recommended price usually within one whole-dollar
+      lattice step ($1.00 on the end_99 lattice) of the true optimum?
+    - realized value: at the TRUE elasticity, do the recommended prices beat
+      doing nothing in portfolio profit, and capture most of what the true
+      optima would have captured (bounded regret)?
+    - hard safety invariants, zero tolerance, on EVERY recommendation:
+      margin floor respected, |change| within the cap, robust price obeys the
+      same constraints. A single violation fails the gate.
+    """
+    from .elasticity import fit_store
+    from .optimize import MODEL_VERSION as OPT_VERSION
+    from .optimize import OptimizerConfig, SkuRecommendation, optimize_sku, optimize_store
+
+    config = OptimizerConfig()  # the nightly's own defaults: end_99, ±15%, 20% floor
+
+    class _TruthFit:
+        """Duck-typed fit pinned at the true elasticity (degenerate bounds)."""
+
+        def __init__(self, sku: str, elasticity: float) -> None:
+            self.sku = sku
+            self.elasticity = elasticity
+            self.low = elasticity
+            self.high = elasticity
+            self.se = None
+            self.confidence = "fitted"
+            self.model_version = "golden-truth"
+
+    def realized_delta(p1: int, p0: int, e_true: float, units0: float, r: float, cogs: int) -> float:
+        """Daily profit delta of pricing at p1, if demand responds with the truth."""
+        units1 = units0 * (p1 / p0) ** e_true
+        return units1 * (p1 * r - cogs) - units0 * (p0 * r - cogs)
+
+    per_seed = []
+    violations = 0
+    for seed in seeds:
+        store = generate_store(GoldenConfig(seed=seed))
+        truth = dict(zip(store.truth["sku"], store.truth["elasticity"]))
+        rich = set(store.truth.loc[store.truth["n_permanent_levels"] >= 2, "sku"])
+        products = pd.DataFrame(
+            [
+                {
+                    "sku": t.sku,
+                    "price_cents": int(t.price_cents[-1]),
+                    "cogs_cents": int(t.cogs_cents),
+                    "inventory_quantity": None,  # golden data carries no stock levels
+                }
+                for t in store.skus.values()
+            ]
+        )
+        cogs_by_sku = dict(zip(products["sku"], products["cogs_cents"]))
+        fits = fit_store(store.orders, seed=0)
+        result = optimize_store(fits, products, store.orders, config)
+
+        # Hard invariants over every recommendation, identifiable or not.
+        for rec in result.recommendations:
+            floor_min = int(np.ceil(cogs_by_sku[rec.sku] * (1.0 + (config.margin_floor_pct or 0.0) / 100.0)))
+            cap = (config.max_change_pct or 0.0) / 100.0
+            for price in (rec.recommended_price_cents, rec.robust_price_cents):
+                if config.margin_floor_pct is not None and price < floor_min and price != rec.current_price_cents:
+                    violations += 1
+                if abs(price - rec.current_price_cents) > rec.current_price_cents * cap:
+                    violations += 1
+
+        gaps_cents, realized_rec, realized_true, realized_robust = [], 0.0, 0.0, 0.0
+        n_scored = 0
+        n_rec_negative = n_robust_negative = 0
+        for rec in result.recommendations:
+            if rec.sku not in rich:
+                continue
+            true_out = optimize_sku(
+                _TruthFit(rec.sku, float(truth[rec.sku])),
+                rec.current_price_cents,
+                cogs_by_sku[rec.sku],
+                None,
+                rec.baseline_units_per_day,
+                rec.realization_rate,
+                config,
+            )
+            if not isinstance(true_out, SkuRecommendation):
+                continue
+            n_scored += 1
+            gaps_cents.append(abs(rec.recommended_price_cents - true_out.recommended_price_cents))
+            e_true = float(truth[rec.sku])
+            p0 = rec.current_price_cents
+            units0, r, cogs = rec.baseline_units_per_day, rec.realization_rate, cogs_by_sku[rec.sku]
+            d_rec = realized_delta(rec.recommended_price_cents, p0, e_true, units0, r, cogs)
+            d_rob = realized_delta(rec.robust_price_cents, p0, e_true, units0, r, cogs)
+            realized_rec += d_rec
+            realized_robust += d_rob
+            realized_true += realized_delta(true_out.recommended_price_cents, p0, e_true, units0, r, cogs)
+            n_rec_negative += d_rec < 0
+            n_robust_negative += d_rob < 0
+
+        per_seed.append(
+            {
+                "seed": seed,
+                "n_recommended": len(result.recommendations),
+                "n_skipped": len(result.skips),
+                "n_identifiable_scored": n_scored,
+                "median_gap_cents": float(np.median(gaps_cents)) if gaps_cents else None,
+                "pct_within_one_step": float(np.mean([g <= 100 for g in gaps_cents])) if gaps_cents else None,
+                "realized_profit_delta_at_recommended": float(realized_rec),
+                "realized_profit_delta_at_robust": float(realized_robust),
+                "realized_profit_delta_at_true_optimum": float(realized_true),
+                "n_recommended_lose_at_truth": int(n_rec_negative),
+                "n_robust_lose_at_truth": int(n_robust_negative),
+            }
+        )
+
+    total_rec = float(sum(s["realized_profit_delta_at_recommended"] for s in per_seed))
+    total_true = float(sum(s["realized_profit_delta_at_true_optimum"] for s in per_seed))
+    n_scored_total = int(sum(s["n_identifiable_scored"] for s in per_seed))
+    n_lose_total = int(sum(s["n_recommended_lose_at_truth"] for s in per_seed))
+    summary = {
+        "model_version": OPT_VERSION,
+        "n_seeds": len(seeds),
+        "n_recommended": int(sum(s["n_recommended"] for s in per_seed)),
+        "n_identifiable_scored": n_scored_total,
+        "constraint_violations": int(violations),
+        "pct_within_one_step": float(np.mean([s["pct_within_one_step"] for s in per_seed if s["pct_within_one_step"] is not None])),
+        "portfolio_capture_of_true_optimum": (total_rec / total_true) if total_true > 0 else None,
+        "realized_profit_delta_at_recommended": total_rec,
+        "realized_profit_delta_at_robust": float(sum(s["realized_profit_delta_at_robust"] for s in per_seed)),
+        "realized_profit_delta_at_true_optimum": total_true,
+        "pct_recommended_lose_at_truth": (n_lose_total / n_scored_total) if n_scored_total else None,
+        "n_robust_lose_at_truth": int(sum(s["n_robust_lose_at_truth"] for s in per_seed)),
+    }
+    # The bar (thresholds hold ~20% headroom under the asymmetric selection
+    # rule's measured performance; see MODELS.md optimizer-lattice-1.0):
+    # - hard safety: zero constraint violations, ever;
+    # - the robust price must never lose money at the true elasticity — it is
+    #   the "cautious end" the merchant is shown, so it must actually be safe;
+    # - recommendations must capture a meaningful share of the profit the
+    #   true-optimal prices would realize, and be positive in aggregate;
+    # - money-losing recommendations must be rare (the asymmetric rule exists
+    #   precisely to keep wrong-direction cuts out of the prefill card).
+    summary["acceptance_met"] = (
+        summary["constraint_violations"] == 0
+        and summary["n_identifiable_scored"] >= 30
+        and summary["n_robust_lose_at_truth"] == 0
+        and summary["realized_profit_delta_at_recommended"] > 0
+        and (summary["portfolio_capture_of_true_optimum"] or 0.0) >= 0.40
+        and (summary["pct_recommended_lose_at_truth"] or 1.0) <= 0.15
+    )
+    summary["verdict"] = "challenger wins" if summary["acceptance_met"] else "incumbent stays"
+    return {"summary": summary, "per_seed": per_seed}
+
+
 def _json_safe(obj):
     """Replace NaN/inf with None so the report is always valid JSON."""
     if isinstance(obj, dict):
@@ -585,7 +742,7 @@ def main() -> None:
     import sys
 
     which = sys.argv[1] if len(sys.argv) > 1 else "c1"
-    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4, "c5": run_c5, "c6": run_c6}[which]()
+    report = {"c1": run_c1, "c2": run_c2, "c3": run_c3, "c4": run_c4, "c5": run_c5, "c6": run_c6, "c7": run_c7}[which]()
     print(json.dumps(_json_safe(report), indent=2))
 
 
