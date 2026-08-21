@@ -36,7 +36,8 @@ import {
   type ValidationProblem,
 } from '@/lib/contracts/validate';
 import type { ElasticityFit, ExpectedBand, PriceRecommendationContract, RolloutReport } from '@/lib/contracts';
-import type { ElasticityFitRow, ExpectedBandRow, ModelRun } from '@/lib/types';
+import type { StoreAdapter } from '@/lib/adapters';
+import type { ElasticityFitRow, ExpectedBandRow, ModelRun, Shop } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -61,8 +62,24 @@ interface IngestBody {
 
 const MAX_ROWS_PER_REQUEST = 20_000;
 
-function fail(code: string, message: string, status: number, extra: Record<string, unknown> = {}): NextResponse {
-  return NextResponse.json({ error: { code, message, retryable: false, details: null }, ...extra }, { status });
+function fail(
+  code: string,
+  message: string,
+  status: number,
+  extra: Record<string, unknown> = {},
+  retryable = false,
+): NextResponse {
+  return NextResponse.json({ error: { code, message, retryable, details: null }, ...extra }, { status });
+}
+
+function backendUnavailable(extra: Record<string, unknown> = {}): NextResponse {
+  return fail(
+    'backend_unavailable',
+    'The ML storage backend is temporarily unavailable. Retry the identical request.',
+    503,
+    extra,
+    true,
+  );
 }
 
 function canonical(value: unknown): string {
@@ -96,15 +113,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // RPC (persistence lane); this cast is the seam until that lands.
   const runKind = run.kind as ModelRun['kind'];
 
-  const adapter = getAdapter();
-
-  // The shop: from the payload, or the sole connected store.
+  let adapter: StoreAdapter;
+  let shop: Shop | null;
+  // The shop: from the payload, or the sole connected store. Adapter creation
+  // and lookup can both fail during an outage or schema migration; keep that
+  // boundary machine-readable for the nightly worker.
   let shopDomain = body.shop_domain?.toLowerCase();
-  if (shopDomain === undefined) {
-    const shops = await adapter.listShops();
-    shopDomain = shops.length === 1 ? shops[0]?.shop_domain : undefined;
+  try {
+    adapter = getAdapter();
+    if (shopDomain === undefined) {
+      const shops = await adapter.listShops();
+      shopDomain = shops.length === 1 ? shops[0]?.shop_domain : undefined;
+    }
+    shop = shopDomain === undefined ? null : await adapter.getShopByDomain(shopDomain);
+  } catch (cause) {
+    console.error('ML ingest backend lookup failed', cause);
+    return backendUnavailable();
   }
-  const shop = shopDomain === undefined ? null : await adapter.getShopByDomain(shopDomain);
   if (shop === null || shop.uninstalled_at !== null) {
     return fail('shop_not_connected', `No connected store for ${shopDomain ?? '(unspecified)'}.`, 404);
   }
@@ -167,20 +192,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (problems.length > 0) {
     // Recorded as a failed run so a broken producer is visible in the registry
     // rather than only in a CI log that nobody reads.
-    const failed = await adapter.recordModelRun({
-      shop_id: shop.id,
-      kind: runKind,
-      model_version: run.model_version,
-      git_sha: run.git_sha ?? null,
-      status: 'failed',
-      gate_passed: run.gate_passed ?? null,
-      incumbent_version: run.incumbent_version ?? null,
-      metrics: run.metrics ?? {},
-      rows_written: 0,
-      notes: run.notes ?? null,
-      error: `${problems.length} row(s) failed contract validation`,
-      finished_at: new Date().toISOString(),
-    });
+    let failed: ModelRun;
+    try {
+      failed = await adapter.recordModelRun({
+        shop_id: shop.id,
+        kind: runKind,
+        model_version: run.model_version,
+        git_sha: run.git_sha ?? null,
+        status: 'failed',
+        gate_passed: run.gate_passed ?? null,
+        incumbent_version: run.incumbent_version ?? null,
+        metrics: run.metrics ?? {},
+        rows_written: 0,
+        notes: run.notes ?? null,
+        error: `${problems.length} row(s) failed contract validation`,
+        finished_at: new Date().toISOString(),
+      });
+    } catch (cause) {
+      console.error('ML ingest could not record contract validation failure', cause);
+      return backendUnavailable();
+    }
 
     return NextResponse.json(
       {
@@ -198,20 +229,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // --- gate 3: the honesty gate (R28) ---------------------------------------
   if (run.gate_passed !== true) {
-    const rejected = await adapter.recordModelRun({
-      shop_id: shop.id,
-      kind: runKind,
-      model_version: run.model_version,
-      git_sha: run.git_sha ?? null,
-      status: 'rejected',
-      gate_passed: false,
-      incumbent_version: run.incumbent_version ?? null,
-      metrics: run.metrics ?? {},
-      rows_written: 0,
-      notes: run.notes ?? null,
-      error: null,
-      finished_at: new Date().toISOString(),
-    });
+    let rejected: ModelRun;
+    try {
+      rejected = await adapter.recordModelRun({
+        shop_id: shop.id,
+        kind: runKind,
+        model_version: run.model_version,
+        git_sha: run.git_sha ?? null,
+        status: 'rejected',
+        gate_passed: false,
+        incumbent_version: run.incumbent_version ?? null,
+        metrics: run.metrics ?? {},
+        rows_written: 0,
+        notes: run.notes ?? null,
+        error: null,
+        finished_at: new Date().toISOString(),
+      });
+    } catch (cause) {
+      console.error('ML ingest could not record rejected model run', cause);
+      return backendUnavailable();
+    }
 
     // 200, not an error: the nightly job did its job correctly by telling us the
     // challenger lost. Failing the Action here would train people to ignore it.
@@ -321,6 +358,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         `The atomic ingest committed but accounted for ${stored.rows_written} of ${expectedTotal} rows. Retry the identical request.`,
         500,
         { model_run_id: stored.model_run_id },
+        true,
       );
     }
 
@@ -335,23 +373,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       deduplicated: stored.deduplicated,
     });
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    const failed = await adapter.recordModelRun({
-      shop_id: shop.id,
-      kind: runKind,
-      model_version: run.model_version,
-      git_sha: run.git_sha ?? null,
-      status: 'failed',
-      gate_passed: true,
-      incumbent_version: run.incumbent_version ?? null,
-      metrics: run.metrics ?? {},
-      rows_written: 0,
-      notes: run.notes ?? null,
-      error: message,
-      finished_at: new Date().toISOString(),
-    });
-    return fail('write_failed', `Rows validated but could not be stored: ${message}`, 500, {
-      model_run_id: failed.id,
-    });
+    // The atomic write's raw error may contain schema names, database hosts, or
+    // merchant identifiers. Keep it in protected logs, never in the response or
+    // model registry. Recording the failure is best-effort: the same outage may
+    // make that write fail too, and the response must still be valid JSON.
+    console.error('ML ingest atomic write failed', cause);
+    try {
+      const failed = await adapter.recordModelRun({
+        shop_id: shop.id,
+        kind: runKind,
+        model_version: run.model_version,
+        git_sha: run.git_sha ?? null,
+        status: 'failed',
+        gate_passed: true,
+        incumbent_version: run.incumbent_version ?? null,
+        metrics: run.metrics ?? {},
+        rows_written: 0,
+        notes: run.notes ?? null,
+        error: 'Atomic model artifact storage failed.',
+        finished_at: new Date().toISOString(),
+      });
+      return fail(
+        'write_failed',
+        'Rows validated but could not be stored. Review the model run and retry only after correcting the cause.',
+        500,
+        { model_run_id: failed.id },
+      );
+    } catch (recordCause) {
+      console.error('ML ingest could not record atomic write failure', recordCause);
+      return backendUnavailable();
+    }
   }
 }

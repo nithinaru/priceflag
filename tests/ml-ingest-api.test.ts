@@ -97,6 +97,7 @@ async function main(): Promise<void> {
     }),
   );
   assert.equal(foreignCounterfactual.status, 500, 'counterfactual rollout ownership is checked at write time');
+  assert.equal((await foreignCounterfactual.json()).error.code, 'write_failed');
 
   // Satisfies every `required` field of contracts/price_recommendation.schema.json.
   const recommendation = {
@@ -172,6 +173,39 @@ async function main(): Promise<void> {
     }),
   );
   assert.equal(fitCarryingRecommendations.status, 400, 'an elasticity run cannot carry recommendations');
+
+  const originalAtomicIngest = adapter.ingestModelRunAtomic.bind(adapter);
+  const originalRecordModelRun = adapter.recordModelRun.bind(adapter);
+  const originalConsoleError = console.error;
+  try {
+    adapter.ingestModelRunAtomic = async () => {
+      throw new Error('private database and merchant detail must not cross the API boundary');
+    };
+    adapter.recordModelRun = async () => {
+      throw new Error('secondary registry outage must not replace the structured response');
+    };
+    console.error = () => {};
+    const unavailable = await POST(
+      request({
+        ...payload,
+        model_run: { kind: 'elasticity', model_version: 'test-fit-outage', gate_passed: true },
+        fits: [{ ...fit, model_version: 'test-fit-outage' }],
+      }),
+    );
+    const unavailableBody = await unavailable.json();
+    assert.equal(unavailable.status, 503);
+    assert.deepEqual(unavailableBody.error, {
+      code: 'backend_unavailable',
+      message: 'The ML storage backend is temporarily unavailable. Retry the identical request.',
+      retryable: true,
+      details: null,
+    });
+    assert.doesNotMatch(JSON.stringify(unavailableBody), /private database|merchant detail|registry outage/);
+  } finally {
+    console.error = originalConsoleError;
+    adapter.ingestModelRunAtomic = originalAtomicIngest;
+    adapter.recordModelRun = originalRecordModelRun;
+  }
 
   const unauthorized = await POST(request(payload, 'wrong'));
   assert.equal(unauthorized.status, 401);

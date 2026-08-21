@@ -44,8 +44,8 @@ function json(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, { status, headers: NO_STORE_HEADERS });
 }
 
-function fail(code: string, message: string, status: number): NextResponse {
-  return json({ error: { code, message, retryable: false, details: null } }, status);
+function fail(code: string, message: string, status: number, retryable = false): NextResponse {
+  return json({ error: { code, message, retryable, details: null } }, status);
 }
 
 function projectRef(): string | null {
@@ -309,22 +309,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return fail('invalid_request', 'Body is not valid JSON.', 400);
   }
 
-  if (body.operation === 'attest') {
-    const ref = projectRef();
-    if (ref === null) return fail('source_not_configured', 'The ML source identity is not configured safely.', 503);
-    const shops = (await getAdapter().listShops())
-      .filter(isExportableShop)
-      .map((shop) => shop.shop_domain)
-      .sort();
-    return json({
-      schema_version: 1,
-      source: 'priceflag-ml-export',
-      project_ref: ref,
-      environment: sourceEnvironment(),
-      shops,
-    });
+  try {
+    if (body.operation === 'attest') {
+      const ref = projectRef();
+      if (ref === null) return fail('source_not_configured', 'The ML source identity is not configured safely.', 503);
+      const shops = (await getAdapter().listShops())
+        .filter(isExportableShop)
+        .map((shop) => shop.shop_domain)
+        .sort();
+      return json({
+        schema_version: 1,
+        source: 'priceflag-ml-export',
+        project_ref: ref,
+        environment: sourceEnvironment(),
+        shops,
+      });
+    }
+    // Await inside this try block: returning the promises directly would let a
+    // later adapter rejection bypass the structured backend_unavailable catch.
+    if (body.operation === 'read') return await readSurface(body);
+    if (body.operation === 'verify_receipts') return await verifyReceipts(body);
+    return fail('invalid_request', 'A supported operation is required.', 400);
+  } catch (cause) {
+    // Keep the response machine-readable even when PostgREST, Supabase, or a
+    // mapper throws. The raw cause belongs in protected runtime logs; returning
+    // it here could expose schema or infrastructure details to the worker log.
+    console.error('ML export backend operation failed', cause);
+    return fail('backend_unavailable', 'The ML export backend is temporarily unavailable.', 503, true);
   }
-  if (body.operation === 'read') return readSurface(body);
-  if (body.operation === 'verify_receipts') return verifyReceipts(body);
-  return fail('invalid_request', 'A supported operation is required.', 400);
 }

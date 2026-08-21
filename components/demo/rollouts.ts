@@ -73,7 +73,7 @@ type RolloutSpec = {
   createdAt: string;
 };
 
-function guardrailsWith(thresholdPct: number, days: number, autoRollback = true): Guardrails {
+function guardrailsWith(thresholdPct: number, days: number, autoRollback = false): Guardrails {
   const base = defaultGuardrails();
   const rule = base.rules[0];
   if (!rule) return base;
@@ -170,7 +170,10 @@ const SPECS: RolloutSpec[] = [
     startDay: "2026-07-06" as DayString,
     endDay: "2026-07-08" as DayString,
     endedReason: "guardrail_breach",
-    demandFactor: 0.55,
+    // Historical proof that rollback is reversible. Current beta rollouts stay
+    // alert-only; this completed fixture predates that posture intentionally.
+    guardrails: guardrailsWith(10, 2, true),
+    demandFactor: 0.1,
     createdAt: "2026-07-05T11:02:00.000Z",
   },
   {
@@ -184,7 +187,7 @@ const SPECS: RolloutSpec[] = [
     endedReason: "completed",
     // A clearance is a deliberate margin sacrifice to move stock, so the limit is
     // set loose on purpose — the merchant expects the units, not the margin.
-    guardrails: guardrailsWith(55, 2),
+    guardrails: guardrailsWith(90, 2),
     demandFactor: 1.16,
     createdAt: "2026-06-07T10:20:00.000Z",
   },

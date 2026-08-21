@@ -81,6 +81,10 @@ MAX_NONE_CANDIDATES = 201
 # span; an optimum pressed against THIS edge is a search-grid artifact
 # ("lattice_edge"), not a merchant constraint ("max_change").
 DEFAULT_SPAN_PCT = 30.0
+# Partial fits have real store signal but materially wider uncertainty than
+# fitted rows. Machine-made moves stay small; a merchant can still model a
+# larger manual proposal through the forecast flow.
+PARTIAL_CONFIDENCE_MAX_CHANGE_PCT = 7.0
 
 ROUNDINGS = ("none", "end_99", "end_95", "end_00")
 # Schema bounds for the elasticity fields (contracts/price_recommendation).
@@ -412,8 +416,14 @@ def optimize_sku(
 
     realization = realization_rate if math.isfinite(realization_rate) and 0.0 < realization_rate <= 1.0 else 1.0
 
-    span = config.max_change_pct if config.max_change_pct is not None else DEFAULT_SPAN_PCT
-    cap_label = "max_change" if config.max_change_pct is not None else "lattice_edge"
+    effective_max_change_pct = config.max_change_pct
+    if confidence == "partial":
+        effective_max_change_pct = min(
+            config.max_change_pct if config.max_change_pct is not None else PARTIAL_CONFIDENCE_MAX_CHANGE_PCT,
+            PARTIAL_CONFIDENCE_MAX_CHANGE_PCT,
+        )
+    span = effective_max_change_pct if effective_max_change_pct is not None else DEFAULT_SPAN_PCT
+    cap_label = "max_change" if effective_max_change_pct is not None else "lattice_edge"
     lattice = candidate_lattice(p0, config.rounding, span)
 
     floor_min: int | None = None
@@ -422,19 +432,18 @@ def optimize_sku(
     feasible = [c for c in lattice if floor_min is None or c >= floor_min]
     floor_removed_below = len(feasible) < len(lattice)
 
-    # The current price is always a legal "recommendation" (staying put) as
-    # long as it doesn't violate the margin floor; including it means the
-    # optimizer never recommends a move its own model scores below doing
-    # nothing. When P0 itself is under the floor, staying is NOT offered —
-    # the floor is precisely a request to move up.
-    p0_allowed = floor_min is None or p0 >= floor_min
-    eval_prices = ([p0] if p0_allowed else []) + [c for c in feasible if c != p0 or not p0_allowed]
-    if not eval_prices:
+    if not feasible:
         return SkuSkip(
             sku,
             "infeasible_constraints",
             "No candidate price satisfies the margin floor within the allowed change range.",
         )
+    # Staying put is always the benchmark, even when today's price is below
+    # the margin floor. The floor constrains candidate moves; it is not
+    # permission to recommend an expected loss merely to repair a pre-existing
+    # low margin. A no-op is converted to a skip below, never written as a
+    # recommendation row.
+    eval_prices = [p0] + [c for c in feasible if c != p0]
 
     cap_units: float | None = None
     if config.inventory_aware and not _is_missing(inventory_quantity) and float(inventory_quantity) >= 0:
@@ -464,7 +473,20 @@ def optimize_sku(
         if scored[p][3] > scored[best_robust][3]:
             best_robust = p
 
+    if best_nominal == p0:
+        return SkuSkip(
+            sku,
+            "current_price_optimal",
+            "No allowed price move improves expected profit over today's price.",
+        )
+
     nom_profit, nom_rev, capped_at_best, worst_profit, worst_rev = scored[best_nominal]
+    if int(round(nom_profit)) <= 0:
+        return SkuSkip(
+            sku,
+            "current_price_optimal",
+            "No allowed price move adds enough expected profit to justify a storefront change.",
+        )
 
     binding: list[str] = []
     if feasible:
@@ -508,7 +530,7 @@ def optimize_sku(
         nominal_revenue_delta_cents_per_day=int(round(nom_rev)),
         robust_revenue_delta_cents_per_day=int(round(worst_rev)),
         margin_floor_pct=config.margin_floor_pct,
-        max_change_pct=config.max_change_pct,
+        max_change_pct=effective_max_change_pct,
         inventory_cap_applied=capped_at_best,
         binding=tuple(binding),
         candidates_evaluated=len(eval_prices),

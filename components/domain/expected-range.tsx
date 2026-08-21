@@ -37,7 +37,7 @@ export function ExpectedRangeMark({
     <div
       className="relative h-5 w-full min-w-[8rem]"
       role="img"
-      aria-label={`${formatUnits(reading.actual_units)} units sold against an expected ${formatUnits(
+      aria-label={`${formatUnits(reading.actual_units)} sold against an expected ${formatUnits(
         reading.expected_low,
         1,
       )} to ${formatUnits(reading.expected_high, 1)}.`}

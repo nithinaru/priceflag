@@ -50,22 +50,22 @@ export function readingSentence(
   const expected = formatUnits(reading.expected_units);
 
   if (reading.band_floored) {
-    return `${actual} units sold — too few unit sales a day on these products to read anything into it either way.`;
+    return `${actual} sold — too few unit sales a day on these products to read anything into it either way.`;
   }
 
   const caveat = reading.band_stale ? ' (our expectation is a little out of date, so the range is wider than usual)' : '';
 
   switch (verdict) {
     case 'below':
-      return `${actual} units sold against ${expected} expected — below the range we expected${caveat}.`;
+      return `${actual} sold against ${expected} expected — below the range we expected${caveat}.`;
     case 'above':
-      return `${actual} units sold against ${expected} expected — better than the range we expected${caveat}.`;
+      return `${actual} sold against ${expected} expected — better than the range we expected${caveat}.`;
     default:
-      return `${actual} units sold against ${expected} expected — inside the range we expected${caveat}.`;
+      return `${actual} sold against ${expected} expected — inside the range we expected${caveat}.`;
   }
 }
 
-export type RolloutHealth = 'healthy' | 'watching' | 'breaching' | 'too_early' | 'not_live';
+export type RolloutHealth = 'healthy' | 'watching' | 'breaching' | 'too_early' | 'monitoring_ended' | 'not_live';
 
 /**
  * Rollout-level health for the "what is live right now?" glance (R16).
@@ -78,6 +78,9 @@ export function rolloutHealth(
   status: string,
   readings: readonly Pick<RolloutReading, 'breach' | 'breach_streak' | 'band_floored' | 'actual_units' | 'expected_low' | 'expected_high'>[],
 ): RolloutHealth {
+  // Completion ends monitoring but deliberately leaves the successfully
+  // staged prices in place. Calling that "not live" tells the opposite story.
+  if (status === 'completed') return 'monitoring_ended';
   if (status !== 'running' && status !== 'paused') return 'not_live';
   if (readings.length === 0) return 'too_early';
 
@@ -105,6 +108,8 @@ export function healthSentence(health: RolloutHealth, decision: EvaluationDecisi
       return 'Unit sales came in low yesterday. Nothing has changed yet — your guardrail needs more than one day before it acts.';
     case 'too_early':
       return 'Too early to tell. We need a full day of unit sales at the new price before there is anything to compare.';
+    case 'monitoring_ended':
+      return 'Monitoring has ended. Every selected product remains on its new price until you choose to put it back.';
     case 'not_live':
       return 'No prices are live from this rollout.';
     default:

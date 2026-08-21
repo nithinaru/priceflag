@@ -108,7 +108,7 @@ import {
 } from '../lib/pricing/writer';
 import { DEMO_SHOP_DOMAIN, DISPERSION_K_RANGE, generateDemoStore } from '../lib/demo/generator';
 import { buildReportFromBundle } from '../components/demo/report';
-import type { RolloutBundle } from '../components/demo/rollouts';
+import { getRollouts, type RolloutBundle } from '../components/demo/rollouts';
 import type { ElasticityFitRow, OrderDay, Product, Rollout, RolloutReading, RolloutVariant } from '../lib/types';
 import { exclusionReasonFor } from '../lib/types';
 
@@ -2390,6 +2390,35 @@ async function testForecast(): Promise<void> {
     assert(staleWidth > freshWidth, 'the stale replacement is materially wider than the fresh fitted range');
   });
 
+  await test('a wrong-sign fit is ignored instead of claiming price creates demand', () => {
+    const product = makeProduct();
+    const confounded = makeFit(product.variant_gid, {
+      elasticity: 0.4,
+      low: 0.1,
+      high: 0.8,
+      confidence: 'fitted',
+    });
+    const forecast = buildForecast({
+      shop: { currency: 'USD', timezone: TZ },
+      products: [product],
+      orderDays: makeHistory(product, 90, 10),
+      change: { type: 'percent', percent: 10 },
+      fits: new Map([[product.variant_gid, confounded]]),
+      now: NOW,
+    });
+
+    assertEqual(forecast.confidence, 'assumption', 'confounded evidence is not presented as store-specific');
+    assertEqual(forecast.fitted?.source, 'category_default', 'the broad named default replaces it');
+    assert(
+      forecast.warnings.some((warning) => warning.code === 'confounded_fit'),
+      'the merchant is told why the fit was ignored',
+    );
+    assert(
+      (forecast.products[0]?.demand_multiplier ?? 1) < 1,
+      'a price increase must not claim unit demand rises because of a wrong-sign fit',
+    );
+  });
+
   await test('an assumption-tier fit is not leaned on', () => {
     const product = makeProduct();
     const weak = makeFit(product.variant_gid, { confidence: 'assumption', price_variation_pct: 0 });
@@ -3195,6 +3224,21 @@ async function testReadings(): Promise<void> {
     assert(readingSentence({ ...reading, band_stale: true }).includes('out of date'), 'staleness is visible');
   });
 
+  await test('live demo rollouts tell the truth about the beta pause posture', () => {
+    const rollouts = getRollouts();
+    const live = rollouts.filter((rollout) => ['running', 'paused', 'scheduled', 'draft'].includes(rollout.status));
+    assert(live.length > 0, 'demo has active rollouts');
+    assert(live.every((rollout) => rollout.guardrails.auto_rollback === false), 'no active demo promises auto-rollback');
+    assert(
+      live.every((rollout) => rollout.guardrails.rules.every((rule) => !/automatically/i.test(rule.sentence))),
+      'active demo guardrail copy matches execution posture',
+    );
+    const historicalRollback = rollouts.find((rollout) => rollout.id === 'ro_2036');
+    assertEqual(historicalRollback?.status, 'rolled_back', 'historical rollback fixture reaches its terminal state');
+    const historicalCompletion = rollouts.find((rollout) => rollout.id === 'ro_2030');
+    assertEqual(historicalCompletion?.status, 'completed', 'historical completion fixture reaches its terminal state');
+  });
+
   await test('rollout health has a "watching" state between healthy and breaching', () => {
     assertEqual(rolloutHealth('running', [reading]), 'healthy', 'inside the range');
     assertEqual(rolloutHealth('running', [{ ...reading, breach: true, breach_streak: 1 }]), 'watching', 'one bad day');
@@ -3205,16 +3249,23 @@ async function testReadings(): Promise<void> {
     );
     assertEqual(rolloutHealth('running', []), 'too_early', 'no readings yet');
     assertEqual(rolloutHealth('running', [{ ...reading, band_floored: true }]), 'too_early', 'too quiet to judge');
+    assertEqual(rolloutHealth('completed', [reading]), 'monitoring_ended', 'completed prices remain live');
     assertEqual(rolloutHealth('draft', [reading]), 'not_live', 'nothing live');
     assertEqual(rolloutHealth('running', [{ ...reading, actual_units: 4 }]), 'watching', 'below the band but not tripped');
   });
 
   await test('health sentences never blame the merchant or use jargon', () => {
-    for (const health of ['healthy', 'watching', 'breaching', 'too_early', 'not_live'] as const) {
+    for (const health of ['healthy', 'watching', 'breaching', 'too_early', 'monitoring_ended', 'not_live'] as const) {
       const sentence = healthSentence(health, 'hold', 2);
       assert(sentence.length > 20, `${health} has a real sentence`);
       assert(!/elasticity|confidence interval|guardrail threshold/i.test(sentence), `${health} avoids jargon`);
     }
+  });
+
+  await test('completed rollout copy says the prices remain live', () => {
+    const sentence = healthSentence('monitoring_ended', 'complete');
+    assert(sentence.includes('remains on its new price'), `completion is honest: ${sentence}`);
+    assert(!sentence.includes('No prices are live'), `completion does not imply rollback: ${sentence}`);
   });
 
   await test('beta breach copy says pause, never automatic rollback', () => {

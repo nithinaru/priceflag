@@ -66,11 +66,15 @@ All of these must be green before merging or promoting:
 npm ci
 npm run typecheck
 npm run smoke
+npm run test:auth
 npm run test:merchant-api
 npm run test:pricing-safety
 npm run test:ml-ingest
+npm run test:optimizer
 npm run test:webhooks
 npm run test:deployment-safety
+npm run test:founder-lab
+npm run test:shopify-journey
 npx tsx tests/integration/run.ts --demo
 npm run build
 npm audit --audit-level=high

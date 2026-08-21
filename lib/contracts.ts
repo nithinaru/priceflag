@@ -78,6 +78,7 @@ export type ForecastWarningCode =
   | 'price_below_cost'
   | 'thin_history'
   | 'no_price_variation'
+  | 'confounded_fit'
   | 'stale_model'
   | 'excluded_variants'
   | 'wide_range'

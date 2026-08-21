@@ -305,6 +305,70 @@ async function main(): Promise<void> {
         await page.close();
       }
     }
+
+    // A founder may open the demo from a phone or a narrow split-screen window.
+    // Tables may scroll inside their own containers, but the page itself must
+    // never become wider than the viewport or throw during a narrow cold load.
+    const mobileRoutes = [
+      '/',
+      '/products',
+      '/propose',
+      '/journal',
+      '/rollouts',
+      '/rollouts/ro_2043',
+      '/model-lab',
+      '/settings',
+    ];
+    const mobileFailures: string[] = [];
+    for (const path of mobileRoutes) {
+      const page = await context.newPage();
+      const runtimeErrors: string[] = [];
+      page.on('console', (message) => {
+        if (message.type() === 'error') runtimeErrors.push(message.text());
+      });
+      page.on('pageerror', (error) => runtimeErrors.push(error.message));
+      page.on('requestfailed', (request) => {
+        const error = request.failure()?.errorText ?? 'request failed';
+        if (error === 'net::ERR_ABORTED' && request.url().includes('_rsc=')) return;
+        runtimeErrors.push(`${request.method()} ${request.url()} (${error})`);
+      });
+      try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        if (path === '/propose') {
+          await page.addInitScript(() => {
+            window.sessionStorage.setItem(
+              'priceflag:selection:v1',
+              JSON.stringify(['gid://shopify/ProductVariant/46100000000']),
+            );
+          });
+        }
+        await coldLoad(page, path);
+        const overflow = await page.evaluate(() =>
+          Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) -
+          document.documentElement.clientWidth,
+        );
+        if (overflow > 1) mobileFailures.push(`${path}: ${overflow}px page overflow`);
+        if (runtimeErrors.length > 0) mobileFailures.push(`${path}: ${runtimeErrors[0]?.slice(0, 140)}`);
+        if (path === '/') {
+          const menu = page.getByRole('button', { name: 'Menu', exact: true });
+          await menu.click();
+          await page.locator('#pf-mobile-nav').waitFor({ state: 'visible', timeout: 3_000 });
+          await page.keyboard.press('Escape');
+          await page.locator('#pf-mobile-nav').waitFor({ state: 'detached', timeout: 3_000 });
+        }
+      } catch (cause) {
+        mobileFailures.push(`${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      } finally {
+        await page.close();
+      }
+    }
+    record(
+      '390px viewport — core routes stay inside the page and error-free',
+      mobileFailures.length === 0,
+      mobileFailures.length === 0
+        ? `${mobileRoutes.length} narrow routes checked; menu opens and closes`
+        : mobileFailures[0] as string,
+    );
   } finally {
     await browser?.close();
   }

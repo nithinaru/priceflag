@@ -599,6 +599,25 @@ test('journal and sync status ignore a cross-shop ?shop parameter', async () => 
   assert(otherStatus.stage === 'queued', 'cross-shop token read the primary shop sync run');
 });
 
+test('journal rejects malformed pagination and impossible date windows before querying', async () => {
+  for (const query of [
+    'limit=0',
+    'limit=1.5',
+    'limit=501',
+    'offset=-1',
+    'offset=NaN',
+    'from=2026-02-31',
+    'to=not-a-day',
+    'from=2026-08-20&to=2026-08-19',
+    'source=rolluot',
+  ]) {
+    const response = await journal(authGet(`/api/journal?${query}`, token(DEMO_SHOP_DOMAIN)));
+    const body = await json(response);
+    assert(response.status === 400, `journal accepted ${query}: ${response.status}`);
+    assert(body.error?.code === 'invalid_journal_query', `journal used the wrong error for ${query}`);
+  }
+});
+
 test('sync derives credentials from the token tenant, never ?shop or static env', async () => {
   process.env.PRICEFLAG_MODE = 'real';
   let contacted = false;

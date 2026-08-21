@@ -114,6 +114,7 @@ const HEALTH: Record<RolloutHealth, { label: string; tone: BadgeTone }> = {
   watching: { label: "Worth watching", tone: "hold" },
   breaching: { label: "Below your limit", tone: "breach" },
   too_early: { label: "Too early to tell", tone: "neutral" },
+  monitoring_ended: { label: "Monitoring ended", tone: "neutral" },
   not_live: { label: "Not live", tone: "neutral" },
 };
 

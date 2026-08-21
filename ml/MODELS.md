@@ -162,22 +162,27 @@ the champion only by beating it here AND on real-data backtests.
   cut compounds (margin given away on every unit, volume never arrives).
   On C7 golden data the plain nominal argmax realized only 43% of the
   true-optimal profit with 15/50 money-losing recommendations (worst single
-  −$127/day); the asymmetric rule realizes 53% with 6/50 and worst −$12/day.
+  −$127/day). The asymmetric rule plus the partial-fit movement cap keeps the
+  currently shipped surface under its loss-rate gate while preserving
+  meaningful portfolio value.
   Chance-constrained ("worst-case ≥ 0") and Hurwicz blends were evaluated and
   rejected: they collapse capture to ≈0–16% (see the c7 sweep in the Lane B
   session notes).
 - **Constraints v1:** margin floor over `cogs_cents`; max |Δ%| cap;
   optional inventory-aware cap using `inventory_quantity` (don't recommend
-  demand increases a thin stock position can't serve).
+  demand increases a thin stock position can't serve). Partial-confidence
+  fits have an additional 7% machine-move cap, and sub-cent/day modeled gains
+  are skipped. The merchant can still forecast a larger manual proposal.
 - **Gate (`run_c7`)**, snapshot `eval/c7_optimizer.json`, on golden stores
   with KNOWN true elasticities (identifiable slice, 3 seeds, 50 SKUs; the
   true-optimal price is computed by the same `optimize_sku` code pinned at the
-  true ε, so constraints match exactly):
+  true ε. The truth comparator retains the merchant's full cap, so the 7%
+  partial-fit safety cap is counted as opportunity cost rather than hidden):
   - hard safety: zero margin-floor/max-change violations, and the robust
-    price must NEVER lose money at the true elasticity (measured: 0/50);
-  - realized capture of true-optimal profit ≥ 0.40 (measured: 0.53);
-  - money-losing recommendations ≤ 15% (measured: 12%);
-  - aggregate realized profit > 0 (measured: +$570/day over 50 SKUs).
+    price must NEVER lose money at the true elasticity (measured: 0/31);
+  - realized capture of true-optimal profit ≥ 0.40 (measured: 0.450);
+  - money-losing recommendations ≤ 15% (measured: 4/31, 12.9%);
+  - aggregate realized profit > 0 (measured: +$291/day over 31 actual moves).
   All fits on golden stores land in the `partial` tier, so this measures the
   realistic serving condition, not a best case.
 - **Surface:** `kind="recommendation"` model-run rows
