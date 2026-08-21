@@ -41,6 +41,9 @@ export const OPTIMIZER_MODEL_VERSION = 'optimizer-lattice-1.0-ts';
 
 export const DEFAULT_MARGIN_FLOOR_PCT = 10;
 export const DEFAULT_MAX_CHANGE_PCT = 25;
+/** Partial fits carry real store signal but wide uncertainty. Keep their
+ * machine-made moves small; merchants can still model a larger manual move. */
+export const PARTIAL_CONFIDENCE_MAX_CHANGE_PCT = 7;
 /** A price cut only helps if stock can serve the demand it buys. */
 export const INVENTORY_HORIZON_DAYS = 30;
 /** `rounding: 'none'` has no natural lattice; a cent grid over a wide window is
@@ -62,6 +65,7 @@ export type SkipReason =
   /* optimizer-specific */
   | 'missing_cogs'
   | 'no_usable_fit'
+  | 'positive_elasticity'
   | 'no_demand'
   | 'no_candidates'
   | 'current_price_optimal';
@@ -242,8 +246,8 @@ interface Evaluation {
  * `units1 = units0 * (P1/P0)^e`, with money flowing at the realization rate
  * (list price × the observed net/gross ratio) and COGS paid per unit.
  *
- * The inventory cap only trims the projected side: baseline units are observed
- * demand that was actually served, so they stay as measured.
+ * The inventory cap constrains both futures. Comparing a capped proposal with
+ * an uncapped baseline would manufacture a loss even for "keep today's price".
  */
 function evaluateAt(objective: Objective, priceCents: Cents, elasticity: number): Evaluation {
   const { currentCents, unitsPerDay, revenueRealizationRate: r, cogsCents, capUnitsPerDay } = objective;
@@ -253,9 +257,13 @@ function evaluateAt(objective: Objective, priceCents: Cents, elasticity: number)
     units1 = capUnitsPerDay;
     capApplied = true;
   }
-  const revenueDelta = priceCents * r * units1 - currentCents * r * unitsPerDay;
+  // Inventory constrains both futures. Comparing a capped proposal with an
+  // uncapped baseline manufactures a loss even for "keep today's price" and
+  // can make the least-bad lattice point look like a recommendation.
+  const baselineUnits = capUnitsPerDay === null ? unitsPerDay : Math.min(unitsPerDay, capUnitsPerDay);
+  const revenueDelta = priceCents * r * units1 - currentCents * r * baselineUnits;
   const profitDelta =
-    (priceCents * r - cogsCents) * units1 - (currentCents * r - cogsCents) * unitsPerDay;
+    (priceCents * r - cogsCents) * units1 - (currentCents * r - cogsCents) * baselineUnits;
   return { profitDelta, revenueDelta, capApplied };
 }
 
@@ -355,7 +363,7 @@ function buildRationale(
     } else if (constraint === 'margin_floor' && marginFloorPct !== null) {
       parts.push(`The suggestion stops at your minimum margin of ${formatPctPlain(marginFloorPct)} over cost.`);
     } else if (constraint === 'inventory') {
-      parts.push('Current stock limits how many extra units a lower price could sell, and that limit is priced in.');
+      parts.push('Available stock limits how many units the model can count as sellable over the next 30 days, and that limit is priced in.');
     } else if (constraint === 'lattice_edge') {
       parts.push('The suggestion sits at the edge of the prices considered.');
     }
@@ -417,9 +425,19 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
     // Same usable-fit rule as buildForecast: a missing fit, a stale (demoted)
     // fit, or an assumption-tier fit is Lane C telling us not to lean on it.
     const fit = input.fits?.get(product.variant_gid) ?? null;
+    if (fit !== null && Number.isFinite(fit.elasticity) && fit.elasticity >= 0) {
+      // Match the Python optimizer: a wrong-sign fit is evidence of confounding,
+      // not evidence that raising price creates demand. Skip instead of clamping
+      // it into a recommendation.
+      skipped.push({ variant_gid: product.variant_gid, reason: 'positive_elasticity' });
+      continue;
+    }
     const fitConfidence = effectiveFitConfidence(fit, now);
     const fitWasDemoted = fit !== null && fitConfidence !== fit.confidence;
-    const usableFit = fit !== null && !fitWasDemoted && fitConfidence !== 'assumption' ? fit : null;
+    const usableFit =
+      fit !== null && Number.isFinite(fit.elasticity) && !fitWasDemoted && fitConfidence !== 'assumption'
+        ? fit
+        : null;
     if (usableFit === null) {
       skipped.push({ variant_gid: product.variant_gid, reason: 'no_usable_fit' });
       continue;
@@ -432,7 +450,11 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
     }
 
     const currentCents = product.price_cents;
-    const window = constrainedWindow(currentCents, product.cogs_cents, marginFloorPct, maxChangePct);
+    const effectiveMaxChangePct =
+      fitConfidence === 'partial'
+        ? Math.min(maxChangePct, PARTIAL_CONFIDENCE_MAX_CHANGE_PCT)
+        : maxChangePct;
+    const window = constrainedWindow(currentCents, product.cogs_cents, marginFloorPct, effectiveMaxChangePct);
     const candidatePrices = enumerateCandidates(currentCents, window, rounding);
     if (candidatePrices.length === 0) {
       // e.g. the margin floor sits above the max-change ceiling, or the window
@@ -440,6 +462,13 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
       skipped.push({ variant_gid: product.variant_gid, reason: 'no_candidates' });
       continue;
     }
+    // Staying put is always the benchmark, even when today's price is not on
+    // the requested lattice or is itself below the margin floor. The floor
+    // constrains moves; it is not permission to recommend an expected loss
+    // merely to repair a pre-existing low margin. Without this benchmark an
+    // argmax over only losing, floor-compliant moves returns the least-bad loss
+    // as a "suggestion".
+    const evaluationPrices = [currentCents, ...candidatePrices.filter((price) => price !== currentCents)];
 
     const elasticity = clampElasticity(usableFit.elasticity);
     const eLow = clampElasticity(pickLow(usableFit));
@@ -462,7 +491,7 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
     };
     const uncapped: Objective = { ...objective, capUnitsPerDay: null };
 
-    const scored: ScoredCandidate[] = candidatePrices.map((price) => ({
+    const scored: ScoredCandidate[] = evaluationPrices.map((price) => ({
       price,
       nominal: evaluateAt(objective, price, elasticity),
       robust: evaluateRobust(objective, price, eLow, eHigh),
@@ -492,7 +521,7 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
     // chosen price.
     const uncappedScored: ScoredCandidate[] = capUnitsPerDay === null
       ? scored
-      : candidatePrices.map((price) => ({
+      : evaluationPrices.map((price) => ({
           price,
           nominal: evaluateAt(uncapped, price, elasticity),
           robust: evaluateRobust(uncapped, price, eLow, eHigh),
@@ -527,6 +556,14 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
       robust_revenue_delta_cents_per_day: roundCents(nominalBest.robust.revenueDelta),
     };
 
+    // Sub-cent-per-day model improvements round to no merchant value and are
+    // too fragile to justify a storefront change. Keep them out of the prefill
+    // surface instead of presenting numerical noise as a recommendation.
+    if (expected.nominal_profit_delta_cents_per_day <= 0) {
+      skipped.push({ variant_gid: product.variant_gid, reason: 'current_price_optimal' });
+      continue;
+    }
+
     recommendations.push({
       contract_version: CONTRACT_VERSION,
       shop_domain: input.shop.shop_domain,
@@ -543,11 +580,11 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
       expected,
       constraints: {
         margin_floor_pct: marginFloorPct,
-        max_change_pct: maxChangePct,
+        max_change_pct: effectiveMaxChangePct,
         inventory_cap_applied: inventoryCapApplied,
         binding: bindingList,
       },
-      candidates_evaluated: candidatePrices.length,
+      candidates_evaluated: evaluationPrices.length,
       baseline_units_per_day: Number(baseline.unitsPerDay.toFixed(4)),
       rationale: buildRationale(
         input.shop.currency,
@@ -557,7 +594,7 @@ export function optimizePrices(input: OptimizeInput): OptimizeResult {
         expected.robust_profit_delta_cents_per_day,
         bindingList,
         marginFloorPct,
-        maxChangePct,
+        effectiveMaxChangePct,
       ),
       model_version: OPTIMIZER_MODEL_VERSION,
       model_run_id: null,

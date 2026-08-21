@@ -23,6 +23,7 @@ import { DEMO_SHOP_DOMAIN } from '../lib/demo/generator';
 import {
   DEFAULT_MAX_CHANGE_PCT,
   OPTIMIZER_MODEL_VERSION,
+  PARTIAL_CONFIDENCE_MAX_CHANGE_PCT,
   optimizePrices,
   type OptimizeInput,
 } from '../lib/engine/optimize';
@@ -178,6 +179,15 @@ async function engineTests(): Promise<void> {
     assert(result.skipped[0]?.reason === 'current_price_optimal', `got ${JSON.stringify(result.skipped)}`);
   });
 
+  await test('a non-lattice current price beats every money-losing lattice move', () => {
+    const result = run({
+      products: [product({ price_cents: 3200, cogs_cents: 1600, inventory_quantity: null })],
+      rounding: 'end_99',
+    });
+    assert(result.recommendations.length === 0, `money-losing suggestion: ${JSON.stringify(result.recommendations)}`);
+    assert(result.skipped[0]?.reason === 'current_price_optimal', `got ${JSON.stringify(result.skipped)}`);
+  });
+
   await test('max-change cap binds when the unconstrained optimum is far above', () => {
     // COGS 90% → P* = 1800, window tops out at +25% = 1250.
     const result = run({ products: [product({ price_cents: 1000, cogs_cents: 900 })] });
@@ -186,6 +196,21 @@ async function engineTests(): Promise<void> {
     assert(row.constraints.binding.includes('max_change'), `binding ${JSON.stringify(row.constraints.binding)}`);
     assert(row.constraints.max_change_pct === DEFAULT_MAX_CHANGE_PCT, 'max_change_pct should echo the constraint');
     assert(row.rationale.includes('25% change limit'), 'rationale must mention the binding constraint');
+  });
+
+  await test('partial-confidence suggestions are capped more tightly than fitted ones', () => {
+    const item = product({ price_cents: 1000, cogs_cents: 100 });
+    const result = run({
+      products: [item],
+      fits: new Map([
+        [item.variant_gid, fit({ confidence: 'partial', elasticity: -0.5, low: -0.9, high: -0.2 })],
+      ]),
+    });
+    const row = result.recommendations[0]!;
+    assert(row.recommended_price_cents === 1070, `partial fit escaped its cap: ${row.recommended_price_cents}`);
+    assert(row.constraints.max_change_pct === PARTIAL_CONFIDENCE_MAX_CHANGE_PCT, 'effective cap was not reported');
+    assert(row.constraints.binding.includes('max_change'), 'partial safety cap was not marked binding');
+    assert(row.rationale.includes('7% change limit'), 'merchant rationale hid the partial-fit cap');
   });
 
   await test('margin floor binds a deep cut', () => {
@@ -198,6 +223,22 @@ async function engineTests(): Promise<void> {
     assert(row.recommended_price_cents === 880, `expected the floor 880, got ${row.recommended_price_cents}`);
     assert(row.constraints.binding.includes('margin_floor'), `binding ${JSON.stringify(row.constraints.binding)}`);
     assert(row.rationale.includes('minimum margin'), 'rationale must mention the margin floor');
+  });
+
+  await test('a margin floor never forces a model-predicted loss', () => {
+    // The current $10 price is below the requested 20%-over-cost floor of
+    // $10.80. With very elastic demand, raising to the floor loses expected
+    // profit. Staying put is an evaluation benchmark even though it is not a
+    // legal candidate move, so the optimizer must skip instead of prescribing
+    // the least-bad loss.
+    const item = product({ price_cents: 1000, cogs_cents: 900 });
+    const result = run({
+      products: [item],
+      fits: new Map([[item.variant_gid, fit({ elasticity: -8, low: -9, high: -7 })]]),
+      constraints: { marginFloorPct: 20, maxChangePct: 15, inventoryAware: false },
+    });
+    assert(result.recommendations.length === 0, `losing floor repair escaped: ${JSON.stringify(result)}`);
+    assert(result.skipped[0]?.reason === 'current_price_optimal', `got ${JSON.stringify(result.skipped)}`);
   });
 
   await test('robust argmax is the cautious one when the interval is wide', () => {
@@ -272,6 +313,7 @@ async function engineTests(): Promise<void> {
       product({ id: 'd', variant_gid: gid(4) }), // stale fit → demoted → unusable
       product({ id: 'e', variant_gid: gid(5) }), // assumption-tier fit
       product({ id: 'f', variant_gid: gid(6) }), // no sales history
+      product({ id: 'g', variant_gid: gid(7) }), // wrong-sign fit is confounded
     ];
     const result = optimizePrices({
       shop: SHOP,
@@ -282,6 +324,7 @@ async function engineTests(): Promise<void> {
         [gid(4), fit({ variant_gid: gid(4), fitted_at: '2026-06-01T00:00:00Z' })],
         [gid(5), fit({ variant_gid: gid(5), confidence: 'assumption' })],
         [gid(6), fit({ variant_gid: gid(6) })],
+        [gid(7), fit({ variant_gid: gid(7), elasticity: 0.4, low: 0.1, high: 0.8 })],
       ]),
       rounding: 'none',
       now: NOW,
@@ -293,6 +336,7 @@ async function engineTests(): Promise<void> {
     assert(reasons.get(gid(4)) === 'no_usable_fit', `gid 4 (stale): ${reasons.get(gid(4))}`);
     assert(reasons.get(gid(5)) === 'no_usable_fit', `gid 5 (assumption): ${reasons.get(gid(5))}`);
     assert(reasons.get(gid(6)) === 'no_demand', `gid 6: ${reasons.get(gid(6))}`);
+    assert(reasons.get(gid(7)) === 'positive_elasticity', `gid 7 (positive): ${reasons.get(gid(7))}`);
     assert(result.recommendations.length === 0, 'nothing should be recommended');
   });
 
@@ -327,6 +371,65 @@ async function engineTests(): Promise<void> {
     const a = run(input);
     const b = run(input);
     assert(JSON.stringify(a) === JSON.stringify(b), 'identical inputs must produce identical output');
+  });
+
+  await test('randomized feasible inputs never emit a losing or out-of-bounds move', () => {
+    let state = 0x5eed1234;
+    const random = (): number => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return state / 0x1_0000_0000;
+    };
+    const roundings = ['none', 'end_99', 'end_95', 'end_00'] as const;
+
+    for (let index = 0; index < 300; index += 1) {
+      const price = 500 + Math.floor(random() * 49_500);
+      // Keep today's price above the default 10% floor so "stay" is a legal
+      // benchmark and every emitted move must beat doing nothing.
+      const cogs = Math.max(1, Math.floor(price * (0.05 + random() * 0.75)));
+      const elasticity = -(0.1 + random() * 7.9);
+      const uncertainty = 0.05 + random() * 1.5;
+      const rounding = roundings[Math.floor(random() * roundings.length)]!;
+      const item = product({
+        id: `fuzz-${index}`,
+        variant_gid: `gid://shopify/ProductVariant/${10_000 + index}`,
+        price_cents: price,
+        cogs_cents: cogs,
+        inventory_quantity: random() < 0.7 ? Math.floor(random() * 2_000) : null,
+      });
+      const result = run({
+        products: [item],
+        fits: new Map([
+          [
+            item.variant_gid,
+            fit({
+              variant_gid: item.variant_gid,
+              elasticity,
+              low: Math.max(-12, elasticity - uncertainty),
+              high: Math.min(2, elasticity + uncertainty),
+            }),
+          ],
+        ]),
+        rounding,
+      });
+      for (const row of result.recommendations) {
+        assert(
+          row.expected.nominal_profit_delta_cents_per_day > 0,
+          `case ${index} emitted a non-profitable move: ${JSON.stringify(row)}`,
+        );
+        if (row.recommended_price_cents < row.current_price_cents) {
+          assert(
+            row.expected.robust_profit_delta_cents_per_day >= 0,
+            `case ${index} emitted a cut rejected by the cautious bound: ${JSON.stringify(row)}`,
+          );
+        }
+        const changePct = Math.abs(row.recommended_price_cents / row.current_price_cents - 1) * 100;
+        assert(changePct <= DEFAULT_MAX_CHANGE_PCT + 1e-9, `case ${index} escaped the max-change cap`);
+        assert(
+          rounding === 'none' || applyRounding(row.recommended_price_cents, rounding) === row.recommended_price_cents,
+          `case ${index} escaped the ${rounding} lattice`,
+        );
+      }
+    }
   });
 }
 

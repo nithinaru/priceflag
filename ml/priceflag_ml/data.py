@@ -173,7 +173,10 @@ class PriceflagApiSource:
         except (ValueError, TypeError) as error:
             raise RuntimeError(f"ML export returned invalid JSON with HTTP {response.status_code}") from error
         if response.status_code != 200:
-            raise RuntimeError(f"ML export failed with HTTP {response.status_code}")
+            error_body = body.get("error") if isinstance(body, dict) else None
+            error_code = error_body.get("code") if isinstance(error_body, dict) else None
+            suffix = f" ({error_code})" if isinstance(error_code, str) else ""
+            raise RuntimeError(f"ML export failed with HTTP {response.status_code}{suffix}")
         if not isinstance(body, dict):
             raise RuntimeError("ML export returned an invalid response object")
         return body

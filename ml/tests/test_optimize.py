@@ -15,6 +15,7 @@ import pytest
 from priceflag_ml.optimize import (
     MODEL_VERSION,
     OptimizerConfig,
+    PARTIAL_CONFIDENCE_MAX_CHANGE_PCT,
     SkuRecommendation,
     SkuSkip,
     Z80,
@@ -153,6 +154,21 @@ def test_max_change_cap_binds_for_inelastic_sku():
     assert out.nominal_profit_delta_cents_per_day > 0
 
 
+def test_partial_confidence_gets_a_tighter_machine_move_cap():
+    out = rec_of(
+        run(
+            fit(e=-0.5, low=-0.9, high=-0.2, confidence="partial"),
+            p0=2000,
+            cogs=500,
+            max_change_pct=15.0,
+            rounding="none",
+        )
+    )
+    assert out.recommended_price_cents == 2140
+    assert out.max_change_pct == PARTIAL_CONFIDENCE_MAX_CHANGE_PCT
+    assert "max_change" in out.binding
+
+
 def test_uncapped_run_reports_lattice_edge_not_max_change():
     out = rec_of(run(fit(e=-0.5, low=-0.9, high=-0.2), p0=2000, cogs=500, max_change_pct=None, rounding="none"))
     assert "lattice_edge" in out.binding
@@ -167,14 +183,14 @@ def test_margin_floor_binds_when_analytic_optimum_is_below_it():
     assert "margin_floor" in out.binding
 
 
-def test_current_price_below_floor_forces_a_raise():
+def test_current_price_below_floor_never_forces_a_losing_raise():
     # P0 $10.00 with cogs $9.00 and a 20% floor -> min price $10.80; staying
-    # is not offered because the floor is a request to move up. e=-8 puts the
-    # analytic optimum (c*e/(1+e) = $10.29) below the floor, so the argmax
-    # presses against it.
-    out = rec_of(run(fit(e=-8.0, low=-9.0, high=-7.0), p0=1000, cogs=900, max_change_pct=15.0, margin_floor_pct=20.0, rounding="none"))
-    assert out.recommended_price_cents == 1080
-    assert "margin_floor" in out.binding
+    # is still the benchmark. e=-8 puts the analytic optimum
+    # (c*e/(1+e) = $10.29) below the floor, and the $10.80 floor price loses
+    # expected profit. The optimizer must skip instead of prescribing that
+    # least-bad loss.
+    out = skip_of(run(fit(e=-8.0, low=-9.0, high=-7.0), p0=1000, cogs=900, max_change_pct=15.0, margin_floor_pct=20.0, rounding="none"))
+    assert out.reason == "current_price_optimal"
 
 
 def test_infeasible_constraints_skip():
@@ -292,9 +308,8 @@ def test_asymmetric_rule_blocks_cuts_the_cautious_bound_rejects():
     # gives away margin. The asymmetric rule scores cuts at that cautious
     # bound, and raises at the point estimate (where they also lose, since
     # P* < P0) — so the only honest recommendation is to stay.
-    out = rec_of(run(fit(e=-3.0, low=-3.5, high=-0.4), p0=2000, cogs=1000, max_change_pct=15.0, margin_floor_pct=None, rounding="none"))
-    assert out.recommended_price_cents == 2000
-    assert out.nominal_profit_delta_cents_per_day == 0
+    out = skip_of(run(fit(e=-3.0, low=-3.5, high=-0.4), p0=2000, cogs=1000, max_change_pct=15.0, margin_floor_pct=None, rounding="none"))
+    assert out.reason == "current_price_optimal"
 
 
 def test_asymmetric_rule_still_cuts_when_the_cautious_bound_agrees():

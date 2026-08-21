@@ -99,18 +99,30 @@ export class SupabaseAdapter implements StoreAdapter {
    */
   async ping(): Promise<{ ok: boolean; detail?: string }> {
     try {
-      const { error } = await this.db.from('shops').select('id').limit(1);
-      if (error) {
-        if (error.code === 'PGRST205' || /schema cache/i.test(error.message)) {
+      // Reachability alone is not readiness. Probe one stable field from each
+      // migration family the deployed app currently depends on so an app deploy
+      // cannot report healthy while its database is still on an older schema.
+      const probes = await Promise.all([
+        this.db.from('shops').select('id').limit(1),
+        this.db.from('rollouts').select('id,creation_sequence').limit(1),
+        this.db.from('model_runs').select('id,recommendations_written').limit(1),
+        this.db.from('recommendations').select('id').limit(1),
+      ]);
+      const failed = probes.find((probe) => probe.error !== null);
+      if (failed?.error) {
+        if (
+          ['PGRST204', 'PGRST205'].includes(failed.error.code) ||
+          /schema cache|column .* does not exist|relation .* does not exist/i.test(failed.error.message)
+        ) {
           return {
             ok: false,
             detail:
-              'connected, but the schema is missing — run `npx supabase db push` to apply supabase/migrations',
+              'connected, but required schema migrations are missing — run `npx supabase db push` to apply supabase/migrations',
           };
         }
-        return { ok: false, detail: error.message };
+        return { ok: false, detail: failed.error.message };
       }
-      return { ok: true, detail: 'supabase reachable, schema present' };
+      return { ok: true, detail: 'supabase reachable, required schema present' };
     } catch (cause) {
       return { ok: false, detail: cause instanceof Error ? cause.message : String(cause) };
     }

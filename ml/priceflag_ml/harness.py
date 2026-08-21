@@ -574,9 +574,11 @@ def run_c7(seeds: tuple[int, ...] = (7, 11, 42)) -> dict:
     """C7 report: the R28 gate for optimizer-lattice-1.0 (price recommendation).
 
     The golden store has KNOWN true elasticities, so the true-optimal price is
-    computable exactly: run the SAME `optimize_sku` code (same lattice, same
-    constraints, same baseline) with a degenerate "fit" pinned at the true
-    elasticity. The gate then asks, on the identifiable slice (>=2 permanent
+    computable exactly: run the SAME `optimize_sku` code with a degenerate
+    fitted-confidence row pinned at the true elasticity. That comparator keeps
+    the merchant's full change cap, so the partial-confidence safety cap is
+    charged honestly as opportunity cost rather than handed to the truth
+    benchmark. The gate then asks, on the identifiable slice (>=2 permanent
     price levels, the C2 acceptance slice):
 
     - closeness: is the recommended price usually within one whole-dollar
@@ -706,8 +708,8 @@ def run_c7(seeds: tuple[int, ...] = (7, 11, 42)) -> dict:
         "pct_recommended_lose_at_truth": (n_lose_total / n_scored_total) if n_scored_total else None,
         "n_robust_lose_at_truth": int(sum(s["n_robust_lose_at_truth"] for s in per_seed)),
     }
-    # The bar (thresholds hold ~20% headroom under the asymmetric selection
-    # rule's measured performance; see MODELS.md optimizer-lattice-1.0):
+    # The bar (fixed acceptance thresholds; see MODELS.md
+    # optimizer-lattice-1.0):
     # - hard safety: zero constraint violations, ever;
     # - the robust price must never lose money at the true elasticity — it is
     #   the "cautious end" the merchant is shown, so it must actually be safe;

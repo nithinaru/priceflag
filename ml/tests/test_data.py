@@ -122,6 +122,24 @@ def test_attestation_rejects_mismatched_identity(override, match):
         source.attest(PROJECT_REF, "production")
 
 
+def test_source_reports_machine_readable_backend_error_code():
+    source = source_with(
+        lambda _request: response(
+            {
+                "error": {
+                    "code": "backend_unavailable",
+                    "message": "The ML export backend is temporarily unavailable.",
+                    "retryable": True,
+                    "details": None,
+                }
+            },
+            status=503,
+        )
+    )
+    with pytest.raises(RuntimeError, match=r"HTTP 503 \(backend_unavailable\)"):
+        source.attest(PROJECT_REF, "production")
+
+
 def test_reads_are_paginated_and_mapped_to_model_frames():
     seen = []
 

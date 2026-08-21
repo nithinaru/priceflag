@@ -516,6 +516,7 @@ export function buildForecast(input: ForecastInput): ForecastResult {
   const lines: VariantLine[] = [];
   let excludedCount = 0;
   let staleFitCount = 0;
+  let confoundedFitCount = 0;
 
   // Index once. A 500-SKU selection against 180 days of history is 90k rows, and
   // re-filtering that per variant per statistic is how a fast page turns slow.
@@ -556,12 +557,18 @@ export function buildForecast(input: ForecastInput): ForecastResult {
     const fit = input.fits?.get(product.variant_gid) ?? null;
     const fitConfidence = effectiveFitConfidence(fit, now);
     const fitWasDemoted = fit !== null && fitConfidence !== fit.confidence;
+    // A non-negative own-price response says price and sales moved together,
+    // not that price caused sales to rise. Promotions, seasonality, and trend
+    // can all produce that sign. Treat it as confounded rather than turning it
+    // into a merchant-facing prediction.
+    const fitWasConfounded = fit !== null && (!Number.isFinite(fit.elasticity) || fit.elasticity >= 0);
     if (fitWasDemoted) staleFitCount += 1;
+    if (fitWasConfounded) confoundedFitCount += 1;
     // An `assumption`-tier fit is Lane C telling us not to lean on it. Use the
     // explicitly labelled broad default rather than presenting that weak fit as
     // store-specific evidence.
     const usableFit =
-      fit !== null && !fitWasDemoted && fitConfidence !== 'assumption' ? fit : null;
+      fit !== null && !fitWasDemoted && !fitWasConfounded && fitConfidence !== 'assumption' ? fit : null;
     const demandMultiplier = Math.pow(
       targetPriceCents / product.price_cents,
       usableFit?.elasticity ?? DEFAULT_ELASTICITY,
@@ -613,6 +620,15 @@ export function buildForecast(input: ForecastInput): ForecastResult {
         excludedCount === 1
           ? '1 product is left out: gift cards and subscription products are never repriced.'
           : `${excludedCount} products are left out: gift cards and subscription products are never repriced.`,
+    });
+  }
+  if (confoundedFitCount > 0) {
+    warnings.push({
+      code: 'confounded_fit',
+      message:
+        confoundedFitCount === 1
+          ? 'For one product, sales appeared to rise with price. Other changes were probably mixed in, so we ignored that fit and used the broad default.'
+          : `For ${confoundedFitCount} products, sales appeared to rise with price. Other changes were probably mixed in, so we ignored those fits and used the broad default.`,
     });
   }
 

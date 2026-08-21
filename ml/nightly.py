@@ -127,6 +127,41 @@ def _write_real_ingest_evidence(out_dir: Path, evidence: dict) -> None:
     (out_dir / REAL_INGEST_EVIDENCE_FILE).write_text(json.dumps(evidence, indent=2, sort_keys=True))
 
 
+def _new_real_ingest_evidence(require_ingest: bool, generated_at: str | None = None) -> dict:
+    """Build the only evidence shape a real-data attempt may persist."""
+    return {
+        "schema_version": 1,
+        "source_transport": "https",
+        "source_authority": None,
+        "project_ref": None,
+        "environment": None,
+        "required_real_ingest": require_ingest,
+        "shops_visible": 0,
+        "shops_with_orders": 0,
+        "fits_generated": 0,
+        "bands_generated": 0,
+        "reports_generated": 0,
+        "rows_acknowledged": 0,
+        "runs_verified": 0,
+        "success": False,
+        "failure_code": None,
+        "generated_at": generated_at or _utc_now_iso(),
+        "github_sha": os.environ.get("GITHUB_SHA"),
+    }
+
+
+def _operational_failure_code(error: Exception) -> str:
+    """Classify an external failure without copying its potentially sensitive text."""
+    message = str(error)
+    if "backend_unavailable" in message:
+        return "source_backend_unavailable"
+    if "attest" in message.lower():
+        return "source_attestation_failed"
+    if "HTTP" in message or isinstance(error, OSError):
+        return "source_transport_failed"
+    return "real_data_operation_failed"
+
+
 def _close_source(source) -> None:
     close = getattr(source, "close", None)
     if callable(close):
@@ -302,25 +337,7 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
     from priceflag_ml.ingest import IngestClient  # noqa: PLC0415
 
     generated_at = _utc_now_iso()
-    evidence = {
-        "schema_version": 1,
-        "source_transport": "https",
-        "source_authority": None,
-        "project_ref": None,
-        "environment": None,
-        "required_real_ingest": require_ingest,
-        "shops_visible": 0,
-        "shops_with_orders": 0,
-        "fits_generated": 0,
-        "bands_generated": 0,
-        "reports_generated": 0,
-        "rows_acknowledged": 0,
-        "runs_verified": 0,
-        "success": False,
-        "failure_code": None,
-        "generated_at": generated_at,
-        "github_sha": os.environ.get("GITHUB_SHA"),
-    }
+    evidence = _new_real_ingest_evidence(require_ingest, generated_at)
     expected_project_ref = os.environ.get("PRICEFLAG_ML_EXPECTED_PROJECT_REF", "")
     expected_environment = os.environ.get("PRICEFLAG_ML_EXPECTED_ENVIRONMENT", "")
     commit_sha = os.environ.get("GITHUB_SHA", "")
@@ -507,7 +524,17 @@ def main() -> int:
         ok = False
     elif identity_configured and write_configured:
         metrics = {row["model_version"]: row["metrics"] for row in rows}
-        ok &= refit_real_stores(out_dir, gates_ok=ok, gate_metrics=metrics, require_ingest=require_real)
+        try:
+            ok &= refit_real_stores(out_dir, gates_ok=ok, gate_metrics=metrics, require_ingest=require_real)
+        except (OSError, RuntimeError, ValueError) as error:
+            # A production source/API failure must remain red, but it must not
+            # erase the only redacted evidence the always-upload step can keep.
+            failure_code = _operational_failure_code(error)
+            evidence = _new_real_ingest_evidence(require_real)
+            evidence["failure_code"] = failure_code
+            _write_real_ingest_evidence(out_dir, evidence)
+            print(f"real-data refit: operational failure ({failure_code})")
+            ok = False
     elif require_real:
         print("REQUIRE_REAL_INGEST=true but real Supabase and ingest configuration is absent")
         ok = False

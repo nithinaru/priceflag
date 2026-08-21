@@ -177,8 +177,10 @@ export default async function OverviewPage({
                   label="Step"
                   value={`${Math.max(summary.stage_index + 1, 1)} of ${summary.stage_count}`}
                   note={
-                    summary.status !== "running"
+                    summary.status === "paused"
                       ? "Nothing is scheduled while this is paused."
+                      : summary.status === "completed"
+                        ? "All stages finished; monitoring has ended."
                       : summary.next_decision_day
                         ? `We look at the numbers again on ${formatDay(summary.next_decision_day)}.`
                         : "Waiting for a full day of unit sales."
@@ -215,7 +217,14 @@ export default async function OverviewPage({
             </CardBody>
 
             <CardFooter>
-              <GuardrailSummary guardrails={bundle.rollout.guardrails} />
+              {summary.status === "completed" ? (
+                <p className="max-w-prose">
+                  <span className="font-medium text-ink">Monitoring ended: </span>
+                  this rollout finished every stage. Its prices remain live, and you can still put them back manually.
+                </p>
+              ) : (
+                <GuardrailSummary guardrails={bundle.rollout.guardrails} />
+              )}
             </CardFooter>
           </Card>
         );
@@ -365,6 +374,8 @@ function healthTitle(health: string): string {
       return "Worth keeping an eye on";
     case "too_early":
       return "Nothing to compare yet";
+    case "monitoring_ended":
+      return "Monitoring is finished";
     default:
       return "Unit sales are holding up";
   }

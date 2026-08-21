@@ -54,7 +54,7 @@ jobs:
         run: npm run test:auth && npm run test:founder-lab && npm run test:shopify-journey
 
       - name: Run price-write, ML-ingest, and Shopify-webhook safety suites
-        run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:webhooks && npm run test:deployment-safety
+        run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:optimizer && npm run test:webhooks && npm run test:deployment-safety
 
       - name: Run demo integration suite
         run: npx --no-install tsx tests/integration/run.ts --demo

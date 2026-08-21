@@ -160,6 +160,32 @@ async function main(): Promise<void> {
   });
   assert.equal(mismatch.response.status, 409);
 
+  const originalListRollouts = adapter.listRollouts.bind(adapter);
+  const originalConsoleError = console.error;
+  let backendFailure: Awaited<ReturnType<typeof body>>;
+  try {
+    adapter.listRollouts = async () => {
+      throw new Error('private database detail must not cross the API boundary');
+    };
+    console.error = () => {};
+    backendFailure = await body({
+      operation: 'read',
+      surface: 'rollout_windows',
+      shop_domain: DEMO_SHOP_DOMAIN,
+    });
+  } finally {
+    console.error = originalConsoleError;
+    adapter.listRollouts = originalListRollouts;
+  }
+  assert.equal(backendFailure.response.status, 503);
+  assert.deepEqual(backendFailure.json.error, {
+    code: 'backend_unavailable',
+    message: 'The ML export backend is temporarily unavailable.',
+    retryable: true,
+    details: null,
+  });
+  assert.doesNotMatch(JSON.stringify(backendFailure.json), /private database detail/);
+
   setAdapter(null);
   console.log('ML export API: secret auth, narrow fields, pagination, shop scope and receipt read-back passed.');
 }

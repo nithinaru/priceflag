@@ -314,6 +314,39 @@ def test_partial_attestation_or_target_configuration_fails_closed(monkeypatch, t
     assert not stale_evidence.exists()
 
 
+def test_operational_failure_stays_red_and_preserves_redacted_evidence(monkeypatch, tmp_path):
+    keys = (
+        "PRICEFLAG_ML_EXPECTED_PROJECT_REF",
+        "PRICEFLAG_ML_EXPECTED_ENVIRONMENT",
+        "PRICEFLAG_APP_URL",
+        "PRICEFLAG_EXPECTED_APP_URL",
+        "PRICEFLAG_EXPECTED_VERCEL_TARGET",
+        "ML_INGEST_SECRET",
+        "VERCEL_TOKEN",
+    )
+    for key in keys:
+        monkeypatch.setenv(key, "configured")
+    monkeypatch.setenv("GITHUB_SHA", COMMIT_SHA)
+    monkeypatch.setenv("REQUIRE_REAL_INGEST", "true")
+    monkeypatch.setattr(nightly, "HERE", tmp_path)
+    monkeypatch.setattr(nightly, "run_gates", lambda: ([], True))
+    monkeypatch.setattr(
+        nightly,
+        "refit_real_stores",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("private-merchant.myshopify.com HTTP 503 (backend_unavailable)")
+        ),
+    )
+
+    assert nightly.main() == 1
+    evidence_path = tmp_path / "out" / nightly.REAL_INGEST_EVIDENCE_FILE
+    evidence = json.loads(evidence_path.read_text())
+    assert evidence["success"] is False
+    assert evidence["failure_code"] == "source_backend_unavailable"
+    assert evidence["required_real_ingest"] is True
+    assert "private-merchant.myshopify.com" not in json.dumps(evidence)
+
+
 # --- C5 counterfactual monitoring of active rollouts -------------------------
 
 

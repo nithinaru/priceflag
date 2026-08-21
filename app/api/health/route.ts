@@ -16,6 +16,30 @@ import { CONTRACT_VERSION } from '@/lib/contracts';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
+
+function healthTimeoutMs(): number {
+  const configured = Number(process.env.PRICEFLAG_HEALTH_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured >= 10 && configured <= 10_000
+    ? configured
+    : DEFAULT_HEALTH_TIMEOUT_MS;
+}
+
+async function pingWithDeadline(store: ReturnType<typeof getAdapter>): Promise<{ ok: boolean; detail?: string }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ ok: boolean; detail?: string }>((resolve) => {
+    timer = setTimeout(
+      () => resolve({ ok: false, detail: 'health probe timed out before the database answered' }),
+      healthTimeoutMs(),
+    );
+  });
+  try {
+    return await Promise.race([store.ping(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function publicAdapterDetail(ok: boolean, detail?: string): string {
   if (ok) return 'reachable';
   if (detail !== undefined && /schema|migration/i.test(detail)) return 'reachable, but database migrations are missing';
@@ -28,7 +52,7 @@ export async function GET(): Promise<NextResponse> {
   let adapter: { kind: string; ok: boolean; detail?: string };
   try {
     const store = getAdapter();
-    const ping = await store.ping();
+    const ping = await pingWithDeadline(store);
     adapter = { kind: store.kind, ok: ping.ok, detail: publicAdapterDetail(ping.ok, ping.detail) };
   } catch {
     adapter = {
@@ -56,6 +80,12 @@ export async function GET(): Promise<NextResponse> {
       },
       time: new Date().toISOString(),
     },
-    { status: adapter.ok ? 200 : 503 },
+    {
+      status: adapter.ok ? 200 : 503,
+      // A cached readiness response can keep reporting green through a failed
+      // migration (or red after recovery). Health is cheap and must describe
+      // this process now, not an intermediary's earlier snapshot.
+      headers: { 'Cache-Control': 'no-store' },
+    },
   );
 }
