@@ -86,6 +86,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       change: proposal.change,
       stages,
       baselineUnitsPerDay: baselineUnits,
+      currency: shop.currency,
     });
 
     const input: RolloutCreate & { id: string } = {

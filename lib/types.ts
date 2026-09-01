@@ -113,6 +113,13 @@ export interface Product {
   has_selling_plan: boolean;
   inventory_quantity: number | null;
   available_for_sale: boolean;
+  /**
+   * Shopify's own last-modified time, used to discard out-of-order
+   * products/update deliveries. Optional and nullable: rows synced before this
+   * field existed genuinely do not know it, and an unknown must not be treated
+   * as "older than everything".
+   */
+  shopify_updated_at?: string | null;
   first_synced_at: string;
   last_synced_at: string;
   deleted_at: string | null;

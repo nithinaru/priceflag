@@ -152,6 +152,28 @@ export function applyRounding(cents: Cents, mode: Rounding): Cents {
   return best;
 }
 
+/** ISO-4217 currencies Shopify stores with no subunit — prices are whole major units only. */
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'PYG', 'RWF', 'UGX', 'UYI', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+]);
+
+/** Smallest representable price step in cents for `currency`. 100 for zero-decimal currencies. */
+export function currencyQuantumCents(currency?: string): Cents {
+  return currency !== undefined && ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase()) ? 100 : 1;
+}
+
+/**
+ * Snap to the nearest price Shopify can represent in `currency`. A fractional-yen
+ * price would be silently rounded by Shopify and then fail our own write
+ * verification, so unrepresentable targets must never leave the planner.
+ */
+export function snapToCurrency(cents: Cents, currency?: string): Cents {
+  assertCents(cents, 'cents');
+  const quantum = currencyQuantumCents(currency);
+  if (quantum === 1) return cents;
+  return Math.round(cents / quantum) * quantum;
+}
+
 /** Percentage change from `from` to `to`, in percentage points. `null` when undefined. */
 export function pctChange(from: number, to: number): number | null {
   if (from === 0) return null;

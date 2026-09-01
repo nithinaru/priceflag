@@ -279,8 +279,12 @@ function orderRows(shop: Shop, payload: Record<string, unknown> | null): OrderDa
     if (variantId === null || variantId === undefined) continue;
     const variantGid = `gid://shopify/ProductVariant/${String(variantId)}`;
 
+    // One odd line must not cost us the whole order. Rejecting the delivery
+    // makes Shopify retry until it gives up, and then every REAL sale on the
+    // order is missing from the actuals a guardrail judges — an invisible
+    // undercount that reads as a demand drop. Skip the unusable line instead.
     const quantity = Number(item.quantity ?? 0);
-    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error('order line quantity must be a positive integer');
+    if (!Number.isInteger(quantity) || quantity <= 0) continue;
     const price: Cents = parseMoneyToCents(String(item.price ?? '0'));
     const discount: Cents = Array.isArray(item.discount_allocations)
       ? (item.discount_allocations as Record<string, unknown>[]).reduce(
@@ -290,6 +294,9 @@ function orderRows(shop: Shop, payload: Record<string, unknown> | null): OrderDa
       : 0;
 
     const gross = price * quantity;
+    // A discount larger than the line it applies to is corrupt, not merely odd.
+    // Reject the delivery so it stays retryable rather than inventing a revenue
+    // number the merchant's own reports would contradict.
     if (discount > gross) throw new Error('order line discount exceeds its gross value');
     const previous = grouped.get(variantGid) ?? {
       units: 0,
@@ -346,10 +353,9 @@ function refundRows(shop: Shop, payload: Record<string, unknown> | null): OrderD
     const lineItem = refundLine.line_item as Record<string, unknown> | null | undefined;
     const variantId = lineItem?.variant_id;
     if (variantId === null || variantId === undefined) continue;
+    // Same reasoning as the order path: skip the unusable line, keep the rest.
     const quantity = Number(refundLine.quantity ?? 0);
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      throw new Error('refund line quantity must be a positive integer');
-    }
+    if (!Number.isInteger(quantity) || quantity <= 0) continue;
     const cents = refundLineCents(refundLine);
     const variantGid = `gid://shopify/ProductVariant/${String(variantId)}`;
     const current = grouped.get(variantGid) ?? {
@@ -420,6 +426,16 @@ async function detectExternalPriceChange(
   if (variants.length === 0) return;
 
   const productGid = `gid://shopify/Product/${String(payload.id ?? '')}`;
+  // Shopify does not guarantee delivery order. A replayed older payload would
+  // otherwise write a stale price back over a newer one, and every later
+  // forecast and frozen baseline would be built from a price the store no
+  // longer charges. An absent or unparseable timestamp is treated as unknown
+  // and still accepted, exactly as before.
+  const payloadUpdatedAt =
+    typeof payload.updated_at === 'string' ? Date.parse(payload.updated_at) : Number.NaN;
+  const shopifyUpdatedAt = Number.isFinite(payloadUpdatedAt)
+    ? new Date(payloadUpdatedAt).toISOString()
+    : null;
 
   for (const variant of variants) {
     const variantGid = `gid://shopify/ProductVariant/${String(variant.id ?? '')}`;
@@ -428,6 +444,19 @@ async function detectExternalPriceChange(
     const stored = await adapter.getProductsByVariantGids(shop.id, [variantGid]);
     const known = stored[0];
     if (known === undefined) continue;
+
+    // Strictly older than what we already recorded: this delivery lost the race
+    // and has nothing newer to tell us. Equal timestamps still pass, since
+    // Shopify's second-resolution stamps can tie on legitimate rapid edits.
+    const knownUpdatedAt =
+      typeof known.shopify_updated_at === 'string' ? Date.parse(known.shopify_updated_at) : Number.NaN;
+    if (
+      Number.isFinite(payloadUpdatedAt) &&
+      Number.isFinite(knownUpdatedAt) &&
+      payloadUpdatedAt < knownUpdatedAt
+    ) {
+      continue;
+    }
     // Shopify normally includes compare_at_price in products/update. Preserve
     // the stored value if a test/legacy payload omits the field entirely, but
     // treat an explicit null as clearing it.
@@ -466,7 +495,13 @@ async function detectExternalPriceChange(
 
     if (ours) {
       await adapter.upsertProducts(shop.id, [
-        { ...known, price_cents: livePrice, compare_at_cents: liveCompareAt } as never,
+        {
+          ...known,
+          price_cents: livePrice,
+          compare_at_cents: liveCompareAt,
+          // A payload without the field must not erase a newer stored stamp.
+          shopify_updated_at: shopifyUpdatedAt ?? known.shopify_updated_at ?? null,
+        } as never,
       ]);
       continue;
     }
@@ -523,7 +558,12 @@ async function detectExternalPriceChange(
     }
 
     await adapter.upsertProducts(shop.id, [
-      { ...known, price_cents: livePrice, compare_at_cents: liveCompareAt } as never,
+      {
+        ...known,
+        price_cents: livePrice,
+        compare_at_cents: liveCompareAt,
+        shopify_updated_at: shopifyUpdatedAt,
+      } as never,
     ]);
     await adapter.appendJournalEntries(shop.id, [
       buildExternalChangeEntry({
