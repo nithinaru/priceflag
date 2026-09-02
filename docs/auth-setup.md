@@ -8,10 +8,13 @@ There are **two** ways in, and they are independent by design:
 1. **From the Shopify admin.** The app is embedded; Shopify signs a session
    token, `middleware.ts` verifies it, and no Priceflag account is involved at
    any point. This is the path an installed merchant uses day to day.
-2. **From signin.priceflag.org.** A magic link proves control of an email
+2. **From `$APP_URL/signin` (in-repo).** A magic link proves control of an email
    address and mints a `pf_user` cookie. This is the path for somebody who has
    not installed yet, or who is opening the dashboard directly rather than
-   through Shopify.
+   through Shopify. Production `APP_URL` is `https://dashboard.priceflag.org`,
+   so the in-app screen is `https://dashboard.priceflag.org/signin`.
+   `signin.priceflag.org` may still exist on the marketing site; it is no longer
+   the only door.
 
 Neither is authorisation to write a price. That still comes from a Shopify
 session token, checked in the route handler, every time.
@@ -36,8 +39,9 @@ the CORS response carries `Access-Control-Allow-Credentials`.
 
 | Where | What |
 | --- | --- |
-| `signin.priceflag.org` | `signin.html` in the **website** repo. Static, no keys. |
-| `dashboard.priceflag.org` | This repo, on Vercel. |
+| `$APP_URL/signin` | In-app sign-in screen in this repo. Production: `https://dashboard.priceflag.org/signin`. |
+| `signin.priceflag.org` | Optional marketing-site door (`signin.html` in the **website** repo). Static, no keys. Not the only door. |
+| `dashboard.priceflag.org` | This repo, on Vercel. Public product origin. |
 | `POST /api/auth/magic-link` | Emails the link. Ungated, CORS-restricted to the sign-in origin. |
 | `GET /auth/callback` | Verifies the link, mints `pf_user`, redirects into the app. |
 | `POST /auth/sign-out` | Clears `pf_user`. |
@@ -93,30 +97,34 @@ better: it needs no JavaScript and puts no token in the browser.
 
 ### 4. Vercel — domains and env
 
-Add both domains, then set the env vars below on the app project.
+Add the app domain, then set the env vars below on the app project.
 
 | Project | Domain |
 | --- | --- |
-| website (`priceflagv1`) | `signin.priceflag.org` |
-| app (this repo) | `dashboard.priceflag.org` |
+| website (`priceflagv1`) | marketing hosts, including `signin.priceflag.org` if still used |
+| app (this repo) | `dashboard.priceflag.org` (also `product.priceflag.org` if aliased) |
 
 ```
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_…
 AUTH_SESSION_SECRET=…                       # 32 random bytes, base64url
 APP_URL=https://dashboard.priceflag.org
+SIGNIN_URL=https://dashboard.priceflag.org/signin
 ```
 
 `APP_URL` is not optional here. It is the origin the magic link points at, and
 if it is unset the code falls back to the Vercel-generated hostname — so the
 link in the email would go to `priceflag-app.vercel.app` instead of the
-dashboard domain.
+dashboard domain. Production `APP_URL` must be `https://dashboard.priceflag.org`
+or `https://product.priceflag.org`, never a `vercel.app` hostname.
 
 Leave `AUTH_COOKIE_DOMAIN` unset. That makes the session cookie host-only, which
 is all the app needs; widening it to `.priceflag.org` would send the session to
 every subdomain including the static marketing site.
 
-`SIGNIN_URL` and `SIGNIN_ORIGINS` both default to `https://signin.priceflag.org`
-and only need setting if that ever changes.
+`SIGNIN_URL` should be `$APP_URL/signin` so magic-link failures return to the
+in-app sign-in page. Deploy scripts push that default when the env file omits
+it. Set `SIGNIN_ORIGINS` only if the sign-in screen is served from more than one
+host (for example both the in-app page and `signin.priceflag.org`).
 
 Generate the session secret with:
 
@@ -131,20 +139,19 @@ In the Partner dashboard, the app URL and the allowed redirect URL both move to
 
 ---
 
-## The preview gate still applies
+## Intended production access
 
-`APP_ACCESS_SECRET` gates the whole app and is **not** removed by any of this.
-The deliberate consequence, on the current settings:
+The intended production setup is:
 
-- Anyone can reach signin.priceflag.org and request a link. The page is public
-  so the marketing site's Sign In button never looks broken.
-- Clicking that link lands on `/auth/callback`, which is behind the gate. A
-  visitor without an invite gets a 401 there.
-- A pilot merchant who has used an `?access=…` link once holds the `pf_access`
-  cookie, so their link works normally.
+- A valid magic-link callback is reachable. Completing a genuine link should not
+  401 just because the visitor never used `?access=…`.
+- A valid `pf_user` session is enough to enter the app.
+- Writes still require a Shopify session token in the route handler. Sign-in
+  is not authorisation to change a price.
 
-To open the app to the public later, unset `APP_ACCESS_SECRET`. Sign-in keeps
-working exactly as it does now; the gate is the only thing that changes.
+`APP_ACCESS_SECRET` may still gate preview deployments (Vercel SSO plus the
+invite cookie). Do not treat a 401 on `/auth/callback` as expected production
+behaviour for a genuine magic link.
 
 ---
 
@@ -153,7 +160,7 @@ working exactly as it does now; the gate is the only thing that changes.
 ```bash
 # 1. The endpoint is reachable and CORS is right.
 curl -i -X OPTIONS https://dashboard.priceflag.org/api/auth/magic-link \
-  -H 'Origin: https://signin.priceflag.org' \
+  -H 'Origin: https://dashboard.priceflag.org' \
   -H 'Access-Control-Request-Method: POST'
 # Expect: 204, with access-control-allow-origin echoing the sign-in origin.
 
@@ -164,14 +171,14 @@ curl -i -X OPTIONS https://dashboard.priceflag.org/api/auth/magic-link \
 
 # 3. A link actually sends.
 curl -i -X POST https://dashboard.priceflag.org/api/auth/magic-link \
-  -H 'Origin: https://signin.priceflag.org' \
+  -H 'Origin: https://dashboard.priceflag.org' \
   -H 'content-type: application/json' \
   -d '{"email":"you@example.com"}'
 # Expect: 200 {"sent":true}, and an email within a few seconds.
 
-# 4. The app redirects a signed-out browser to the sign-in screen.
-curl -i https://dashboard.priceflag.org/ -H 'Cookie: pf_access=<secret>'
-# Expect: 303 to signin.priceflag.org.
+# 4. The app sends a signed-out browser to the in-app sign-in screen.
+curl -i https://dashboard.priceflag.org/
+# Expect: a redirect to https://dashboard.priceflag.org/signin (or the configured SIGNIN_URL).
 ```
 
 Then sign in for real and confirm you land on the dashboard, not back at the

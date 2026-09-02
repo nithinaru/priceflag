@@ -29,6 +29,10 @@ same answer.
 | **Production app URL** | https://dashboard.priceflag.org |
 | **Vercel deployment** | https://priceflag-app.vercel.app (project `priceflag-app`) |
 
+`APP_URL` in production env must be the public dashboard or product host
+(`https://dashboard.priceflag.org` or `https://product.priceflag.org`), never
+the `vercel.app` project hostname. OAuth and magic links bind to that origin.
+
 ## Product invariants
 
 These are load-bearing product promises, not style preferences. Anything that
@@ -264,10 +268,13 @@ curl -s "$APP_URL/api/journal?rollout_id=<id>" \
 
 In order of likelihood:
 
-1. **The scheduler is not firing.** The evaluator is driven by **GitHub Actions**,
-   not Vercel Cron — Deployment Protection 302s an unauthenticated request and
+1. **The scheduler is not firing.** The evaluator is driven by **GitHub Actions**
+   (`evaluator.yml`: daily `15 13 * * *` UTC, plus `workflow_dispatch`), not
+   Vercel Cron — Deployment Protection 302s an unauthenticated request and
    Vercel Cron does not follow redirects, so it would fail silently. Check
-   GitHub → Actions → `evaluator`.
+   GitHub → Actions → `evaluator`. Beta still has auto-rollback OFF in the app;
+   the schedule only evaluates (advance / pause / alert). Price writes on stage
+   advance are intentional once a merchant has confirmed a rollout.
 
    ```bash
    gh run list --workflow=evaluator.yml --repo nithinaru/priceflag --limit 5
@@ -553,5 +560,5 @@ separate merchant-session API and browser end-to-end gate.
 | Vercel project | `prj_RU8NlBDoR7t89BNqn5BagOpmpnmm` (team `team_AqaBD6YaOf9DIJ7NzbytTZTW`). **`prj_gzNZMOkkZTOSIwkQ6o6cwPIOW5bh` (`priceflagv1`) / `priceflag.vercel.app` is the company homepage — not this app, do not deploy to it.** |
 | Database | Supabase `vnyqevrdvfjsfhdnbfsz` |
 | Admin API version | `2026-07` (Shopify versions quarterly; supported 12 months) |
-| Evaluator | `/api/cron/evaluate`; `evaluator.yml` is disabled for beta. If enabled after a later safety approval, it needs `Authorization: Bearer $CRON_SECRET` **and** `x-vercel-protection-bypass`. |
+| Evaluator | `/api/cron/evaluate`. GitHub Actions `evaluator.yml` runs daily at 13:15 UTC plus `workflow_dispatch`. Not Vercel Cron. Needs `Authorization: Bearer $CRON_SECRET`; previews also need `x-vercel-protection-bypass`. Auto-rollback stays OFF in the beta app. |
 | ML access | `POST /api/ml/export` — aggregate allowlist only; legacy DB role is `NOLOGIN` |
