@@ -31,6 +31,7 @@ import {
   assertStorefrontPrice,
   formatPct,
   roundCents,
+  snapToCurrency,
   type Cents,
   type Rounding,
 } from '../money';
@@ -121,7 +122,7 @@ export function resolveCompareAt(
   return { target: compareAtCents, action: 'keep' };
 }
 
-export function computeTargetPrice(currentPriceCents: Cents, change: PriceChangeSpec): Cents {
+export function computeTargetPrice(currentPriceCents: Cents, change: PriceChangeSpec, currency?: string): Cents {
   const rounding: Rounding = change.rounding ?? 'none';
 
   if (change.type === 'percent') {
@@ -129,7 +130,7 @@ export function computeTargetPrice(currentPriceCents: Cents, change: PriceChange
       throw new ForecastError('invalid_change', 'a percent change needs a finite `percent`');
     }
     if (change.percent === 0) throw new ForecastError('invalid_change', 'a 0% change is not a change');
-    const target = applyRounding(applyPercent(currentPriceCents, change.percent), rounding);
+    const target = snapToCurrency(applyRounding(applyPercent(currentPriceCents, change.percent), rounding), currency);
     try {
       return assertStorefrontPrice(target, 'target price');
     } catch {
@@ -141,7 +142,7 @@ export function computeTargetPrice(currentPriceCents: Cents, change: PriceChange
     throw new ForecastError('invalid_change', 'an absolute change needs an integer `absolute_cents`');
   }
   if (change.absolute_cents === 0) throw new ForecastError('invalid_change', 'a 0 cent change is not a change');
-  const target = applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding);
+  const target = snapToCurrency(applyRounding(applyAbsolute(currentPriceCents, change.absolute_cents), rounding), currency);
   try {
     return assertStorefrontPrice(target, 'target price');
   } catch {
@@ -552,7 +553,7 @@ export function buildForecast(input: ForecastInput): ForecastResult {
       continue;
     }
 
-    const targetPriceCents = computeTargetPrice(product.price_cents, input.change);
+    const targetPriceCents = computeTargetPrice(product.price_cents, input.change, input.shop.currency);
     const compareAt = resolveCompareAt(product.price_cents, product.compare_at_cents, targetPriceCents);
     const fit = input.fits?.get(product.variant_gid) ?? null;
     const fitConfidence = effectiveFitConfidence(fit, now);

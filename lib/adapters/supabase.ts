@@ -912,6 +912,7 @@ function mapProduct(row: Row): Product {
     has_selling_plan: Boolean(row.has_selling_plan),
     inventory_quantity: numOrNull(row.inventory_quantity),
     available_for_sale: row.available_for_sale === undefined ? true : Boolean(row.available_for_sale),
+    shopify_updated_at: (row.shopify_updated_at as string | null) ?? null,
     first_synced_at: String(row.first_synced_at ?? row.created_at),
     last_synced_at: String(row.last_synced_at ?? row.created_at),
     deleted_at: (row.deleted_at as string | null) ?? null,

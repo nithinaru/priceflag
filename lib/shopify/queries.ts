@@ -28,6 +28,7 @@ export const PRODUCTS_PAGE = /* GraphQL */ `
         productType
         tags
         isGiftCard
+        updatedAt
         requiresSellingPlan
         sellingPlanGroupsCount {
           count

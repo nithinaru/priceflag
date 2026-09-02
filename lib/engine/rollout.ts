@@ -131,7 +131,14 @@ export function assignCohorts(
   let assigned = 0;
   stages.forEach((stage, stageIndex) => {
     const isLast = stageIndex === stages.length - 1;
-    const target = isLast ? total : Math.min(total, Math.max(assigned, Math.round(stage.fraction * total)));
+    // A small fraction over a small selection rounds to zero. An empty first
+    // cohort would start a rollout that puts no price live, so the evaluator
+    // would report "no prices are live yet" forever: never advancing, never
+    // alerting. Every non-final stage therefore carries at least one variant,
+    // while still leaving one for each stage that follows.
+    const rounded = Math.round(stage.fraction * total);
+    const floor = Math.min(total - (stages.length - 1 - stageIndex), assigned + 1);
+    const target = isLast ? total : Math.min(total, Math.max(assigned, rounded, floor));
     for (let i = assigned; i < target; i += 1) {
       cohorts.set(ordered[i] as string, stageIndex);
     }
@@ -171,6 +178,8 @@ export interface PlanRolloutInput {
   change: PriceChangeSpec;
   stages: readonly StageSpec[];
   baselineUnitsPerDay?: ReadonlyMap<string, number>;
+  /** Shop currency, so a zero-decimal store freezes a target Shopify can represent. */
+  currency?: string;
 }
 
 /**
@@ -197,7 +206,7 @@ export function planRolloutVariants(input: PlanRolloutInput): RolloutVariantCrea
   );
 
   const rows: RolloutVariantCreate[] = eligible.map((product) => {
-    const targetPriceCents = computeTargetPrice(product.price_cents, input.change);
+    const targetPriceCents = computeTargetPrice(product.price_cents, input.change, input.currency);
     const compareAt = resolveCompareAt(product.price_cents, product.compare_at_cents, targetPriceCents);
 
     return {

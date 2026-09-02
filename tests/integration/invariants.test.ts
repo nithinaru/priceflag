@@ -106,6 +106,7 @@ async function makeScenario(
     products,
     change,
     stages,
+    currency: shop.currency,
   });
   await adapter.insertRolloutVariants(planned);
 

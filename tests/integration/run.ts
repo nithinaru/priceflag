@@ -23,6 +23,7 @@ import { runGuardrailSuite } from './guardrails.test';
 import { runZeroPriceSuite } from './zero-price.test';
 import { runFalseRollbackSuite } from './false-rollback.test';
 import { runRollbackHonestySuite } from './rollback-honesty.test';
+import { runRiskEdgePureSuite, runRiskEdgeSuite, runRiskEdgeWebhookSuite } from './risk-edges.test';
 
 const demoOnly = process.argv.includes('--demo');
 const requireSupabase = process.env.REQUIRE_SUPABASE_TESTS === 'true';
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   await runPureInvariants();
   await runGuardrailSuite();
   await runFalseRollbackSuite();
+  await runRiskEdgePureSuite();
 
   // --- DemoAdapter ---------------------------------------------------------
   const demo = new DemoAdapter({ persist: false, autoSeed: false });
@@ -48,6 +50,8 @@ async function main(): Promise<void> {
   await runExternalChangeSuite(demo, demoShop, 'DemoAdapter');
   await runZeroPriceSuite(demo, demoShop, 'DemoAdapter');
   await runRollbackHonestySuite(demo, demoShop, 'DemoAdapter');
+  await runRiskEdgeSuite(demo, demoShop, 'DemoAdapter');
+  await runRiskEdgeWebhookSuite();
 
   // --- SupabaseAdapter -----------------------------------------------------
   if (demoOnly) {

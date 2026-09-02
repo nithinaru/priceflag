@@ -43,6 +43,8 @@ interface GqlProduct {
   productType: string | null;
   tags: string[];
   isGiftCard: boolean;
+  /** Shopify's own last-modified time, the version marker for out-of-order webhooks. */
+  updatedAt?: string | null;
   requiresSellingPlan: boolean;
   sellingPlanGroupsCount: { count: number } | null;
   featuredMedia: { preview: { image: { url: string } | null } | null } | null;
@@ -108,6 +110,7 @@ function variantToUpsert(product: GqlProduct, variant: GqlVariant, currency: str
       (product.sellingPlanGroupsCount?.count ?? 0) > 0 || (variant.sellingPlanGroupsCount?.count ?? 0) > 0,
     inventory_quantity: variant.inventoryQuantity,
     available_for_sale: variant.availableForSale,
+    shopify_updated_at: product.updatedAt ?? null,
   };
 }
 

@@ -926,6 +926,11 @@ export async function evaluateRollout(
           data: { stage: nextStage, applied: applied.applied, failed: applied.failed },
         });
         await notifier({ kind: 'stage_advanced', shop, rollout: advanced, detail: nextStage + 1 });
+        // Stamp before returning. Without this the day is never marked evaluated,
+        // so the next tick re-judges it against the stage that just went live and
+        // overwrites this day's reading — corrupting the guardrail history the
+        // rollback decision is built from.
+        await adapter.updateRollout(rollout.id, { last_evaluated_at: nowIso(now), last_evaluated_day: day });
         return { ...base, decision: 'advance', reason: decision.reason, reading, apply: applied };
       }
 
