@@ -24,21 +24,22 @@
  *
  * ## Two gates, in order
  *
- * A request that is not Shopify-signed now has to clear both:
+ * Shopify-signed traffic is admitted first. A merchant in the admin iframe
+ * presents neither cookie, and a signed session token is a stronger claim than
+ * either gate below.
  *
- *   1. **The preview gate** (this file's original job) — the shared
- *      `APP_ACCESS_SECRET`. Answers "is this deployment open to you at all".
- *   2. **An account session** — the `pf_user` cookie minted by `/auth/callback`
- *      after a magic link. Answers "who are you".
+ * A request that is not Shopify-signed is admitted when it has a valid `pf_user`
+ * cookie — the account session minted by `/auth/callback` after a magic link.
+ * Completing that callback **is** entry: it identifies a person and is enough
+ * to view the app. Requesting a link (`POST /api/auth/magic-link`) is not entry.
+ * Neither claim authorises a price write — that still comes from a Shopify
+ * session token, every time, in the route handler.
  *
- * The first is shared by every pilot merchant, so it can never identify anyone;
- * the second identifies a person but says nothing about which store they may
- * touch. Neither is authorisation for a price write — that still comes from a
- * Shopify session token, every time, in the route handler.
- *
- * A merchant arriving from the Shopify admin skips both: `isShopifyAuthenticated`
- * returns first, because a signed session token is a stronger claim than either
- * and the embedded iframe can present neither cookie.
+ * Anonymous browsers (no Shopify signature, no `pf_user`) still have to clear
+ * the preview gate: the shared `APP_ACCESS_SECRET`. That answers "is this
+ * deployment open to a stranger at all". It is shared by every pilot merchant,
+ * so it can never identify anyone. It remains the invite-only boundary for
+ * merchant pages and APIs that a signed-out browser would otherwise reach.
  *
  * ## The exemptions, and why each one is safe
  *
@@ -55,6 +56,11 @@
  *   - `/api/auth` and `/api/auth/callback` — the OAuth round-trip. Shopify's
  *     browser redirects arrive with no cookie and no way to get one; the
  *     callback authenticates itself with Shopify's query HMAC + the state nonce.
+ *   - `/signin` — the in-app sign-in screen. Gating the login UI with the
+ *     shared secret is what produced the "Priceflag demo" password dialog.
+ *   - `/auth/callback` — completing a magic link. Authenticates itself with
+ *     Supabase OTP plus the bind cookie; success mints `pf_user`. `/auth/*`
+ *     is also account-exempt so sign-out and the callback can run unsigned.
  *
  *   - `/api/ml/ingest` and `/api/ml/export` — `ML_INGEST_SECRET` bearer,
  *     constant-time. The nightly worker has no browser cookie; it never receives
@@ -108,11 +114,11 @@ const EXEMPT_EXACT = new Set([
   '/api/ml/export',
   '/api/auth',
   '/api/auth/callback',
-  // The sign-in screen is public and lives on another host, so the endpoint that
-  // emails a link has to be reachable without a gate cookie it could never have.
-  // Requesting a link is not entry: the link lands on `/auth/callback`, which is
-  // gated like everything else.
+  // Requesting a link is not entry. Completing `/auth/callback` mints `pf_user`
+  // and that *is* entry for viewing the app (not for writing prices).
   '/api/auth/magic-link',
+  '/signin',
+  '/auth/callback',
 ]);
 const EXEMPT_PREFIX = ['/api/webhooks/'];
 
@@ -206,8 +212,8 @@ const SHOP_COOKIE = 'pf_shop';
 /** Cookie minted by `/auth/callback` after a magic link. See `lib/auth/account.ts`. */
 const USER_COOKIE = 'pf_user';
 
-/** Where an unauthenticated browser is sent to sign in. */
-const SIGNIN_URL = process.env.SIGNIN_URL ?? 'https://signin.priceflag.org';
+/** Optional override so the static marketing sign-in page still works if set. */
+const SIGNIN_URL = process.env.SIGNIN_URL;
 
 /** Clock skew tolerance for session tokens, matching `lib/shopify/session.ts`. */
 const JWT_LEEWAY_SECONDS = 5;
@@ -419,13 +425,32 @@ function unauthorized(): NextResponse {
     }),
     { status: 401, headers: { 'content-type': 'application/json' } },
   );
-  // Prompts a browser for credentials instead of showing a bare JSON error.
-  // A reviewer reads this string in the browser's credential dialog, so it says
-  // what the box is for rather than just the product name.
-  response.headers.set('www-authenticate', 'Basic realm="Priceflag demo", charset="UTF-8"');
+  // Never send this on an HTML navigation — the browser shows a password dialog
+  // (realm "Priceflag demo") and that is how magic-link landings used to fail.
+  // Reviewer Basic login still works when they send the header; we only *prompt*
+  // for it on API calls when demo credentials are actually configured.
+  if (process.env.DEMO_USERNAME) {
+    response.headers.set('www-authenticate', 'Basic realm="Priceflag demo", charset="UTF-8"');
+  }
   // A 401 must never be cached and served to somebody who *is* authorised.
   response.headers.set('cache-control', 'no-store');
   return response;
+}
+
+/** In-app `/signin`, or `SIGNIN_URL` when the marketing host is still in use. */
+function signInScreenTarget(request: NextRequest): URL {
+  if (SIGNIN_URL !== undefined && SIGNIN_URL !== '') {
+    try {
+      return new URL(SIGNIN_URL);
+    } catch {
+      // Fall through to the in-app screen rather than 500 a signed-out visitor.
+    }
+  }
+  const target = request.nextUrl.clone();
+  target.pathname = '/signin';
+  target.search = '';
+  target.hash = '';
+  return target;
 }
 
 /**
@@ -441,7 +466,7 @@ function signInRequired(request: NextRequest): NextResponse {
       JSON.stringify({
         error: {
           code: 'sign_in_required',
-          message: 'Sign in at signin.priceflag.org, or open Priceflag from your Shopify admin.',
+          message: 'Sign in to continue, or open Priceflag from your Shopify admin.',
           retryable: false,
           details: null,
         },
@@ -450,7 +475,7 @@ function signInRequired(request: NextRequest): NextResponse {
     );
   }
 
-  const target = new URL(SIGNIN_URL);
+  const target = signInScreenTarget(request);
   // The screen distinguishes "arrived cold" from "was bounced here"; this code
   // is what lets it say why the app sent the visitor back.
   target.searchParams.set('error', 'sign_in_required');
@@ -463,6 +488,15 @@ function signInRequired(request: NextRequest): NextResponse {
   return response;
 }
 
+/**
+ * Preview-gate failure. JSON 401 for APIs; HTML navigations go to `/signin`
+ * instead of `WWW-Authenticate: Basic`, which is the bogus password dialog.
+ */
+function previewDenied(request: NextRequest): NextResponse {
+  if (request.nextUrl.pathname.startsWith('/api/')) return unauthorized();
+  return signInRequired(request);
+}
+
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname, searchParams } = request.nextUrl;
 
@@ -473,6 +507,11 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   // is minted here — see the header comment. An embedded merchant is already
   // identified by Shopify and never needs a Priceflag account session.
   if (await isShopifyAuthenticated(request)) return NextResponse.next();
+
+  // Completing a magic link mints pf_user. That is enough to view the app —
+  // same admission as Shopify-signed traffic. Writes still need App Bridge
+  // tokens in the route handler.
+  if (await hasAccountSession(request)) return NextResponse.next();
 
   /**
    * Past the preview gate. The second question is who this is: the gate secret
@@ -498,10 +537,11 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     // recoverable; a misconfigured deploy silently serving a price-writing tool to
     // the internet is what got us here.
     const isProduction = process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
-    if (isProduction) return unauthorized();
+    if (isProduction) return previewDenied(request);
     // Locally, an unset secret means "developer has not configured it", and
-    // blocking would just make people disable the middleware. The account check
-    // still applies, so local development exercises the real sign-in path.
+    // blocking would just make people disable the middleware. Shopify and
+    // account checks already ran; admit() still requires pf_user on merchant
+    // pages so local development exercises the real sign-in path.
     return admit();
   }
 
@@ -553,7 +593,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return response;
   }
 
-  return unauthorized();
+  return previewDenied(request);
 }
 
 export const config = {

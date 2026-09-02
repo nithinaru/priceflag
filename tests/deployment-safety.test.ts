@@ -59,7 +59,11 @@ assert.match(setup, /SHOPIFY_ADMIN_ACCESS_TOKEN SHOPIFY_SHOP_DOMAIN/);
 assert.match(setup, /ENV_FILE="\.env\.preview\.local"/);
 assert.doesNotMatch(setup, /for target in preview production/);
 assert.match(setup, /PRICEFLAG_SHOP_ALLOWLIST/);
-passed += 6;
+assert.match(setup, /AUTH_SESSION_SECRET/);
+assert.match(setup, /SUPABASE_PUBLISHABLE_KEY/);
+assert.match(setup, /https origin/);
+assert.doesNotMatch(setup, /until B5/);
+passed += 10;
 
 const stage = readFileSync(resolve(process.cwd(), 'scripts/vercel-stage.sh'), 'utf8');
 assert.match(stage, /deploy --prod --skip-domain --yes/);
@@ -67,7 +71,28 @@ assert.match(stage, /STAGE_PRODUCTION_ARTIFACT:/);
 assert.doesNotMatch(stage, /"\$\{VC\[@\]\}" promote/);
 assert.match(stage, /ENV_FILE="\.env\.production\.local"/);
 assert.match(stage, /PRICEFLAG_SHOP_ALLOWLIST/);
+assert.match(stage, /dashboard\.priceflag\.org/);
+assert.match(stage, /product\.priceflag\.org/);
+assert.match(stage, /AUTH_SESSION_SECRET/);
+assert.match(stage, /SUPABASE_PUBLISHABLE_KEY/);
+assert.doesNotMatch(stage, /APP_URL" != "https:\/\/priceflag-app\.vercel\.app"/);
+assert.doesNotMatch(stage, /production APP_URL must be https:\/\/priceflag-app\.vercel\.app/);
+passed += 11;
+
+const evaluatorWorkflow = readFileSync(
+  resolve(process.cwd(), '.github/workflows/evaluator.yml'),
+  'utf8',
+);
+assert.match(evaluatorWorkflow, /workflow_dispatch:/);
+assert.match(evaluatorWorkflow, /schedule:/);
+assert.match(evaluatorWorkflow, /cron: '15 13 \* \* \*'/);
+assert.match(evaluatorWorkflow, /https:\/\/dashboard\.priceflag\.org/);
+assert.doesNotMatch(evaluatorWorkflow, /https:\/\/priceflag-app\.vercel\.app/);
 passed += 5;
+
+const vercelJson = readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8');
+assert.doesNotMatch(vercelJson, /"crons"/);
+passed += 1;
 
 const runbook = readFileSync(resolve(process.cwd(), 'PILOT_RUNBOOK.md'), 'utf8');
 assert.doesNotMatch(runbook, /vercel deploy --prod --yes/);

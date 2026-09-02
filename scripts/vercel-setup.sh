@@ -61,6 +61,7 @@ VC=(npx --yes vercel@latest "--token=$VERCEL_TOKEN" "--scope=$TEAM_SCOPE")
 REQUIRED_VARS=(
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_PUBLISHABLE_KEY
   SHOPIFY_API_KEY
   SHOPIFY_API_SECRET
   SHOPIFY_APP_HANDLE
@@ -70,11 +71,17 @@ REQUIRED_VARS=(
   ENCRYPTION_KEY
   CRON_SECRET
   APP_ACCESS_SECRET
+  AUTH_SESSION_SECRET
   ML_INGEST_SECRET
   RESEND_API_KEY
   RESEND_FROM
   PRICEFLAG_SHOP_ALLOWLIST
 )
+
+# Accept the pre-rename Supabase key name if the publishable key is unset.
+if [[ -z "${SUPABASE_PUBLISHABLE_KEY:-}" && -n "${SUPABASE_ANON_KEY:-}" ]]; then
+  SUPABASE_PUBLISHABLE_KEY="$SUPABASE_ANON_KEY"
+fi
 
 for name in "${REQUIRED_VARS[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -82,6 +89,16 @@ for name in "${REQUIRED_VARS[@]}"; do
     exit 1
   fi
 done
+
+# Preview hostnames vary; require an https origin, do not pin a production domain.
+if [[ ! "$APP_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+  echo "error: APP_URL must be an https origin with no path or trailing slash." >&2
+  exit 1
+fi
+
+if [[ -z "${SIGNIN_URL:-}" ]]; then
+  SIGNIN_URL="${APP_URL}/signin"
+fi
 
 if [[ -n "${SHOPIFY_ADMIN_ACCESS_TOKEN:-}" || -n "${SHOPIFY_SHOP_DOMAIN:-}" ]]; then
   echo "error: preview verification must use the Partner OAuth test app, not static Shopify credentials." >&2
@@ -112,6 +129,7 @@ for target in preview; do
     push_var "$name" "$target" "$value"
   done
   push_var PRICEFLAG_MODE "$target" "real"
+  push_var SIGNIN_URL "$target" "$SIGNIN_URL"
 
   # Static Admin API credentials are a local-development path. Keeping stale
   # copies in Vercel creates ambiguity even though runtime code rejects them.
@@ -147,4 +165,5 @@ echo "This script did not alias or promote the preview. After it passes, use"
 echo "scripts/vercel-stage.sh to create a production-environment artifact without"
 echo "assigning the production domain. Verify that exact staged URL before promotion."
 echo
-echo "Reminder: the evaluator cron is intentionally NOT in vercel.json until B5."
+echo "Reminder: the evaluator stays on GitHub Actions (.github/workflows/evaluator.yml)."
+echo "This script never adds Vercel crons; do not put evaluator crons in vercel.json."

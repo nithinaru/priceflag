@@ -15,8 +15,10 @@
  *
  * Either way the outcome is the same: verify with Supabase, then mint our own
  * `pf_user` cookie (`lib/auth/account.ts`) and send the person into the app.
- * The Supabase tokens themselves are not kept — the account session is a
- * question we can answer ourselves from that point on.
+ * Middleware admits a valid `pf_user` without the shared preview secret — this
+ * callback is the entry, not a gated afterthought. The Supabase tokens
+ * themselves are not kept; writes still require a Shopify session token in the
+ * route handler.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -32,7 +34,7 @@ import {
   linkNonceMatches,
 } from '@/lib/auth/link-binding';
 import { signUserCookie, USER_COOKIE, userCookieOptions } from '@/lib/auth/account';
-import { rememberAccount } from '@/lib/auth/account-shops';
+import { getShopDomainForAccount, rememberAccount } from '@/lib/auth/account-shops';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +61,12 @@ function failure(reason: string, next?: string): NextResponse {
   return NextResponse.redirect(signInScreenUrl(params), { status: 303 });
 }
 
+async function landingFor(userId: string, destination: string): Promise<string> {
+  if (destination !== DEFAULT_DESTINATION) return destination;
+  const shop = await getShopDomainForAccount(userId).catch(() => null);
+  return shop === null ? '/connect' : '/';
+}
+
 async function establishSession(
   userId: string,
   email: string,
@@ -72,7 +80,8 @@ async function establishSession(
     console.error('account upsert failed', cause);
   });
 
-  const response = NextResponse.redirect(new URL(destination, getAppUrl()), { status: 303 });
+  const landing = await landingFor(userId, destination);
+  const response = NextResponse.redirect(new URL(landing, getAppUrl()), { status: 303 });
   const isHttps = new URL(getAppUrl()).protocol === 'https:';
   response.cookies.set(USER_COOKIE, signUserCookie({ userId, email }), userCookieOptions(isHttps));
   // The nonce is single-use: it has done its job, and leaving it would let a
@@ -170,10 +179,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Login CSRF. `request.json()` will happily parse a body sent as `text/plain`,
   // which is the shape a cross-site <form> can produce with no preflight — so
   // without this check another site could plant its own access token here and
-  // therefore its own session in this browser. The preview gate happens to block
-  // it today (a Lax `pf_access` is not sent cross-site), but that gate is
-  // documented as temporary, and this must not become exploitable the day it is
-  // removed.
+  // therefore its own session in this browser. This route is reachable without
+  // the preview secret (it is how a magic link completes), so same-origin is
+  // the whole defence.
   if (!isSameOrigin(request)) {
     return NextResponse.json({ error: { code: 'cross_origin' } }, { status: 403 });
   }
@@ -202,10 +210,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const response = await establishSession(data.user.id, data.user.email, destination);
+  const landing = response.headers.get('location');
+  let next = destination;
+  if (landing !== null) {
+    try {
+      const url = new URL(landing);
+      next = `${url.pathname}${url.search}` || destination;
+    } catch {
+      next = destination;
+    }
+  }
   // The caller is fetch(), not a navigation, so answer with the destination
   // rather than a redirect the script would have to unpick.
   return NextResponse.json(
-    { ok: true, next: destination },
+    { ok: true, next },
     { status: 200, headers: { 'set-cookie': response.headers.get('set-cookie') ?? '' } },
   );
 }

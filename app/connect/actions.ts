@@ -2,11 +2,12 @@
 
 import { CONTRACT_VERSION, type SyncProgress } from "@/lib/contracts";
 import { getDemoStore } from "@/components/demo/store";
+import { isDemoMode } from "@/lib/config";
 
 /**
- * `POST /api/sync` stands in until Lane B's route is reachable from a connected
- * store. It returns a real `sync_progress.schema.json` object so the UI that
- * renders it is the same UI either way.
+ * Scripted first-run for demo mode only. A real store syncs through
+ * `POST /api/sync` after install — this function must never return the demo
+ * catalog for a typed-in myshopify domain in real mode.
  *
  * Deliberately returns a **finished** sync rather than animating a fake one: the
  * demo store is already loaded, and a progress bar that counts up to nothing is
@@ -18,6 +19,13 @@ export type StartSyncReply =
   | { ok: false; message: string };
 
 export async function startDemoSync(shopDomain: string): Promise<StartSyncReply> {
+  if (!isDemoMode()) {
+    return {
+      ok: false,
+      message: "Demo catalog loading only works in demo mode. Connect a real store instead.",
+    };
+  }
+
   if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shopDomain)) {
     return {
       ok: false,

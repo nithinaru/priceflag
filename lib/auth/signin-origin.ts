@@ -1,32 +1,62 @@
 /**
  * Where the sign-in screen lives, and the cross-origin rules for talking to it.
  *
- * Exactly one outside origin is allowed to POST an email address to us: the sign-in
- * screen. It is a static page on its own host, so the browser treats the call as
- * cross-origin and will not make it without these headers.
+ * Exactly one family of outside origins is allowed to POST an email address to
+ * us: the sign-in screen. The in-app `/signin` page is same-origin; the static
+ * marketing page on signin.priceflag.org is not, and the browser will not make
+ * that call without these headers.
  *
  * An allowlist rather than `*` because this endpoint sends email on request —
  * a wildcard would let any page on the internet use our Supabase quota to mail
  * arbitrary addresses a Priceflag link.
  */
 
-import { env } from '../config';
+import { env, getAppUrl } from '../config';
 
-const DEFAULT_ORIGINS = ['https://signin.priceflag.org'];
+const MARKETING_ORIGIN = 'https://signin.priceflag.org';
+
+function appOrigin(): string {
+  try {
+    return new URL(getAppUrl()).origin;
+  } catch {
+    return 'http://localhost:3000';
+  }
+}
+
+function originOf(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    try {
+      return new URL(value, getAppUrl()).origin;
+    } catch {
+      return null;
+    }
+  }
+}
 
 function allowlist(): string[] {
   const configured = env('SIGNIN_ORIGINS');
   const origins =
     configured === undefined
-      ? DEFAULT_ORIGINS
+      ? [MARKETING_ORIGIN]
       : configured.split(',').map((origin) => origin.trim()).filter((origin) => origin !== '');
+
+  const extras = [MARKETING_ORIGIN, appOrigin()];
+  const signInUrl = env('SIGNIN_URL');
+  if (signInUrl !== undefined) {
+    const extra = originOf(signInUrl);
+    if (extra !== null) extras.push(extra);
+  }
+
+  const merged = [...new Set([...origins, ...extras])];
 
   // Local dev serves the sign-in page off the filesystem or a throwaway port,
   // and neither is worth an env var. Never in production.
   if (env('NODE_ENV') !== 'production') {
-    return [...origins, 'http://localhost:3000', 'http://localhost:4000', 'http://127.0.0.1:4000'];
+    return [...new Set([...merged, 'http://localhost:3000', 'http://localhost:4000', 'http://127.0.0.1:4000'])];
   }
-  return origins;
+  return merged;
 }
 
 /** The origin to echo back, or `null` if this caller is not on the list. */
@@ -36,15 +66,23 @@ export function allowedOrigin(origin: string | null): string | null {
 }
 
 /**
- * The sign-in screen itself — the first entry in the allowlist.
+ * The sign-in screen itself.
  *
- * Every "you are not signed in" path in the app ends here rather than at a
- * signed-out page of its own. There is one screen that knows how to ask for an
- * email address, it lives on its own host with the hero image, and a lesser
- * copy of it inside the app shell would only be a second thing to keep in step.
+ * Defaults to this app's `/signin`. `SIGNIN_URL` still overrides so the static
+ * marketing page keeps working when it is set.
  */
 export function signInScreenUrl(params: Record<string, string> = {}): string {
-  const url = new URL(allowlist()[0] ?? (DEFAULT_ORIGINS[0] as string));
+  const configured = env('SIGNIN_URL');
+  let url: URL;
+  if (configured !== undefined) {
+    try {
+      url = new URL(configured);
+    } catch {
+      url = new URL(configured, `${getAppUrl()}/`);
+    }
+  } else {
+    url = new URL('/signin', `${getAppUrl()}/`);
+  }
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   return url.toString();
 }

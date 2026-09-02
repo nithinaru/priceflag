@@ -24,26 +24,25 @@ export interface ConnectedShopState {
  * than by a flag in the UI:
  *
  * - **Shopify credentials present** → the install link is real; it hands off to
- *   `GET /api/auth`, which is Lane B's OAuth start.
- * - **Not present** → the button says so and does not pretend. A dead install
- *   button that silently 404s is worse than one that explains itself.
- *
- * The demo path runs a scripted sync so the whole first-run sequence can be
- * walked end to end without credentials, and it is labelled as scripted
- * throughout — a demo that implies it touched Shopify is a lie the merchant
- * finds out about later.
+ *   `GET /api/auth`.
+ * - **Not present, demo mode** → a scripted sync, labelled as scripted.
+ * - **Not present, real mode** → the button is disabled. Offering a demo catalog
+ *   as if it were an install would be a lie.
  */
 export function ConnectPanel({
   shopifyConfigured,
+  demoMode = false,
   installBase,
   connected = null,
   installedNow = false,
 }: {
   shopifyConfigured: boolean;
+  /** Scripted catalog walkthrough is only offered in demo mode. */
+  demoMode?: boolean;
   installBase: string;
   /** Set when this render already knows which store is connected (real mode). */
   connected?: ConnectedShopState | null;
-  /** True when the page URL carries `?installed=1` — the OAuth flow just finished. */
+  /** True when the page URL carries `?installed=1` — the install flow just finished. */
   installedNow?: boolean;
 }) {
   const [domain, setDomain] = useState("");
@@ -52,6 +51,7 @@ export function ConnectPanel({
   const [progress, setProgress] = useState<SyncProgress | null>(null);
 
   const normalized = normalizeDomain(domain);
+  const canConnect = shopifyConfigured || demoMode;
 
   async function connect() {
     if (!normalized) {
@@ -61,10 +61,15 @@ export function ConnectPanel({
     setError(null);
 
     if (shopifyConfigured) {
-      // OAuth consent cannot render inside the Shopify Admin iframe. This runs
+      // Consent cannot render inside the Shopify Admin iframe. This runs
       // directly from the merchant's click, so `_top` performs the required
       // full-page handoff without opening a popup.
       window.open(`${installBase}?shop=${encodeURIComponent(normalized)}`, "_top");
+      return;
+    }
+
+    if (!demoMode) {
+      setError("This copy of Priceflag cannot connect a store until Shopify is set up on it.");
       return;
     }
 
@@ -158,11 +163,16 @@ export function ConnectPanel({
           </p>
         </div>
 
-        {!shopifyConfigured ? (
-          <Notice tone="hold" title="This copy of Priceflag has no Shopify credentials yet">
-            You can still walk through the whole first-run sequence — the next button plays a
-            scripted version of it against the demo store. To connect a real store, add your
-            Shopify app credentials and reload.
+        {!shopifyConfigured && demoMode ? (
+          <Notice tone="hold" title="Scripted walkthrough — not a real install">
+            The next button plays a scripted version of first-run against the demo store. No
+            Shopify store is contacted.
+          </Notice>
+        ) : null}
+        {!shopifyConfigured && !demoMode ? (
+          <Notice tone="hold" title="Connecting is unavailable">
+            Shopify is not set up on this copy of Priceflag, so a store cannot be connected from
+            here.
           </Notice>
         ) : null}
       </CardBody>
@@ -170,16 +180,23 @@ export function ConnectPanel({
         <span>
           {shopifyConfigured
             ? "Shopify will ask you to approve the permissions above."
-            : "Nothing here contacts Shopify."}
+            : demoMode
+              ? "Nothing here contacts Shopify. This path is scripted."
+              : "Connecting is unavailable until Shopify is set up on this deployment."}
         </span>
         <Button
           variant="primary"
           loading={running}
           loadingLabel="Loading your store"
+          disabled={!canConnect}
           onClick={() => void connect()}
           iconRight={<IconArrowRight size={15} />}
         >
-          {shopifyConfigured ? "Install on my store" : "Show me how this works"}
+          {shopifyConfigured
+            ? "Install on my store"
+            : demoMode
+              ? "Show me how this works"
+              : "Connect a store"}
         </Button>
       </CardFooter>
     </Card>
