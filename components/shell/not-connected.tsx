@@ -1,4 +1,4 @@
-import { ButtonLink, Card, EmptyState, PageHeader, TextLink } from "@/components/ui";
+import { ButtonLink, Card, EmptyState, PageHeader } from "@/components/ui";
 import { IconFlag } from "@/components/ui/icons";
 
 /**
@@ -7,22 +7,22 @@ import { IconFlag } from "@/components/ui/icons";
  * whose store this is. The honest render is to say so — never a guess, and
  * never another merchant's data.
  *
- * Every merchant page returns this in that state, so it stays one component:
- * the fix (open the app from the Shopify admin, or connect a store) is the
- * same whichever page they landed on.
+ * Magic-link users land here after email sign-in: the account is signed in,
+ * the store is not yet connected. Every merchant page returns this in that
+ * state, so it stays one component.
  */
 export function NotConnected() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Open this from your Shopify admin"
-        description="Priceflag works on one store at a time, and this page does not know which store is yours yet."
+        title="Connect your Shopify store"
+        description="Priceflag needs to know which store to show. If the app is already installed, open it from Apps in Shopify admin. Otherwise connect the store."
       />
       <Card>
         <EmptyState
           icon={<IconFlag size={19} />}
           title="No store connected to this session"
-          description="If Priceflag is already installed, open it from Apps in your Shopify admin and this page will show your own products and price changes. If not, connecting a store takes a couple of minutes."
+          description="Connecting is how Priceflag knows which catalog to load. It is the next step after signing in, not another password."
           action={
             <ButtonLink href="/connect" variant="primary">
               Connect a store
@@ -31,8 +31,7 @@ export function NotConnected() {
         />
       </Card>
       <p className="text-base text-ink-muted">
-        Just looking around? The <TextLink href="/connect">connect page</TextLink> explains what
-        Priceflag needs and what it will never do.
+        Already have an email link working? Connecting is the next step, not another password.
       </p>
     </div>
   );

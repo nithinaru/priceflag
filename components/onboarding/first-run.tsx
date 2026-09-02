@@ -59,7 +59,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
           <Step
             index={1}
             done={catalogDone}
-            title="Connect your store"
+            title={catalogDone ? "Your store is connected" : "Connect your store"}
             body={
               catalogDone
                 ? `${countOf(productCount, "product")} loaded, ${repriceableCount} of them repriceable. Gift cards and subscription products are never repriced.`

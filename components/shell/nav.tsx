@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { Button } from "@/components/ui";
 import {
   IconBeaker,
   IconBook,
@@ -12,6 +13,7 @@ import {
   IconGauge,
   IconLayers,
   IconMenu,
+  IconPlus,
   IconSettings,
   IconTag,
 } from "@/components/ui/icons";
@@ -48,6 +50,12 @@ const ITEMS: NavItem[] = [
     label: "Price journal",
     icon: <IconBook size={17} />,
     hint: "Every price change ever made",
+  },
+  {
+    href: "/connect",
+    label: "Connect store",
+    icon: <IconPlus size={17} />,
+    hint: "Install or reconnect Shopify",
   },
   {
     href: "/settings",
@@ -101,10 +109,7 @@ export function Nav({
       <div className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-surface lg:flex">
         <Brand />
         <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
-        <div className="space-y-3 border-t border-border px-3 py-4">
-          {statusSlot}
-          {storeSlot}
-        </div>
+        <RailFooter statusSlot={statusSlot} storeSlot={storeSlot} />
       </div>
 
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
@@ -154,10 +159,7 @@ export function Nav({
               </button>
             </div>
             <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
-            <div className="space-y-3 border-t border-border px-3 py-4">
-              {statusSlot}
-              {storeSlot}
-            </div>
+            <RailFooter statusSlot={statusSlot} storeSlot={storeSlot} />
           </div>
         </div>
       ) : null}
@@ -175,6 +177,26 @@ function Brand() {
         <div className="text-md font-semibold leading-tight text-ink">Priceflag</div>
         <div className="text-xs text-ink-subtle">Price changes, safely</div>
       </div>
+    </div>
+  );
+}
+
+function RailFooter({
+  statusSlot,
+  storeSlot,
+}: {
+  statusSlot?: ReactNode;
+  storeSlot?: ReactNode;
+}) {
+  return (
+    <div className="space-y-3 border-t border-border px-3 py-4">
+      {statusSlot}
+      {storeSlot}
+      <form action="/auth/sign-out" method="POST">
+        <Button type="submit" variant="ghost" size="sm" fullWidth className="justify-start text-ink-subtle">
+          Sign out
+        </Button>
+      </form>
     </div>
   );
 }
