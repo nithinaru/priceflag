@@ -104,7 +104,8 @@ test('signInScreenUrl defaults to this app /signin', () => {
   delete process.env.SIGNIN_URL;
   delete process.env.SIGNIN_ORIGINS;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  process.env.NODE_ENV = 'test';
+  // Next's ambient types declare NODE_ENV read-only; assign through Object.assign.
+  Object.assign(process.env, { NODE_ENV: 'test' });
   try {
     assert(
       signInScreenUrl() === 'https://pilot.priceflag.org/signin',
