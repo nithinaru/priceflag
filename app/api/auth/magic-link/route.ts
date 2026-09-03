@@ -8,8 +8,9 @@
  *
  * This route is deliberately reachable without the `pf_access` preview gate (see
  * `middleware.ts`) — the sign-in screen is public, so the form has to work for
- * anyone. Clicking the resulting link still lands on `/auth/callback`, which is
- * gated, so a stranger can request a link but cannot get into the app with it.
+ * anyone. Requesting a link is not entry. Completing `/auth/callback` mints
+ * `pf_user`, and that session is enough to view the app. Price writes still
+ * require a Shopify session token in the route handler.
  *
  * The response is the same whether or not the address belongs to a known
  * account. That is not decoration: a differing response here turns the endpoint

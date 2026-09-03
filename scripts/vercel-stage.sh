@@ -40,6 +40,7 @@ fi
 REQUIRED_VARS=(
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_PUBLISHABLE_KEY
   SHOPIFY_API_KEY
   SHOPIFY_API_SECRET
   SHOPIFY_APP_HANDLE
@@ -49,11 +50,17 @@ REQUIRED_VARS=(
   ENCRYPTION_KEY
   CRON_SECRET
   APP_ACCESS_SECRET
+  AUTH_SESSION_SECRET
   ML_INGEST_SECRET
   RESEND_API_KEY
   RESEND_FROM
   PRICEFLAG_SHOP_ALLOWLIST
 )
+
+# Accept the pre-rename Supabase key name if the publishable key is unset.
+if [[ -z "${SUPABASE_PUBLISHABLE_KEY:-}" && -n "${SUPABASE_ANON_KEY:-}" ]]; then
+  SUPABASE_PUBLISHABLE_KEY="$SUPABASE_ANON_KEY"
+fi
 
 for name in "${REQUIRED_VARS[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -62,13 +69,22 @@ for name in "${REQUIRED_VARS[@]}"; do
   fi
 done
 
-if [[ "$APP_URL" != "https://priceflag-app.vercel.app" ]]; then
-  echo "error: production APP_URL must be https://priceflag-app.vercel.app." >&2
-  exit 1
-fi
+case "$APP_URL" in
+  https://dashboard.priceflag.org|https://product.priceflag.org)
+    ;;
+  *)
+    echo "error: production APP_URL must be https://dashboard.priceflag.org or https://product.priceflag.org." >&2
+    echo "       Never use a vercel.app hostname — priceflag-app.vercel.app is the project host, not the merchant-facing origin." >&2
+    exit 1
+    ;;
+esac
 if [[ -n "${SHOPIFY_ADMIN_ACCESS_TOKEN:-}" || -n "${SHOPIFY_SHOP_DOMAIN:-}" ]]; then
   echo "error: production must use Partner OAuth, not static Shopify credentials." >&2
   exit 1
+fi
+
+if [[ -z "${SIGNIN_URL:-}" ]]; then
+  SIGNIN_URL="${APP_URL}/signin"
 fi
 
 COMMIT="$(git rev-parse HEAD)"
@@ -98,6 +114,7 @@ for name in "${REQUIRED_VARS[@]}"; do
   push_var "$name" "${!name}"
 done
 push_var PRICEFLAG_MODE real
+push_var SIGNIN_URL "$SIGNIN_URL"
 for legacy_name in SHOPIFY_ADMIN_ACCESS_TOKEN SHOPIFY_SHOP_DOMAIN; do
   "${VC[@]}" env rm "$legacy_name" production --yes >/dev/null 2>&1 || true
   echo "    $legacy_name -> production: removed (OAuth only)"

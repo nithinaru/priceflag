@@ -43,7 +43,6 @@ import {
   assertExactCents,
   makeProduct,
   section,
-  skip,
   test,
   uniqueId,
 } from './_harness';
@@ -231,12 +230,12 @@ export async function runRiskEdgePureSuite(): Promise<void> {
     );
   });
 
-  // Not expressible as a code test, but it is the biggest gap in the promise:
-  // guardrails only run when a human dispatches .github/workflows/evaluator.yml.
-  skip(
-    'a demand drop is noticed without a human running the evaluator workflow',
-    'operational gap — no cron in vercel.json, evaluator.yml is workflow_dispatch only',
-  );
+  await test('a demand drop is noticed without a human running the evaluator workflow', async () => {
+    const workflow = readFileSync(new URL('../../.github/workflows/evaluator.yml', import.meta.url), 'utf8');
+    const vercel = readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8');
+    assert(/schedule:/.test(workflow) && /cron:/.test(workflow), 'evaluator.yml must have a schedule');
+    assert(!/"crons"/.test(vercel), 'do not put the evaluator on Vercel Cron');
+  });
 }
 
 // ---------------------------------------------------------------------------
