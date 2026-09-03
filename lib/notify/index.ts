@@ -11,8 +11,9 @@
  * the evaluator look like it failed when it did exactly the right thing.
  */
 
+import { listAccountEmailsForShop } from '../auth/account-shops';
 import { env } from '../config';
-import { formatCents } from '../money';
+import { formatCents, type Cents } from '../money';
 import type { Rollout, Shop } from '../types';
 
 export type NotificationKind =
@@ -25,6 +26,15 @@ export type NotificationKind =
   | 'paused_external'
   | 'kill_switch';
 
+/** One affected product, so an alert can say exactly what is live and what it was. */
+export interface NotificationProduct {
+  title: string;
+  /** What Shopify is charging right now. */
+  live_price_cents: Cents;
+  /** The frozen pre-rollout price a rollback restores. */
+  original_price_cents: Cents;
+}
+
 export interface Notification {
   kind: NotificationKind;
   shop: Shop;
@@ -32,6 +42,31 @@ export interface Notification {
   /** Count, stage number — whatever the sentence needs. */
   detail?: number;
   reason?: string;
+  /** The products this alert is about, when the sentence should name them. */
+  products?: NotificationProduct[];
+  /** Deep link to the page where the merchant acts on it. */
+  link?: string;
+}
+
+/** At most this many products are listed by name; the rest are counted. */
+const MAX_LISTED_PRODUCTS = 10;
+
+function productLines(notification: Notification, mode: 'live' | 'restored'): string {
+  const products = notification.products ?? [];
+  if (products.length === 0) return '';
+  const currency = notification.shop.currency;
+  const lines = products.slice(0, MAX_LISTED_PRODUCTS).map((product) =>
+    mode === 'live'
+      ? `  • ${product.title}: now ${formatCents(product.live_price_cents, currency)} (was ${formatCents(product.original_price_cents, currency)})`
+      : `  • ${product.title}: back to ${formatCents(product.original_price_cents, currency)} (was ${formatCents(product.live_price_cents, currency)})`,
+  );
+  const more = products.length - lines.length;
+  if (more > 0) lines.push(`  • …and ${more} more`);
+  return `${lines.join('\n')}\n\n`;
+}
+
+function linkLine(notification: Notification): string {
+  return notification.link === undefined ? '' : `Open the rollout: ${notification.link}\n`;
 }
 
 export type Notifier = (notification: Notification) => Promise<void>;
@@ -63,13 +98,21 @@ export function compose(notification: Notification): Composed {
           `Nothing needs doing. We are still watching, and the rollout will pause and alert you if the numbers cross your limit.`,
       };
 
-    case 'breach':
+    case 'breach': {
+      const count = notification.products?.length ?? 0;
       return {
         subject: `"${name}" is paused — results dropped`,
         body:
-          `${notification.reason ?? 'Sales came in below the range you set as acceptable.'}\n\n` +
-          `Nothing has been changed back. Open the rollout to review the results and choose whether to restore the frozen prices.`,
+          `What happened: ${notification.reason ?? 'Sales came in below the range you set as acceptable.'}\n\n` +
+          `What is affected: ${count > 0 ? `the ${count === 1 ? 'product' : `${count} products`} below ${count === 1 ? 'is' : 'are'} still on the new price. Nothing has been changed back yet.` : 'no further prices will change until you decide.'}\n` +
+          productLines(notification, 'live') +
+          `What to do next: open the rollout and choose one of:\n` +
+          `  1. Roll back — restores every original price shown above, in one click.\n` +
+          `  2. Resume — if you believe the dip was a one-off, the rollout carries on and keeps watching.\n` +
+          `  3. Leave it paused — the new prices stay live on the products above, and no more products will change.\n` +
+          linkLine(notification),
       };
+    }
 
     case 'auto_rollback':
       return {
@@ -79,13 +122,18 @@ export function compose(notification: Notification): Composed {
           `${notification.reason ?? 'Sales fell below the range you set as acceptable.'}\n\n` +
           `Every price this change touched — ${notification.detail ?? 0} of them — has been put back to what ` +
           `it was before, and we checked each one against your store to make sure.\n\n` +
-          `Nothing is left to do. The full before-and-after is in your price journal.`,
+          productLines(notification, 'restored') +
+          `Nothing is left to do. The full before-and-after is in your price journal.\n` +
+          linkLine(notification),
       };
 
     case 'manual_rollback':
       return {
         subject: `"${name}" was reverted`,
-        body: `You reverted this change. All ${notification.detail ?? 0} prices are back to what they were.`,
+        body:
+          `You reverted this change. All ${notification.detail ?? 0} prices are back to what they were.\n\n` +
+          productLines(notification, 'restored') +
+          linkLine(notification),
       };
 
     case 'completed':
@@ -101,8 +149,10 @@ export function compose(notification: Notification): Composed {
         subject: `"${name}" is paused — a price changed outside Priceflag`,
         body:
           `${notification.detail ?? 1} price in this rollout was changed somewhere other than Priceflag.\n\n` +
-          `We stopped rather than overwrite it, because results would no longer mean what we predicted. ` +
-          `Open the rollout to resume or revert.`,
+          `We stopped rather than overwrite it, because results would no longer mean what we predicted.\n\n` +
+          productLines(notification, 'live') +
+          `What to do next: open the rollout to resume or revert.\n` +
+          linkLine(notification),
       };
 
     case 'kill_switch':
@@ -130,9 +180,13 @@ function recipients(notification: Notification): string[] {
 export const notify: Notifier = async (notification) => {
   const apiKey = env('RESEND_API_KEY');
   const from = env('RESEND_FROM') ?? 'Priceflag <onboarding@resend.dev>';
-  const to = recipients(notification);
+  if (apiKey === undefined) return;
 
-  if (apiKey === undefined || to.length === 0) return;
+  let to = recipients(notification);
+  // Last resort: whoever signed in and connected this store. A guardrail alert
+  // that goes to nobody is the one failure this module must not have.
+  if (to.length === 0) to = await listAccountEmailsForShop(notification.shop.id).catch(() => []);
+  if (to.length === 0) return;
 
   const { subject, body } = compose(notification);
 

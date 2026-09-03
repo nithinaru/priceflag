@@ -96,3 +96,27 @@ export async function linkAccountToShop(userId: string, shopId: string): Promise
     'link account to shop',
   );
 }
+
+/**
+ * Every signed-in person who has connected this store, for notifications.
+ *
+ * The fallback recipient list: a shop whose owner never filled in
+ * `notify_emails` and whose Shopify contact email is empty would otherwise have
+ * its guardrail alerts sent to nobody, silently.
+ */
+export async function listAccountEmailsForShop(shopId: string): Promise<string[]> {
+  if (!hasSupabaseConfig()) return [];
+  const client = getServiceClient();
+  const rows = unwrap(
+    await client.from(LINKS_TABLE).select('accounts(email)').eq('shop_id', shopId),
+    'read account emails for shop',
+  ) as { accounts?: { email?: unknown } | { email?: unknown }[] | null }[];
+  const emails = new Set<string>();
+  for (const row of rows) {
+    const embedded = Array.isArray(row.accounts) ? row.accounts : [row.accounts];
+    for (const account of embedded) {
+      if (typeof account?.email === 'string' && account.email.includes('@')) emails.add(account.email);
+    }
+  }
+  return [...emails];
+}

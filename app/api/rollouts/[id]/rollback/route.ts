@@ -5,6 +5,8 @@ import { merchantErrorResponse, MerchantApiError, readJson, resolveAuthenticated
 import { AdminGraphqlClient } from '@/lib/shopify/client';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
 import { rollbackInProgressReason } from '@/lib/engine/rollout';
+import { getAppUrl } from '@/lib/config';
+import { notify } from '@/lib/notify';
 import { rollbackRollout, verifyRollback } from '@/lib/pricing/writer';
 
 export const dynamic = 'force-dynamic';
@@ -146,6 +148,26 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
           reason,
         },
       });
+
+        // The merchant asked for this, but the email is still the record of
+        // exactly which prices went back to what — and it reaches anyone else
+        // on the notification list who did not click the button.
+        const restoredVariants = (await adapter.getRolloutVariants(fresh.id)).filter(
+          (variant) => !variant.excluded && variant.reverted_at !== null,
+        );
+        await notify({
+          kind: 'manual_rollback',
+          shop: currentShop,
+          rollout: fresh,
+          detail: verification.verified,
+          reason,
+          products: restoredVariants.map((variant) => ({
+            title: variant.title,
+            live_price_cents: variant.applied_price_cents ?? variant.target_price_cents,
+            original_price_cents: variant.baseline_price_cents,
+          })),
+          link: `${getAppUrl()}/rollouts/${fresh.id}`,
+        });
 
         return {
           status: ok ? 200 : 207,
