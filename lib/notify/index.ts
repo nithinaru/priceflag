@@ -106,8 +106,10 @@ export function compose(notification: Notification): Composed {
           `What happened: ${notification.reason ?? 'Sales came in below the range you set as acceptable.'}\n\n` +
           `What is affected: ${count > 0 ? `the ${count === 1 ? 'product' : `${count} products`} below ${count === 1 ? 'is' : 'are'} still on the new price. Nothing has been changed back yet.` : 'no further prices will change until you decide.'}\n` +
           productLines(notification, 'live') +
-          `What to do next: open the rollout and choose one of:\n` +
-          `  1. Roll back — restores every original price shown above, in one click.\n` +
+          `Our recommendation: roll back. Priceflag does not change any price on its own during the beta — ` +
+          `it pauses, explains, and leaves the decision with you.\n\n` +
+          `Your options, from the rollout page:\n` +
+          `  1. Roll back (recommended) — restores every original price shown above, in one click.\n` +
           `  2. Resume — if you believe the dip was a one-off, the rollout carries on and keeps watching.\n` +
           `  3. Leave it paused — the new prices stay live on the products above, and no more products will change.\n` +
           linkLine(notification),
@@ -179,7 +181,9 @@ function recipients(notification: Notification): string[] {
  */
 export const notify: Notifier = async (notification) => {
   const apiKey = env('RESEND_API_KEY');
-  const from = env('RESEND_FROM') ?? 'Priceflag <onboarding@resend.dev>';
+  // Override with RESEND_FROM. The default is a priceflag.org address so alerts
+  // are not sent from Resend's shared onboarding domain.
+  const from = env('RESEND_FROM') ?? 'Priceflag <kabir@priceflag.org>';
   if (apiKey === undefined) return;
 
   let to = recipients(notification);
