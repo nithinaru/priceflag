@@ -152,9 +152,18 @@ export function ConnectPanel({
               </li>
             ))}
           </ul>
-          <p className="mt-3 max-w-prose text-base text-ink">
-            <span className="font-medium">What it never does:</span> show different prices to
-            different shoppers. Everyone who visits your store sees the same price, always.
+        </div>
+
+        {/* The differentiator from A/B-testing tools, stated where a merchant first
+            reads what the app does. Visually its own block so it cannot be skimmed past. */}
+        <div
+          role="note"
+          className="rounded-lg border-2 border-accent bg-accent/10 px-4 py-3.5 text-base text-ink"
+        >
+          <p className="font-semibold">Every customer sees the same price.</p>
+          <p className="mt-1 max-w-prose">
+            PriceFlag never shows different prices to different visitors. Every customer sees the
+            same price at all times — we stage changes by product and time, not by audience.
           </p>
         </div>
 

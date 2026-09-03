@@ -116,6 +116,12 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             }
           />
         </ol>
+        <Notice tone="info" title="Every customer sees the same price">
+          <p className="max-w-prose">
+            PriceFlag never shows different prices to different visitors. Every customer sees the
+            same price at all times — we stage changes by product and time, not by audience.
+          </p>
+        </Notice>
 
         {noSales && catalogDone ? (
           <Notice tone="info" title="No orders yet — here is what that changes, and what it does not">
