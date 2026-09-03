@@ -6,10 +6,9 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 
-# env
-.env
-.env.local
-.env*.local
+# env — every variant (.env, .env.local, .env.production, .env.staging, …).
+# Only the placeholder file is tracked.
+.env*
 !.env.example
 
 # local demo-adapter persistence
