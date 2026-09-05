@@ -16,13 +16,13 @@ export function NotConnected() {
     <div className="space-y-6">
       <PageHeader
         title="Connect your Shopify store"
-        description="Priceflag needs to know which store to show. If the app is already installed, open it from Apps in Shopify admin. Otherwise connect the store."
+        description="Priceflag needs to know which store to show. Open the app from Apps in Shopify admin, or connect below. An email sign-in only shows a store that email has already connected."
       />
       <Card>
         <EmptyState
           icon={<IconFlag size={19} />}
           title="No store connected to this session"
-          description="Connecting is how Priceflag knows which catalog to load. It is the next step after signing in, not another password."
+          description="Shopify is the proof. Connecting loads that catalog. It is not another password."
           action={
             <ButtonLink href="/connect" variant="primary">
               Connect a store
@@ -31,7 +31,7 @@ export function NotConnected() {
         />
       </Card>
       <p className="text-base text-ink-muted">
-        Already have an email link working? Connecting is the next step, not another password.
+        Email gets you into this dashboard. Shopify is what lets Priceflag change a price.
       </p>
     </div>
   );

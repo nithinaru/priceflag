@@ -3,21 +3,24 @@
 How a merchant gets from priceflag.org into the app, and the configuration that
 has to exist for it to work.
 
-There are **two** ways in, and they are independent by design:
+There are **two** ways in. They are not equal:
 
-1. **From the Shopify admin.** The app is embedded; Shopify signs a session
-   token, `middleware.ts` verifies it, and no Priceflag account is involved at
-   any point. This is the path an installed merchant uses day to day.
-2. **From `$APP_URL/signin` (in-repo).** A magic link proves control of an email
-   address and mints a `pf_user` cookie. This is the path for somebody who has
-   not installed yet, or who is opening the dashboard directly rather than
-   through Shopify. Production `APP_URL` is `https://dashboard.priceflag.org`,
-   so the in-app screen is `https://dashboard.priceflag.org/signin`.
-   `signin.priceflag.org` may still exist on the marketing site; it is no longer
-   the only door.
+1. **Shopify (the product).** The merchant types `store.myshopify.com` on
+   `$APP_URL/signin`, approves the app, and lands in Shopify admin. Day to day
+   they reopen Priceflag from Apps. Shopify signs a session token;
+   `middleware.ts` verifies it. This is the only path that can install, sync,
+   or write a price.
+2. **Email (the dashboard bookmark).** A magic link proves control of an
+   address and mints a `pf_user` cookie. Use it to reopen the dashboard from a
+   browser that is not the Shopify admin. If that email has not connected a
+   store, the next screen is Connect — then Shopify OAuth records
+   `account_shops`. Production screen:
+   `https://dashboard.priceflag.org/signin`.
+   `signin.priceflag.org` may still exist on the marketing site; it is not the
+   product door.
 
-Neither is authorisation to write a price. That still comes from a Shopify
-session token, checked in the route handler, every time.
+Neither email session is authorisation to write a price. Writes still require
+a Shopify session token, checked in the route handler, every time.
 
 ### Magic links are bound to one browser
 

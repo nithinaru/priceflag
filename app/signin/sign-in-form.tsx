@@ -5,18 +5,17 @@ import {
   Button,
   Card,
   CardBody,
-  CardHeader,
   Field,
   Input,
   Notice,
   PageHeader,
 } from "@/components/ui";
-import { IconArrowRight } from "@/components/ui/icons";
+import { IconArrowRight, IconChevronRight, IconFlag } from "@/components/ui/icons";
 
 const ERROR_COPY: Record<string, { title: string; body: string }> = {
   sign_in_required: {
-    title: "Sign in to continue",
-    body: "Connect your Shopify store, or ask for an email link, then open that link in this browser.",
+    title: "Connect your store to continue",
+    body: "Enter the store address below. If you already connected it, you can email yourself a link instead — open that link in this browser.",
   },
   link_expired: {
     title: "That sign-in link has expired",
@@ -40,9 +39,17 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
   },
   signed_out: {
     title: "You have been signed out",
-    body: "Connect your store or ask for a new email link to come back in.",
+    body: "Connect the store again, or email yourself a link if you already have.",
   },
 };
+
+const EMAIL_ERRORS = new Set([
+  "link_expired",
+  "otp_expired",
+  "link_invalid",
+  "link_unbound",
+  "link_missing",
+]);
 
 /** Accepts what merchants actually paste: a bare handle, or a full admin URL. */
 function normalizeDomain(input: string): string | null {
@@ -74,9 +81,10 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
       ? undefined
       : (ERROR_COPY[error] ?? {
           title: "Could not sign in",
-          body: "Ask for a new email link below, or connect with Shopify.",
+          body: "Connect with Shopify, or ask for a new email link if you already have.",
         });
   const destination = nextPath(next);
+  const emailOpen = sent || (error !== undefined && EMAIL_ERRORS.has(error));
 
   function connectShopify() {
     const normalized = normalizeDomain(domain);
@@ -122,10 +130,15 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
   }
 
   return (
-    <div className="mx-auto max-w-lg space-y-6">
+    <div className="space-y-6">
+      <div className="flex items-center gap-2.5 text-ink">
+        <IconFlag size={22} />
+        <span className="text-md font-semibold tracking-[-0.01em]">Priceflag</span>
+      </div>
+
       <PageHeader
-        title="Sign in to Priceflag"
-        description="Connect your Shopify store to install and open Priceflag. Or we can email you a sign-in link — no password."
+        title="Connect your Shopify store"
+        description="Shopify is how Priceflag knows the store is yours. You approve the app once; after that, open it from Apps in Shopify admin. An email link cannot change a price — it only lets you look at this dashboard later, in this browser."
       />
 
       {bounce !== undefined ? (
@@ -135,59 +148,76 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
       ) : null}
 
       <Card>
-        <CardHeader
-          title="Connect with Shopify"
-          description="This is how merchants sign in and install. You will approve Priceflag on your store, then land back here."
-        />
-        <CardBody className="space-y-4">
-          <Field
-            label="Your store's address"
-            htmlFor="shop-domain"
-            hint="You will find this in your Shopify admin URL. It ends in .myshopify.com."
-            error={shopError ?? undefined}
+        <CardBody className="space-y-4 pt-5">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              connectShopify();
+            }}
+            className="space-y-4"
           >
-            <Input
-              id="shop-domain"
-              value={domain}
-              placeholder="my-store.myshopify.com"
-              autoComplete="off"
-              spellCheck={false}
-              invalid={shopError !== null}
-              onChange={(event) => {
-                setDomain(event.target.value);
-                if (shopError) setShopError(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") connectShopify();
-              }}
-            />
-          </Field>
-          <Button type="button" variant="primary" iconRight={<IconArrowRight />} onClick={connectShopify}>
-            Connect with Shopify
-          </Button>
+            <Field
+              label="Store address"
+              htmlFor="shop-domain"
+              hint="From your Shopify admin URL. It ends in .myshopify.com."
+              error={shopError ?? undefined}
+            >
+              <Input
+                id="shop-domain"
+                name="shop"
+                value={domain}
+                placeholder="my-store.myshopify.com"
+                autoComplete="off"
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
+                invalid={shopError !== null}
+                onChange={(event) => {
+                  setDomain(event.target.value);
+                  if (shopError) setShopError(null);
+                }}
+              />
+            </Field>
+            <Button type="submit" variant="primary" size="lg" fullWidth iconRight={<IconArrowRight />}>
+              Continue with Shopify
+            </Button>
+          </form>
         </CardBody>
       </Card>
 
-      <Card>
-        <CardHeader
-          title="Email me a link"
-          description="We send a one-time link. Open it in this same browser — a different device will not work."
-        />
-        <CardBody className="space-y-4">
+      <details className="group rounded-lg border border-border bg-surface shadow-sm" open={emailOpen || undefined}>
+        <summary className="cursor-pointer list-none px-4 py-3.5 text-base font-medium text-ink marker:hidden sm:px-5 [&::-webkit-details-marker]:hidden">
+          <span className="flex items-center justify-between gap-3">
+            Already connected? Open from email
+            <IconChevronRight
+              size={16}
+              className="shrink-0 text-ink-subtle transition-transform duration-150 group-open:rotate-90"
+            />
+          </span>
+        </summary>
+        <div className="space-y-4 border-t border-border px-4 py-4 sm:px-5">
+          <p className="max-w-prose text-base text-ink-muted">
+            We send a one-time link. Open it in this same browser — a different device will not
+            work. If this email has not connected a store yet, the next screen is Connect.
+          </p>
           {sent ? (
             <Notice tone="info" title="Check your email">
-              Open the link in this same browser to finish signing in. If nothing arrives, wait a minute and
+              Open the link in this same browser to finish. If nothing arrives, wait a minute and
               try again.
             </Notice>
           ) : (
-            <>
-              <Field
-                label="Email"
-                htmlFor="sign-in-email"
-                error={emailError ?? undefined}
-              >
+            <form
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sendMagicLink();
+              }}
+              className="space-y-4"
+            >
+              <Field label="Email" htmlFor="sign-in-email" error={emailError ?? undefined}>
                 <Input
                   id="sign-in-email"
+                  name="email"
                   type="email"
                   inputMode="email"
                   autoComplete="email"
@@ -198,24 +228,15 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
                     setEmail(event.target.value);
                     if (emailError) setEmailError(null);
                   }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void sendMagicLink();
-                  }}
                 />
               </Field>
-              <Button
-                type="button"
-                variant="secondary"
-                loading={sending}
-                loadingLabel="Sending"
-                onClick={() => void sendMagicLink()}
-              >
+              <Button type="submit" variant="secondary" loading={sending} loadingLabel="Sending">
                 Email me a link
               </Button>
-            </>
+            </form>
           )}
-        </CardBody>
-      </Card>
+        </div>
+      </details>
     </div>
   );
 }

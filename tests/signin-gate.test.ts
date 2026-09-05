@@ -126,6 +126,15 @@ test('signInScreenUrl defaults to this app /signin', () => {
   }
 });
 
+test('sign-in UI is Shopify-first, email is a return path', () => {
+  const form = readFileSync(resolve(process.cwd(), 'app/signin/sign-in-form.tsx'), 'utf8');
+  assert(form.includes('Continue with Shopify'), 'primary action must be Shopify');
+  assert(form.includes('<details'), 'email must be behind a disclosure, not a second equal door');
+  const shopIndex = form.indexOf('Continue with Shopify');
+  const emailIndex = form.indexOf('Email me a link');
+  assert(shopIndex !== -1 && emailIndex !== -1 && shopIndex < emailIndex, 'Shopify must precede email');
+});
+
 test('SIGNIN_URL still overrides the screen location', () => {
   const previous = process.env.SIGNIN_URL;
   process.env.SIGNIN_URL = 'https://signin.priceflag.org/';
