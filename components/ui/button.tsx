@@ -2,7 +2,14 @@ import Link from "next/link";
 import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from "react";
 import { cn } from "@/components/cn";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-quiet";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "danger"
+  | "danger-quiet"
+  | "neon"
+  | "neonDark";
 export type ButtonSize = "sm" | "md" | "lg";
 
 /**
@@ -29,6 +36,18 @@ const VARIANTS: Record<ButtonVariant, string> = {
   ghost: "border-transparent bg-transparent text-ink-muted hover:bg-surface-muted hover:text-ink",
   danger: "border-breach-border bg-breach-tint text-breach hover:bg-breach hover:text-white",
   "danger-quiet": "border-transparent bg-transparent text-breach hover:bg-breach-tint",
+  neon:
+    "relative overflow-hidden rounded-full border-transparent bg-[#d8f24b] text-[#13200a] " +
+    "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.45),0_0_18px_rgba(216,242,75,0.5)] " +
+    "transition-[background-color,border-color,color,transform,box-shadow] duration-150 " +
+    "hover:-translate-y-0.5 hover:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),0_0_28px_rgba(216,242,75,0.65),0_6px_16px_rgba(19,32,10,0.12)] " +
+    "active:translate-y-0 active:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.35),0_0_14px_rgba(216,242,75,0.4)] " +
+    "motion-reduce:transition-[background-color,border-color,color,box-shadow] motion-reduce:hover:translate-y-0 motion-reduce:active:translate-y-0 " +
+    "after:pointer-events-none after:absolute after:inset-y-0 after:w-1/3 after:-skew-x-12 after:bg-gradient-to-r after:from-transparent after:via-white/35 after:to-transparent " +
+    "after:-translate-x-[250%] hover:after:translate-x-[350%] after:transition-transform after:duration-500 after:ease-out motion-reduce:after:hidden",
+  neonDark:
+    "rounded-full border-transparent bg-[#030818] text-[#d8f24b] " +
+    "shadow-[inset_0_1px_0_0_rgba(216,242,75,0.1)] hover:bg-[#0a1020] active:bg-[#020610]",
 };
 
 const SIZES: Record<ButtonSize, string> = {

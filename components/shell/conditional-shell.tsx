@@ -7,7 +7,15 @@ import { usePathname } from "next/navigation";
  * App chrome that hides the merchant nav on `/signin`. That page is reachable
  * without a session; Overview / Products must not appear beside it.
  */
-export function ConditionalShell({ nav, children }: { nav: ReactNode; children: ReactNode }) {
+export function ConditionalShell({
+  nav,
+  footer,
+  children,
+}: {
+  nav: ReactNode;
+  footer?: ReactNode;
+  children: ReactNode;
+}) {
   const pathname = usePathname();
   const hideNav = pathname === "/signin";
 
@@ -33,6 +41,7 @@ export function ConditionalShell({ nav, children }: { nav: ReactNode; children: 
         >
           {children}
         </main>
+        {hideNav ? null : <div className="px-4 pb-0 sm:px-6 lg:px-8">{footer}</div>}
       </div>
     </div>
   );

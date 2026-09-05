@@ -1,0 +1,54 @@
+import Link from "next/link";
+
+import { Button } from "@/components/ui";
+
+type SiteFooterProps = {
+  shopDomain?: string;
+};
+
+export function SiteFooter({ shopDomain }: SiteFooterProps) {
+  const headline = shopDomain ?? "Priceflag";
+
+  return (
+    <footer
+      role="contentinfo"
+      className="rounded-t-[26px] bg-[#d8f24b] text-[#0d1f00]"
+    >
+      <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2.5">
+          <img src="/ibis.png" alt="" width={22} height={22} />
+          <p
+            className="text-lg font-medium leading-none"
+            style={{ fontFamily: "var(--font-display), Georgia, serif" }}
+          >
+            {headline}
+          </p>
+        </div>
+
+        <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <Link
+            href="/journal"
+            className="text-base font-medium text-[#0d1f00] underline-offset-2 hover:underline"
+          >
+            Journal
+          </Link>
+          <Link
+            href="/settings"
+            className="text-base font-medium text-[#0d1f00] underline-offset-2 hover:underline"
+          >
+            Settings
+          </Link>
+          <form action="/auth/sign-out" method="post">
+            <Button type="submit" variant="neonDark" size="sm">
+              Sign out
+            </Button>
+          </form>
+        </nav>
+      </div>
+
+      <div className="border-t border-[#0d1f00]/15 px-6 py-4 text-center text-sm text-[#0d1f00]/80">
+        Built by Humans in San Francisco, CA
+      </div>
+    </footer>
+  );
+}
