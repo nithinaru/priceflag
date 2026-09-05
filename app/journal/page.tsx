@@ -45,7 +45,7 @@ export default async function JournalPage({
     <div className="space-y-6">
       <PageHeader
         title="Price journal"
-        description="Every price change on your store, including ones made in Shopify without Priceflag. Nothing is ever removed from this list."
+        description="Including edits made in Shopify."
       />
 
       {externalCount > 0 ? (

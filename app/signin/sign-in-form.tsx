@@ -10,7 +10,7 @@ import {
   Notice,
   PageHeader,
 } from "@/components/ui";
-import { IconArrowRight, IconChevronRight, IconFlag } from "@/components/ui/icons";
+import { IconArrowRight, IconChevronRight } from "@/components/ui/icons";
 
 const ERROR_COPY: Record<string, { title: string; body: string }> = {
   sign_in_required: {
@@ -132,13 +132,18 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2.5 text-ink">
-        <IconFlag size={22} />
-        <span className="text-md font-semibold tracking-[-0.01em]">Priceflag</span>
+        <img src="/ibis.png" alt="" width={22} height={22} />
+        <span
+          className="text-md tracking-[-0.01em]"
+          style={{ fontFamily: "var(--font-display), Georgia, serif" }}
+        >
+          Priceflag
+        </span>
       </div>
 
       <PageHeader
         title="Connect your Shopify store"
-        description="Shopify is how Priceflag knows the store is yours. You approve the app once; after that, open it from Apps in Shopify admin. An email link cannot change a price — it only lets you look at this dashboard later, in this browser."
+        description="Approve the app once. After that, open it from Apps in Shopify admin. Email is a same-browser return path — it cannot change a price."
       />
 
       {bounce !== undefined ? (
@@ -178,7 +183,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
                 }}
               />
             </Field>
-            <Button type="submit" variant="primary" size="lg" fullWidth iconRight={<IconArrowRight />}>
+            <Button type="submit" variant="neon" size="lg" fullWidth iconRight={<IconArrowRight />}>
               Continue with Shopify
             </Button>
           </form>

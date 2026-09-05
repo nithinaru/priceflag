@@ -16,15 +16,15 @@ export function NotConnected() {
     <div className="space-y-6">
       <PageHeader
         title="Connect your Shopify store"
-        description="Priceflag needs to know which store to show. Open the app from Apps in Shopify admin, or connect below. An email sign-in only shows a store that email has already connected."
+        description="Open the app from Apps in Shopify admin, or connect below. Email only shows a store that address has already connected."
       />
       <Card>
         <EmptyState
           icon={<IconFlag size={19} />}
           title="No store connected to this session"
-          description="Shopify is the proof. Connecting loads that catalog. It is not another password."
+          description="Shopify is the proof. Connecting loads that catalog."
           action={
-            <ButtonLink href="/connect" variant="primary">
+            <ButtonLink href="/connect" variant="neon">
               Connect a store
             </ButtonLink>
           }

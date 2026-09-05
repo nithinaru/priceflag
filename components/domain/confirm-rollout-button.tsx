@@ -101,7 +101,7 @@ export function ConfirmRolloutButton({
 
   return (
     <>
-      <Button variant="primary" onClick={() => setOpen(true)}>
+      <Button variant="neon" onClick={() => setOpen(true)}>
         {scheduledAt === null ? "Review and start" : "Review and confirm"}
       </Button>
       <Modal

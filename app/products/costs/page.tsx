@@ -49,7 +49,7 @@ export default async function CostsPage({
       <PageHeader
         breadcrumb={<TextLink standalone href="/products">← Your products</TextLink>}
         title="Add your costs"
-        description="What you pay for each product is the one number Shopify cannot tell us unless you have filled it in. With it, every profit figure in Priceflag is real — and you do not need a single order for that to be true."
+        description="Shopify only knows a cost if you have filled it in. With it, profit figures are real."
       />
       <BulkCosts
         products={[...missing, ...known]}

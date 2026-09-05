@@ -9,6 +9,9 @@ import {
   DetailRow,
   EmptyState,
   Notice,
+  LiveMachine,
+  liveMachineModeForRollout,
+  liveMachineStage,
   PageHeader,
   Stat,
   StatGroup,
@@ -74,7 +77,7 @@ export default async function OverviewPage({
     <div className="space-y-6">
       <PageHeader
         title="Overview"
-        description={`What Priceflag has live on ${data.shopDomain} right now, and how to undo it.`}
+        description={data.shopDomain}
       />
 
       {/* First on the page while the store is still being set up: a young store
@@ -115,7 +118,7 @@ export default async function OverviewPage({
             title="No prices are changing right now"
             description="Nothing Priceflag set is live on your storefront. When you are ready, pick the products you want to reprice and we will show you what the change should do before anything goes out."
             action={
-              <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
+              <ButtonLink href="/products" variant="neon" iconRight={<IconArrowRight size={15} />}>
                 Go to your products
               </ButtonLink>
             }
@@ -135,7 +138,6 @@ export default async function OverviewPage({
             edge
           >
             <CardHeader
-              eyebrow={index === 0 ? "Live on your storefront" : "Also on your storefront"}
               title={summary.name}
               description={rolloutStatusMeta(summary.status).sentence}
               action={
@@ -147,10 +149,9 @@ export default async function OverviewPage({
                     variant="secondary"
                     demoMode={demoMode}
                   />
-                  {/* One primary action per screen: only the first card gets it. */}
                   <ButtonLink
                     href={`/rollouts/${summary.id}`}
-                    variant={index === 0 ? "primary" : "secondary"}
+                    variant={index === 0 ? "neon" : "secondary"}
                     iconRight={<IconArrowRight size={15} />}
                   >
                     Open this change
@@ -158,7 +159,11 @@ export default async function OverviewPage({
                 </>
               }
             >
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <LiveMachine
+                  mode={liveMachineModeForRollout(summary.status)}
+                  stage={liveMachineStage(summary.stage_index)}
+                />
                 <RolloutStatusBadge status={summary.status} />
                 <HealthBadge health={summary.health} size="sm" />
               </div>

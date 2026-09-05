@@ -29,6 +29,13 @@ export type { NoticeTone } from "@/components/ui/notice";
 
 export { PageHeader } from "@/components/ui/page-header";
 
+export {
+  LiveMachine,
+  liveMachineModeForRollout,
+  liveMachineStage,
+} from "@/components/ui/live-machine";
+export type { LiveMachineMode } from "@/components/ui/live-machine";
+
 export { Skeleton, SkeletonCard, SkeletonTable, SkeletonText } from "@/components/ui/skeleton";
 
 export { DetailList, DetailRow, Stat, StatGroup } from "@/components/ui/stat";

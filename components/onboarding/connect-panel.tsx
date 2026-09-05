@@ -185,7 +185,7 @@ export function ConnectPanel({
               : "Connecting is unavailable until Shopify is set up on this deployment."}
         </span>
         <Button
-          variant="primary"
+          variant="neon"
           loading={running}
           loadingLabel="Loading your store"
           disabled={!canConnect}
@@ -287,7 +287,6 @@ function ConnectedSyncCard({ connected }: { connected: ConnectedShopState }) {
   return (
     <Card tone={done ? undefined : "accent"} edge={!done}>
       <CardHeader
-        eyebrow={connected.domain}
         title={
           done
             ? "Your store is loaded"
@@ -297,10 +296,10 @@ function ConnectedSyncCard({ connected }: { connected: ConnectedShopState }) {
         }
         description={
           done
-            ? "Priceflag keeps this fresh on its own from here — every new order and product change flows in automatically."
+            ? connected.domain
             : errored
               ? "The details below say what went wrong and what to do about it."
-              : "This runs on our side — you can leave this page and nothing is lost."
+              : connected.domain
         }
       />
       <CardBody>
@@ -315,7 +314,7 @@ function ConnectedSyncCard({ connected }: { connected: ConnectedShopState }) {
       {done ? (
         <CardFooter>
           <span>Next: pick the products whose prices you want to test.</span>
-          <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
+          <ButtonLink href="/products" variant="neon" iconRight={<IconArrowRight size={15} />}>
             See your products
           </ButtonLink>
         </CardFooter>

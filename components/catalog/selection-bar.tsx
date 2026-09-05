@@ -63,7 +63,7 @@ export function SelectionBar({
           <Button variant="ghost" onClick={onClear} iconLeft={<IconClose size={15} />}>
             Clear
           </Button>
-          <Button variant="primary" onClick={onContinue} iconRight={<IconArrowRight size={15} />}>
+          <Button variant="neon" onClick={onContinue} iconRight={<IconArrowRight size={15} />}>
             Preview a price change
           </Button>
         </div>

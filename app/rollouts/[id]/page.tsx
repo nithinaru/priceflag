@@ -12,6 +12,9 @@ import {
   DetailRow,
   EmptyState,
   Notice,
+  LiveMachine,
+  liveMachineModeForRollout,
+  liveMachineStage,
   PageHeader,
   Stat,
   StatGroup,
@@ -111,6 +114,10 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         title={rollout.name}
         meta={
           <span className="flex flex-wrap items-center gap-2">
+            <LiveMachine
+              mode={liveMachineModeForRollout(rollout.status)}
+              stage={liveMachineStage(rollout.current_stage)}
+            />
             <RolloutStatusBadge status={rollout.status} />
             {rollout.status === "running" || rollout.status === "paused" ? (
               <HealthBadge health={health} size="sm" />

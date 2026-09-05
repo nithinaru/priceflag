@@ -62,7 +62,6 @@ export default async function RolloutsPage({
     <div className="space-y-6">
       <PageHeader
         title="Price changes"
-        description="Every price change you have set up, and what happened to it."
       />
 
       <Section

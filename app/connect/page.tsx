@@ -63,7 +63,6 @@ export default async function ConnectPage({
     <div className="space-y-6">
       <PageHeader
         title="Connect your store"
-        description="One install, and Priceflag can show you what a price change would do before you make it."
         meta={
           <Badge tone={badge.tone} size="md" dot>
             {badge.label}

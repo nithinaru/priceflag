@@ -40,7 +40,7 @@ export default async function ProductsPage({
     <div className="space-y-6">
       <PageHeader
         title="Products"
-        description="What each product sells for, what it costs you, and what you make on it. Tick the ones you want to reprice."
+        description={`${countOf(data.products.length, "product")}`}
         meta={
           data.liveGids.length > 0 ? (
             <Badge tone="live" size="md" dot>

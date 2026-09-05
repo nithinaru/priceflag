@@ -50,9 +50,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
   return (
     <Card tone="accent" edge>
       <CardHeader
-        eyebrow="Getting started"
-        title="Three things, and you are set up"
-        description="Priceflag is useful before your store is busy — it just tells you less, and says so."
+        title="Get set up"
       />
       <CardBody className="space-y-5">
         <ol className="space-y-4">
@@ -67,7 +65,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             }
             action={
               catalogDone ? null : (
-                <ButtonLink href="/connect" variant="primary" size="sm">
+                <ButtonLink href="/connect" variant="neon" size="sm">
                   Connect a store
                 </ButtonLink>
               )
@@ -88,7 +86,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
               costsDone ? null : (
                 <ButtonLink
                   href="/products/costs"
-                  variant="primary"
+                  variant={!costsDone && catalogDone ? "neon" : "secondary"}
                   size="sm"
                   iconRight={<IconArrowRight size={15} />}
                 >

@@ -51,13 +51,12 @@ export default async function SettingsPage({
     <div className="space-y-6">
       <PageHeader
         title="Settings"
-        description="Which store Priceflag is working on, and who hears about it."
+        description={data.shopDomain}
       />
 
       <Card tone={demo ? "hold" : "live"} edge>
         <CardHeader
-          eyebrow="Which store"
-          title={demo ? "You are on the demo store" : `Connected to ${data.shopDomain}`}
+          title={demo ? "Demo store" : data.shopDomain}
           description={
             demo
               ? "Everything you see is simulated: a made-up catalog with made-up sales. Price changes here move nothing, and nothing is sent to Shopify. It is the safest place to learn what the product does."
@@ -65,7 +64,7 @@ export default async function SettingsPage({
           }
           action={
             demo ? (
-              <ButtonLink href="/connect" variant="primary" size="sm">
+              <ButtonLink href="/connect" variant="neon" size="sm">
                 Connect a real store
               </ButtonLink>
             ) : null

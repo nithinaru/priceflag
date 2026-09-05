@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/components/cn";
-import { Button, ButtonLink, Notice } from "@/components/ui";
+import { Button, ButtonLink, LiveMachine, Notice } from "@/components/ui";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf, formatUnits } from "@/components/format";
 import { authenticatedFetch } from "@/components/lib/shopify-fetch";
@@ -104,6 +104,7 @@ export function SyncProgressPanel({
 
   return (
     <div className="space-y-4">
+      <LiveMachine mode={progress.catalog.ready && progress.history.ready ? "draft" : "sync"} />
       <p className="max-w-prose text-base text-ink">{progress.message}</p>
 
       <div className="space-y-3">
@@ -146,7 +147,7 @@ export function SyncProgressPanel({
           action={
             <ButtonLink
               href="/products"
-              variant="primary"
+              variant="neon"
               size="sm"
               iconRight={<IconArrowRight size={15} />}
             >
