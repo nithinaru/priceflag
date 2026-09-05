@@ -1,10 +1,23 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { Hedvig_Letters_Serif, Inter } from "next/font/google";
 import "@/app/globals.css";
 import { AppBridgeBoot } from "@/components/lib/app-bridge-boot";
 import { AppShell } from "@/components/shell/app-shell";
 import { ToastProvider } from "@/components/ui/toast";
 import { env, hasShopifyConfig, isDemoMode } from "@/lib/config";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const hedvig = Hedvig_Letters_Serif({
+  subsets: ["latin"],
+  variable: "--font-hedvig",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: {
@@ -31,7 +44,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     hasShopifyConfig() && !isDemoMode() ? env("SHOPIFY_API_KEY") : undefined;
 
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light" className={`${inter.variable} ${hedvig.variable}`}>
       {shopifyApiKey !== undefined ? (
         <head>
           <meta name="shopify-api-key" content={shopifyApiKey} />

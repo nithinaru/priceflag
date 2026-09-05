@@ -9,7 +9,6 @@ import {
   IconBeaker,
   IconBook,
   IconClose,
-  IconFlag,
   IconGauge,
   IconLayers,
   IconMenu,
@@ -22,8 +21,6 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
-  /** One line of plain language, so the nav itself explains the app. */
-  hint: string;
 };
 
 const ITEMS: NavItem[] = [
@@ -31,37 +28,31 @@ const ITEMS: NavItem[] = [
     href: "/",
     label: "Overview",
     icon: <IconGauge size={17} />,
-    hint: "What is live right now",
   },
   {
     href: "/products",
     label: "Products",
     icon: <IconTag size={17} />,
-    hint: "Prices, costs and profit per product",
   },
   {
     href: "/rollouts",
     label: "Price changes",
     icon: <IconLayers size={17} />,
-    hint: "Changes going out, and ones that finished",
   },
   {
     href: "/journal",
     label: "Price journal",
     icon: <IconBook size={17} />,
-    hint: "Every price change ever made",
   },
   {
     href: "/connect",
     label: "Connect store",
     icon: <IconPlus size={17} />,
-    hint: "Install or reconnect Shopify",
   },
   {
     href: "/settings",
     label: "Settings",
     icon: <IconSettings size={17} />,
-    hint: "Which store, and who we email",
   },
 ];
 
@@ -69,7 +60,6 @@ const FOUNDER_LAB_ITEM: NavItem = {
   href: "/model-lab",
   label: "Founder Lab",
   icon: <IconBeaker size={17} />,
-  hint: "Run pricing scenarios safely",
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -114,10 +104,8 @@ export function Nav({
 
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
       <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 lg:hidden">
-        <Link href="/" className="flex items-center gap-2 rounded-md font-semibold text-ink">
-          <span className="flex size-7 items-center justify-center rounded-md bg-accent text-accent-ink">
-            <IconFlag size={15} />
-          </span>
+        <Link href="/" className="flex items-center gap-2 rounded-md font-medium text-ink">
+          <img src="/ibis.png" alt="" width={28} height={28} className="size-7 object-contain" />
           Priceflag
         </Link>
         <button
@@ -170,12 +158,9 @@ export function Nav({
 function Brand() {
   return (
     <div className="flex items-center gap-2.5 border-b border-border px-4 py-4">
-      <span className="flex size-8 items-center justify-center rounded-md bg-accent text-accent-ink">
-        <IconFlag size={17} />
-      </span>
+      <img src="/ibis.png" alt="" width={32} height={32} className="size-8 object-contain" />
       <div className="min-w-0">
-        <div className="text-md font-semibold leading-tight text-ink">Priceflag</div>
-        <div className="text-xs text-ink-subtle">Price changes, safely</div>
+        <div className="font-[family-name:var(--font-display)] text-md leading-tight text-ink">Priceflag</div>
       </div>
     </div>
   );
@@ -222,27 +207,17 @@ function NavList({
                 href={item.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group flex items-start gap-2.5 rounded-md px-2.5 py-2 outline-none " +
+                  "group flex items-center gap-2.5 rounded-md px-2.5 py-2 outline-none " +
                     "focus-visible:ring-2 focus-visible:ring-focus",
                   active
                     ? "bg-accent-tint text-accent"
                     : "text-ink-muted hover:bg-surface-muted hover:text-ink",
                 )}
               >
-                <span className={cn("mt-0.5 shrink-0", active ? "text-accent" : "text-ink-subtle")}>
+                <span className={cn("shrink-0", active ? "text-accent" : "text-ink-subtle")}>
                   {item.icon}
                 </span>
-                <span className="min-w-0">
-                  <span className="block text-base font-medium">{item.label}</span>
-                  <span
-                    className={cn(
-                      "block text-xs",
-                      active ? "text-accent/80" : "text-ink-subtle",
-                    )}
-                  >
-                    {item.hint}
-                  </span>
-                </span>
+                <span className="block text-base font-medium">{item.label}</span>
               </Link>
             </li>
           );
