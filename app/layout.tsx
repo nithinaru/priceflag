@@ -26,6 +26,10 @@ export const metadata: Metadata = {
   },
   description:
     "Forecast a price change, roll it out gradually, and pause automatically for a merchant decision if performance crosses a safety limit.",
+  icons: {
+    icon: "/ibis.svg",
+    apple: "/ibis.svg",
+  },
 };
 
 export const viewport: Viewport = {

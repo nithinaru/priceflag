@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Button } from "@/components/ui";
+import { IconIbis } from "@/components/ui/icons";
 
 type SiteFooterProps = {
   shopDomain?: string;
@@ -16,7 +17,7 @@ export function SiteFooter({ shopDomain }: SiteFooterProps) {
     >
       <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
-          <img src="/ibis.png" alt="" width={22} height={22} />
+          <IconIbis size={22} />
           <p
             className="text-lg font-medium leading-none"
             style={{ fontFamily: "var(--font-display), Georgia, serif" }}

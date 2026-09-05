@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { cn } from "@/components/cn";
 
 /**
  * Inline icons, so Lane A ships no icon dependency (REQ-A-001).
@@ -33,6 +34,43 @@ function Icon({ size = 16, title, children, ...props }: IconProps & { children: 
       {title ? <title>{title}</title> : null}
       {children}
     </svg>
+  );
+}
+
+/**
+ * The Priceflag ibis, from priceflag.org/ibis.svg. Logo only — nav tools stay
+ * ink strokes. `currentColor` so cream chrome is navy and the lime footer is ink.
+ */
+export function IconIbis({
+  size = 22,
+  title,
+  className,
+}: {
+  size?: number;
+  title?: string;
+  className?: string;
+}) {
+  const height = size;
+  const width = Math.round((size * 621) / 402);
+  return (
+    <span
+      role={title ? "img" : undefined}
+      aria-label={title}
+      aria-hidden={title ? undefined : true}
+      className={cn("inline-block shrink-0 bg-current", className)}
+      style={{
+        width,
+        height,
+        WebkitMaskImage: "url(/ibis.svg)",
+        maskImage: "url(/ibis.svg)",
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+      }}
+    />
   );
 }
 

@@ -10,6 +10,7 @@ import {
   IconBook,
   IconClose,
   IconGauge,
+  IconIbis,
   IconLayers,
   IconMenu,
   IconPlus,
@@ -105,7 +106,7 @@ export function Nav({
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
       <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 lg:hidden">
         <Link href="/" className="flex items-center gap-2 rounded-md font-medium text-ink">
-          <img src="/ibis.png" alt="" width={28} height={28} className="size-7 object-contain" />
+          <IconIbis size={22} />
           Priceflag
         </Link>
         <button
@@ -158,7 +159,7 @@ export function Nav({
 function Brand() {
   return (
     <div className="flex items-center gap-2.5 border-b border-border px-4 py-4">
-      <img src="/ibis.png" alt="" width={32} height={32} className="size-8 object-contain" />
+      <IconIbis size={26} />
       <div className="min-w-0">
         <div className="font-[family-name:var(--font-display)] text-md leading-tight text-ink">Priceflag</div>
       </div>

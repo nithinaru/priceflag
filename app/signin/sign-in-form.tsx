@@ -10,7 +10,7 @@ import {
   Notice,
   PageHeader,
 } from "@/components/ui";
-import { IconArrowRight, IconChevronRight } from "@/components/ui/icons";
+import { IconArrowRight, IconChevronRight, IconIbis } from "@/components/ui/icons";
 
 const ERROR_COPY: Record<string, { title: string; body: string }> = {
   sign_in_required: {
@@ -132,7 +132,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2.5 text-ink">
-        <img src="/ibis.png" alt="" width={22} height={22} />
+        <IconIbis size={22} />
         <span
           className="text-md tracking-[-0.01em]"
           style={{ fontFamily: "var(--font-display), Georgia, serif" }}
