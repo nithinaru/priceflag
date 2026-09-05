@@ -283,7 +283,6 @@ export default async function OverviewPage({
           {live.products_missing_cost > 0 ? (
             <Card tone="hold" edge>
               <CardHeader
-                eyebrow="Worth fixing"
                 title={`${countOf(live.products_missing_cost, "product")} without a cost`}
                 description="We can show you revenue for these, but not profit — so a forecast for them would be a guess. Add what each one costs you and the profit numbers appear."
                 action={

@@ -159,7 +159,6 @@ export function FounderLab({
         <div className="space-y-4 lg:sticky lg:top-6">
           <Card>
             <CardHeader
-              eyebrow="Input"
               title="Build a merchant scenario"
               description="Start with a preset or change every assumption yourself."
             />
@@ -336,7 +335,6 @@ function FounderReadout({ result, running }: { result: FounderLabResult; running
   return (
     <Card tone={readout.tone} edge data-testid="founder-lab-result" aria-busy={running}>
       <CardHeader
-        eyebrow="Engine output"
         title={readout.title}
         description={readout.description}
         action={

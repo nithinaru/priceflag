@@ -86,7 +86,6 @@ export function GuardrailBuilder({
   return (
     <Card>
       <CardHeader
-        eyebrow="Decide this before anything goes live"
         title="When should we stop?"
         description="Write the limit now, while you are calm about it. We check every day and pause for your decision when it is crossed."
       />

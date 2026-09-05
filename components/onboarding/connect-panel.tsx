@@ -93,7 +93,6 @@ export function ConnectPanel({
     return (
       <Card tone="accent" edge>
         <CardHeader
-          eyebrow="Scripted, not connected"
           title={`Loading ${normalized}`}
           description="This is what the real thing looks like. No Shopify store was contacted, and no credentials were used."
         />

@@ -190,7 +190,6 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
       {/* What is live right now. */}
       <Card tone={cardTone} edge={cardTone !== "default"}>
         <CardHeader
-          eyebrow="Right now"
           title={
             live.variants_live > 0
               ? `New prices are live on ${countOf(live.variants_live, "product")}`

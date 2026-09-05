@@ -101,7 +101,6 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
       {/* The verdict, first. */}
       <Card tone={scored ? (report.in_range ? "live" : "hold") : "default"} edge={scored}>
         <CardHeader
-          eyebrow="The short version"
           title={
             scored
               ? report.in_range
