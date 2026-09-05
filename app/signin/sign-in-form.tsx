@@ -133,12 +133,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
     <div className="space-y-6">
       <div className="flex items-center gap-2.5 text-ink">
         <IconIbis size={22} />
-        <span
-          className="text-md tracking-[-0.01em]"
-          style={{ fontFamily: "var(--font-display), Georgia, serif" }}
-        >
-          Priceflag
-        </span>
+        <span className="font-display text-md tracking-[-0.01em]">Priceflag</span>
       </div>
 
       <PageHeader

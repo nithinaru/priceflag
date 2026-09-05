@@ -18,12 +18,7 @@ export function SiteFooter({ shopDomain }: SiteFooterProps) {
       <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
           <IconIbis size={22} />
-          <p
-            className="text-lg font-medium leading-none"
-            style={{ fontFamily: "var(--font-display), Georgia, serif" }}
-          >
-            {headline}
-          </p>
+          <p className="font-display text-lg leading-none">{headline}</p>
         </div>
 
         <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -47,8 +42,17 @@ export function SiteFooter({ shopDomain }: SiteFooterProps) {
         </nav>
       </div>
 
-      <div className="border-t border-[#0d1f00]/15 px-6 py-4 text-center text-sm text-[#0d1f00]/80">
-        Built by Humans in San Francisco, CA
+      <div className="flex flex-col items-center justify-center gap-1 border-t border-[#0d1f00]/15 px-6 py-4 text-center text-sm text-[#0d1f00]/80 sm:flex-row sm:gap-3">
+        <span>Built by Humans in San Francisco, CA</span>
+        <span className="hidden sm:inline" aria-hidden="true">
+          ·
+        </span>
+        <a
+          href="https://www.streamlinehq.com"
+          className="underline-offset-2 hover:underline"
+        >
+          Icons by Streamline, CC BY 4.0
+        </a>
       </div>
     </footer>
   );

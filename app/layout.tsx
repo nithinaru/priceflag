@@ -11,12 +11,14 @@ const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
   display: "swap",
+  weight: ["400", "500", "600"],
 });
 
 const hedvig = Hedvig_Letters_Serif({
   subsets: ["latin"],
   variable: "--font-hedvig",
   display: "swap",
+  weight: "400",
 });
 
 export const metadata: Metadata = {
@@ -48,7 +50,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     hasShopifyConfig() && !isDemoMode() ? env("SHOPIFY_API_KEY") : undefined;
 
   return (
-    <html lang="en" data-theme="light" className={`${inter.variable} ${hedvig.variable}`}>
+    <html
+      lang="en"
+      data-theme="light"
+      className={`${inter.variable} ${hedvig.variable} font-sans`}
+    >
       {shopifyApiKey !== undefined ? (
         <head>
           <meta name="shopify-api-key" content={shopifyApiKey} />
@@ -57,7 +63,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js" />
         </head>
       ) : null}
-      <body>
+      <body className="bg-canvas font-sans text-ink antialiased">
         <ToastProvider>
           {shopifyApiKey !== undefined ? <AppBridgeBoot /> : null}
           <AppShell>{children}</AppShell>

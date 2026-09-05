@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
   // trace root so production bundles never infer or include a parent workspace.
   outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
+  // Hide the Next.js “N” badge in local/dev overlays.
+  devIndicators: false,
   eslint: { ignoreDuringBuilds: true },
   async headers() {
     return [

@@ -169,8 +169,14 @@
     text-size-adjust: 100%;
   }
 
-  h1 {
-    font-family: var(--font-display);
+  html,
+  body {
+    font-family: var(--font-inter), ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  }
+
+  h1,
+  .font-display {
+    font-family: var(--font-hedvig), Georgia, "Times New Roman", serif;
     font-weight: 400;
     letter-spacing: -0.02em;
   }
