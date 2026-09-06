@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/components/cn";
 import { Button, ButtonLink, LiveMachine, Notice } from "@/components/ui";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
@@ -24,27 +24,17 @@ export function SyncProgressPanel({
   initial,
   /** Poll the real endpoint. Off in demo mode, which plays a scripted sync. */
   poll = true,
-  onCatalogReady,
   onProgress,
   onRetry,
 }: {
   initial: SyncProgress;
   poll?: boolean;
-  onCatalogReady?: () => void;
   /** Called with each polled update, so a parent can mirror the stage. */
   onProgress?: (progress: SyncProgress) => void;
   /** When set, the error state's retry button calls this instead of reloading. */
   onRetry?: () => void;
 }) {
   const [progress, setProgress] = useState(initial);
-  const announced = useRef(false);
-
-  useEffect(() => {
-    if (progress.catalog.ready && !announced.current) {
-      announced.current = true;
-      onCatalogReady?.();
-    }
-  }, [progress.catalog.ready, onCatalogReady]);
 
   useEffect(() => {
     if (!poll) return;

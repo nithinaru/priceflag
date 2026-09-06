@@ -120,7 +120,7 @@ function Step({
         transition={done ? "snappy" : highlight ? "bouncy" : "smooth"}
         fill={
           done
-            ? "var(--pf-live-tint)"
+            ? "var(--pf-surface)"
             : highlight
               ? "var(--pf-accent)"
               : "var(--pf-surface-muted)"

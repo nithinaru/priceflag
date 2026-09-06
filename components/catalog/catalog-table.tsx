@@ -493,7 +493,7 @@ function CatalogRow({
   const margin = marginPct(product.price_cents, product.cogs_cents);
 
   return (
-    <TR interactive={selectable} className={cn(selected && "bg-accent-tint/50")}>
+    <TR interactive={selectable} className={cn(selected && "bg-surface")}>
       <TD>
         <input
           type="checkbox"

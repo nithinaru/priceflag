@@ -195,7 +195,7 @@ function InlineSelect({
         onChange={(event) => onChange(event.target.value)}
         className={cn(
           "cursor-pointer appearance-none rounded-md border border-dashed border-accent-border",
-          "bg-accent-tint px-2 py-0.5 pr-6 text-md font-medium text-accent outline-none",
+          "bg-surface px-2 py-0.5 pr-6 text-md font-medium text-accent outline-none",
           "hover:border-accent focus-visible:ring-2 focus-visible:ring-focus",
         )}
       >
@@ -235,7 +235,7 @@ function InlineNumber({
   onChange: (value: number) => void;
 }) {
   return (
-    <span className="inline-flex items-baseline rounded-md border border-dashed border-accent-border bg-accent-tint pr-1.5 focus-within:border-accent">
+    <span className="inline-flex items-baseline rounded-md border border-dashed border-accent-border bg-surface pr-1.5 focus-within:border-accent">
       <input
         type="number"
         inputMode="numeric"

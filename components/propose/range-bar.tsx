@@ -94,7 +94,8 @@ export function RangeBar({
           height={10}
           rx={3}
           className={cn(
-            allBad ? "fill-breach-tint stroke-breach-border" : "fill-accent-tint stroke-accent-border",
+            "fill-surface",
+            allBad ? "stroke-breach-border" : "stroke-accent-border",
           )}
           strokeWidth={1}
         />

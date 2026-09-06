@@ -7,7 +7,6 @@ import {
   CellNote,
   Notice,
   Stat,
-  StatGroup,
   TBody,
   TD,
   TH,
@@ -293,7 +292,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                 {forecast.scenarios.map((scenario) => (
                   <TR
                     key={scenario.label}
-                    className={cn(scenario.is_breakeven && "bg-accent-tint/50")}
+                    className={cn(scenario.is_breakeven && "bg-surface")}
                   >
                     <TD>
                       <span className="font-medium">{scenario.label}</span>

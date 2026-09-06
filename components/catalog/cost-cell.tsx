@@ -161,7 +161,7 @@ export function CostCell({
             onClick={() => void commit()}
             disabled={saving}
             aria-label={`Save cost for ${productTitle}`}
-            className="rounded-md p-1.5 text-live outline-none hover:bg-live-tint focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
+            className="rounded-md p-1.5 text-live outline-none hover:bg-surface focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
           >
             <IconCheck size={15} />
           </button>
@@ -194,7 +194,7 @@ export function CostCell({
       <button
         type="button"
         onClick={startEditing}
-        className="rounded-md border border-hold-border bg-hold-tint px-2 py-1 text-xs font-medium text-hold outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-focus"
+        className="rounded-md border border-hold-border bg-surface px-2 py-1 text-xs font-medium text-hold outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-focus"
       >
         Add cost
       </button>

@@ -39,12 +39,3 @@ export function readSelection(): string[] {
     return [];
   }
 }
-
-export function clearSelection(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(KEY);
-  } catch {
-    // Nothing to do — an unclearable selection is not worth an error state.
-  }
-}
