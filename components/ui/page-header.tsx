@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
-import Balancer from "react-wrap-balancer";
 import { cn } from "@/components/cn";
 import { MotionViewTransition } from "@/components/motion/view-transition";
 
 /**
  * Page title, one sentence of context, and at most one primary action. The
  * sentence is not decoration: it is how the merchant knows what this screen is
- * for without documentation.
+ * for without documentation. Titles use CSS `text-wrap: balance` — a script
+ * inside `h1` leaked into the accessible name.
  */
 export function PageHeader({
   title,
@@ -31,9 +31,7 @@ export function PageHeader({
         <div className="min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <MotionViewTransition name="pf-title">
-              <h1 className="font-display text-2xl text-ink">
-                <Balancer as="span">{title}</Balancer>
-              </h1>
+              <h1 className="text-balance font-display text-2xl text-ink">{title}</h1>
             </MotionViewTransition>
             {meta}
           </div>
