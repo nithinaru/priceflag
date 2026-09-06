@@ -239,10 +239,7 @@ export function CatalogTable({
       ) : null}
 
       <Card>
-        <CardHeader
-          title="Your catalog"
-          description="Prices here are the prices on your storefront right now. Click any cost to change it."
-        />
+        <CardHeader title="Your catalog" />
 
         <div className="flex flex-wrap items-end gap-3 px-4 pb-4 sm:px-5">
           <div className="min-w-[13rem] flex-1">

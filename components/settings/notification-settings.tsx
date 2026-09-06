@@ -82,15 +82,11 @@ export function NotificationSettings({
 
   return (
     <Card>
-      <CardHeader
-        title="Who we email"
-        description="We email when a price change starts, moves to more products, crosses a safety limit, pauses, or is manually rolled back."
-      />
+      <CardHeader title="Who we email" />
       <CardBody className="space-y-4">
         {!emailConfigured ? (
-          <Notice tone="hold" title="This copy of Priceflag cannot send email yet">
-            No email service is configured, so nothing will be sent whatever you put here. Every
-            event is still recorded in your price journal and on the rollout page.
+          <Notice tone="hold" title="Email is not configured">
+            Nothing will be sent from this deployment.
           </Notice>
         ) : null}
 

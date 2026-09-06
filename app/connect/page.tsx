@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Badge, PageHeader, TextLink } from "@/components/ui";
+import { Badge, PageHeader } from "@/components/ui";
 import { ConnectPanel, type ConnectedShopState } from "@/components/onboarding/connect-panel";
 import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getAdapter } from "@/lib/adapters";
@@ -83,11 +83,6 @@ export default async function ConnectPage({
         connected={connected}
         installedNow={installedNow && connected === null}
       />
-
-      <p className="text-base text-ink-muted">
-        Already connected and just want to look around?{" "}
-        <TextLink href="/products">Your products</TextLink> is the place to start.
-      </p>
     </div>
   );
 }

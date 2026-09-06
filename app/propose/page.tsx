@@ -31,7 +31,6 @@ export default async function ProposePage({
       <PageHeader
         breadcrumb={<TextLink standalone href="/products">← Your products</TextLink>}
         title="Propose a price change"
-        description="See the range before anything goes live, then set the pause limit."
       />
       <ProposeFlow demoMode={ctx.mode === "demo"} />
     </div>

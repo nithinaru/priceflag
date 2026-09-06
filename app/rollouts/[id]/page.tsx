@@ -44,7 +44,6 @@ import {
   changeWords,
   countOf,
   rolloutCardTone,
-  rolloutStatusMeta,
 } from "@/components/domain/status";
 import { formatDateTime, formatDay, formatMoney, formatUnits } from "@/components/format";
 import { readingSentence, verdictForReading } from "@/lib/engine/readings";
@@ -94,7 +93,6 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
 
   const { rollout, variants, readings, events, live, can, health, health_sentence } = bundle;
   const currency = demoMode ? getDemoStore().shop.currency : ctx.shop!.currency;
-  const meta = rolloutStatusMeta(rollout.status);
   const journal = demoMode
     ? getJournalForRollout(rollout.id)
     : await getRealJournalForRollout(ctx.shop!, rollout.id);
@@ -124,7 +122,6 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
             ) : null}
           </span>
         }
-        description={meta.sentence}
         action={
           <>
             {readings.length > 0 ? (
@@ -172,18 +169,9 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         }
       />
 
-      {rollout.status === "paused" ? (
-        <Notice tone="hold" title="This rollout is paused for your decision">
-          {rollout.paused_reason ?? "Priceflag stopped the rollout."} Nothing else will move. Prices
-          already live stay in place until you review the results and choose a manual rollback or a
-          new plan.
-        </Notice>
-      ) : null}
-
-      {rollout.status === "rolled_back" ? (
-        <Notice tone="breach" title="This change was rolled back">
-          Every price was restored to its frozen baseline and verified against Shopify.{" "}
-          <TextLink href="/journal">The journal</TextLink> has the exact prices and times.
+      {rollout.status === "paused" && rollout.paused_reason ? (
+        <Notice tone="hold" title="Paused">
+          {rollout.paused_reason}
         </Notice>
       ) : null}
 
@@ -192,13 +180,8 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         <CardHeader
           title={
             live.variants_live > 0
-              ? `New prices are live on ${countOf(live.variants_live, "product")}`
-              : "No Priceflag price is on your storefront right now"
-          }
-          description={
-            live.variants_live > 0
-              ? `Everything selected is being set ${changeWords(rollout, currency)}. Products not in the current step are still on their old price.`
-              : `If this runs, everything selected goes ${changeWords(rollout, currency)}.`
+              ? `${countOf(live.variants_live, "product")} live`
+              : "Nothing live"
           }
         />
         <CardBody>
@@ -257,17 +240,14 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         <div className="min-w-0 space-y-6">
           {/* Units sold against expectation. */}
           <Card>
-            <CardHeader
-              title="Unit sales, day by day"
-              description="Each day we compare units sold with the range predicted for this price and rollout stage. That range includes the forecast price effect; the table below shows the same numbers."
-            />
+            <CardHeader title="Unit sales" />
             {readings.length > 0 ? (
               <CardBody>
                 <UnitsChart readings={readings} stageCount={rollout.stages.length} />
               </CardBody>
             ) : null}
             <CardBody flush>
-              <Table caption="Daily units sold against the expected range">
+              <Table caption="Daily units">
                 <THead>
                   <TR>
                     <TH>Day</TH>
@@ -279,10 +259,7 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
                 </THead>
                 <TBody>
                   {readings.length === 0 ? (
-                    <TableEmptyRow colSpan={5}>
-                      Nothing to compare yet. We check once a full day has passed in your
-                      store&rsquo;s time.
-                    </TableEmptyRow>
+                    <TableEmptyRow colSpan={5}>Nothing to compare yet</TableEmptyRow>
                   ) : (
                     readings
                       .slice()
@@ -331,12 +308,9 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
 
           {/* Products. */}
           <Card>
-            <CardHeader
-              title="Products in this change"
-              description="Which ones have already moved, and what each one would become."
-            />
+            <CardHeader title="Products" />
             <CardBody flush>
-              <Table layout="intrinsic" caption="Products in this price change">
+              <Table layout="intrinsic" caption="Products">
                 <THead>
                   <TR>
                     <TH>Product</TH>
@@ -387,10 +361,7 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
               </Table>
             </CardBody>
             <CardFooter>
-              <span>
-                The &ldquo;price before&rdquo; column is what we captured when this change was
-                created. It is the only thing a rollback ever reads.
-              </span>
+              <span>Rollback reads only the price-before column.</span>
             </CardFooter>
           </Card>
 
@@ -400,7 +371,7 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         <div className="min-w-0 space-y-6">
           <Card>
             <CardHeader
-              title="The steps"
+              title="Steps"
               description="Each step adds more products, never more visitors."
             />
             <CardBody>
@@ -409,16 +380,9 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
           </Card>
 
           <Card>
-            <CardHeader
-              title="What has happened"
-              description="Everything Priceflag did, and why."
-            />
+            <CardHeader title="Events" />
             {events.length === 0 ? (
-              <EmptyState
-                icon={<IconClock size={18} />}
-                title="Nothing yet"
-                description="Events appear here the moment anything happens."
-              />
+              <EmptyState icon={<IconClock size={18} />} title="Nothing yet" />
             ) : (
               <CardBody>
                 <ol className="space-y-4">
@@ -439,16 +403,9 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
           </Card>
 
           <Card>
-            <CardHeader
-              title="Prices we changed"
-              description="The record for this change, in your price journal."
-            />
+            <CardHeader title="Journal" />
             {journal.length === 0 ? (
-              <EmptyState
-                icon={<IconInbox size={18} />}
-                title="No price writes yet"
-                description="Once a price moves, it is recorded here and in your journal."
-              />
+              <EmptyState icon={<IconInbox size={18} />} title="No writes yet" />
             ) : (
               <CardBody>
                 <DetailList>
@@ -489,7 +446,7 @@ function SetupCard({
 
   return (
     <Card>
-      <CardHeader title="How this was set up" description="Fixed when you created it." />
+      <CardHeader title="Setup" />
       <CardBody>
         <DetailList>
           <DetailRow label="Change">{changeWords(rollout, currency)}</DetailRow>

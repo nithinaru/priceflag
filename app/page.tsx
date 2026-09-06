@@ -35,10 +35,9 @@ import {
   GuardrailSummary,
   changeWords,
   countOf,
-  rolloutStatusMeta,
 } from "@/components/domain/status";
-import { formatDateTime, formatDay, formatUnits } from "@/components/format";
-import { readingSentence } from "@/lib/engine/readings";
+import { formatDateTime, formatUnits } from "@/components/format";
+import { readingSentence, type RolloutHealth } from "@/lib/engine/readings";
 import { getDemoStore } from "@/components/demo/store";
 import { getJournal, getLive, getRolloutBundles, getRollouts } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
@@ -74,11 +73,8 @@ export default async function OverviewPage({
   const paused = live.rollouts.filter((rollout) => rollout.status === "paused");
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Overview"
-        description={data.shopDomain}
-      />
+    <div className="space-y-4">
+      <PageHeader title="Overview" />
 
       {/* First on the page while the store is still being set up: a young store
           has nothing live, so "what is live right now" is not yet the question
@@ -86,27 +82,19 @@ export default async function OverviewPage({
       <FirstRunGuide readiness={readiness} />
 
       {paused.map((rollout) => {
-        // The demo's one paused rollout is an external change; a real pause
-        // carries its own recorded reason, and that is the honest thing to show.
-        const reason = demoMode ? null : (bundles.get(rollout.id)?.rollout.paused_reason ?? null);
+        const reason = bundles.get(rollout.id)?.rollout.paused_reason ?? null;
         return (
           <Notice
             key={rollout.id}
             tone="hold"
-            title="One price change is paused and needs you"
+            title={rollout.name || "Paused"}
             action={
               <ButtonLink href={`/rollouts/${rollout.id}`} variant="secondary" size="sm">
                 Take a look
               </ButtonLink>
             }
           >
-            {reason ?? (
-              <>
-                A price in <strong className="font-medium text-ink">{rollout.name}</strong> was
-                changed in Shopify, outside Priceflag. We stopped rather than guess, so nothing else
-                will move until you decide.
-              </>
-            )}
+            {reason}
           </Notice>
         );
       })}
@@ -115,8 +103,7 @@ export default async function OverviewPage({
         <Card>
           <EmptyState
             icon={<IconFlag size={19} />}
-            title="No prices are changing right now"
-            description="Nothing Priceflag set is live on your storefront. When you are ready, pick the products you want to reprice and we will show you what the change should do before anything goes out."
+            title="Nothing live"
             action={
               <ButtonLink href="/products" variant="neon" iconRight={<IconArrowRight size={15} />}>
                 Go to your products
@@ -139,7 +126,6 @@ export default async function OverviewPage({
           >
             <CardHeader
               title={summary.name}
-              description={rolloutStatusMeta(summary.status).sentence}
               action={
                 <>
                   <RollbackButton
@@ -169,27 +155,17 @@ export default async function OverviewPage({
               </div>
             </CardHeader>
 
-            <CardBody className="space-y-4">
+            <CardBody className="space-y-3">
               <StatGroup columns={3}>
                 <Stat
-                  label="Products on a new price"
+                  label="Live"
                   value={`${summary.variants_live} of ${summary.variants_total}`}
                   // Green means healthy-and-live. A paused rollout is neither.
                   tone={summary.status === "running" && summary.variants_live > 0 ? "live" : "default"}
-                  note={`Everything selected is being set ${changeWords(bundle.rollout, data.currency)}.`}
                 />
                 <Stat
                   label="Step"
                   value={`${Math.max(summary.stage_index + 1, 1)} of ${summary.stage_count}`}
-                  note={
-                    summary.status === "paused"
-                      ? "Nothing is scheduled while this is paused."
-                      : summary.status === "completed"
-                        ? "All stages finished; monitoring has ended."
-                      : summary.next_decision_day
-                        ? `We look at the numbers again on ${formatDay(summary.next_decision_day)}.`
-                        : "Waiting for a full day of unit sales."
-                  }
                 />
                 {latest ? (
                   <Stat
@@ -199,11 +175,7 @@ export default async function OverviewPage({
                     note={readingSentence(latest)}
                   />
                 ) : (
-                  <Stat
-                    label="Unit sales so far"
-                    value="Not yet"
-                    note="We compare units sold once a full day has passed."
-                  />
+                  <Stat label="Yesterday" value="Not yet" />
                 )}
               </StatGroup>
 
@@ -222,25 +194,15 @@ export default async function OverviewPage({
             </CardBody>
 
             <CardFooter>
-              {summary.status === "completed" ? (
-                <p className="max-w-prose">
-                  <span className="font-medium text-ink">Monitoring ended: </span>
-                  this rollout finished every stage. Its prices remain live, and you can still put them back manually.
-                </p>
-              ) : (
-                <GuardrailSummary guardrails={bundle.rollout.guardrails} />
-              )}
+              <GuardrailSummary guardrails={bundle.rollout.guardrails} />
             </CardFooter>
           </Card>
         );
       })}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader
-            title="Recent price changes"
-            description="Every change to a price, whoever made it."
-          />
+          <CardHeader title="Recent price changes" />
           <CardBody flush>
             <Table caption="The four most recent price changes">
               <THead>
@@ -274,17 +236,15 @@ export default async function OverviewPage({
             </Table>
           </CardBody>
           <CardFooter>
-            <span>Showing the {countOf(journal.length, "most recent change")}.</span>
             <TextLink standalone href="/journal">Open the price journal</TextLink>
           </CardFooter>
         </Card>
 
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-4">
           {live.products_missing_cost > 0 ? (
             <Card tone="hold" edge>
               <CardHeader
                 title={`${countOf(live.products_missing_cost, "product")} without a cost`}
-                description="We can show you revenue for these, but not profit — so a forecast for them would be a guess. Add what each one costs you and the profit numbers appear."
                 action={
                   <ButtonLink href="/products" variant="secondary" size="sm">
                     Add costs
@@ -295,10 +255,7 @@ export default async function OverviewPage({
           ) : null}
 
           <Card>
-            <CardHeader
-              title="Not started yet"
-              description="Changes you have set up that are not touching your storefront."
-            />
+            <CardHeader title="Not started yet" />
             {upcoming.length > 0 ? (
               <CardBody>
                 <DetailList>
@@ -316,14 +273,9 @@ export default async function OverviewPage({
                 </DetailList>
               </CardBody>
             ) : (
-              <EmptyState
-                icon={<IconTag size={18} />}
-                title="Nothing waiting"
-                description="Changes you set up but have not started will show here."
-              />
+              <EmptyState icon={<IconTag size={18} />} title="Nothing waiting" />
             )}
             <CardFooter>
-              <span>Nothing here is live.</span>
               <TextLink standalone href="/rollouts">See all price changes</TextLink>
             </CardFooter>
           </Card>
@@ -370,17 +322,22 @@ function demoOverview(): OverviewData {
   };
 }
 
-function healthTitle(health: string): string {
+function healthTitle(health: RolloutHealth): string {
   switch (health) {
     case "breaching":
-      return "This change needs your attention";
+      return "Breach";
     case "watching":
-      return "Worth keeping an eye on";
+      return "Watching";
     case "too_early":
-      return "Nothing to compare yet";
+      return "Too early";
     case "monitoring_ended":
-      return "Monitoring is finished";
-    default:
-      return "Unit sales are holding up";
+      return "Ended";
+    case "healthy":
+    case "not_live":
+      return "Holding";
+    default: {
+      const _exhaustive: never = health;
+      return _exhaustive;
+    }
   }
 }

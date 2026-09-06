@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Notice, PageHeader } from "@/components/ui";
+import { Badge, PageHeader } from "@/components/ui";
 import { JournalTable } from "@/components/journal/journal-table";
 import { countOf } from "@/components/domain/status";
 import { getJournal, getRollouts } from "@/components/demo/rollouts";
@@ -9,7 +9,7 @@ import { getRealJournal, getRealRolloutNames } from "@/app/lib/store-data";
 import type { JournalEntry } from "@/lib/types";
 
 export const metadata: Metadata = {
-  title: "Price journal",
+  title: "Journal",
 };
 
 export const dynamic = "force-dynamic";
@@ -44,20 +44,15 @@ export default async function JournalPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Price journal"
-        description="Including edits made in Shopify."
+        title="Journal"
+        meta={
+          externalCount > 0 ? (
+            <Badge tone="hold" size="sm">
+              {countOf(externalCount, "change")} from Shopify
+            </Badge>
+          ) : null
+        }
       />
-
-      {externalCount > 0 ? (
-        <Notice
-          tone="info"
-          title={`${countOf(externalCount, "change")} came from outside Priceflag`}
-        >
-          Someone edited these prices in the Shopify admin. We record them so the history stays
-          complete, and we pause any price change that touches the same product rather than blame
-          our own change for the difference.
-        </Notice>
-      ) : null}
 
       <JournalTable entries={entries} rolloutNames={rolloutNames} />
     </div>

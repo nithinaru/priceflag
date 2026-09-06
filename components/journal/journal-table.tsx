@@ -97,7 +97,6 @@ export function JournalTable({
     <Card>
       <CardHeader
         title="All price changes"
-        description="Newest first. Times are in your store's time."
         action={
           <Button
             variant="secondary"
@@ -190,7 +189,7 @@ export function JournalTable({
       </div>
 
       <CardBody flush>
-        <Table layout="intrinsic" caption="Every recorded price change, newest first">
+        <Table layout="intrinsic" caption="Journal">
           <THead>
             <TR>
               <TH>When</TH>
@@ -204,21 +203,7 @@ export function JournalTable({
           <TBody>
             {filtered.length === 0 ? (
               <TableEmptyRow colSpan={6}>
-                {filtersActive ? (
-                  <>
-                    <span className="block font-medium text-ink">Nothing matches that</span>
-                    <span className="mt-1 block">
-                      No price change matches what you have searched and filtered for.
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="block font-medium text-ink">No price changes recorded yet</span>
-                    <span className="mt-1 block">
-                      The first time a price moves — by Priceflag or by you — it appears here.
-                    </span>
-                  </>
-                )}
+                {filtersActive ? "Nothing matches" : "No price changes yet"}
               </TableEmptyRow>
             ) : (
               filtered.map((entry) => {
@@ -269,10 +254,9 @@ export function JournalTable({
       <CardFooter>
         <span>
           {filtersActive
-            ? `Showing ${filtered.length} of ${countOf(entries.length, "change")}.`
-            : `${countOf(entries.length, "change")} recorded.`}
+            ? `${filtered.length} of ${countOf(entries.length, "change")}`
+            : countOf(entries.length, "change")}
         </span>
-        <span>Nothing is ever removed from this list.</span>
       </CardFooter>
     </Card>
   );

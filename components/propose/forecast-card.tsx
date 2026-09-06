@@ -63,7 +63,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
       <Card tone="accent" edge>
         <CardHeader
           title="What this change would do"
-          description={`Over the next ${forecast.horizon_days} days, compared with leaving prices alone.`}
+          description={`${forecast.horizon_days} days`}
         />
 
         <CardBody className="space-y-6">
@@ -347,10 +347,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
 
       {/* Per-product breakdown. */}
       <Card>
-        <CardHeader
-          title="Product by product"
-          description="What each price becomes, and what you would make on it."
-        />
+        <CardHeader title="Product by product" />
         <CardBody flush>
           <Table
             layout="intrinsic"

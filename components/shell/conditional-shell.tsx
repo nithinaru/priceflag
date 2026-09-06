@@ -30,7 +30,7 @@ export function ConditionalShell({
 
       {hideNav ? null : nav}
 
-      <div className={hideNav ? undefined : "lg:pl-60"}>
+      <div className={hideNav ? undefined : "lg:pl-72"}>
         <main
           id="main"
           className={

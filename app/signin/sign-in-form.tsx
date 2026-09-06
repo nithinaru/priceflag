@@ -15,7 +15,7 @@ import { IconArrowRight, IconChevronRight, IconIbis } from "@/components/ui/icon
 const ERROR_COPY: Record<string, { title: string; body: string }> = {
   sign_in_required: {
     title: "Connect your store to continue",
-    body: "Enter the store address below. If you already connected it, you can email yourself a link instead — open that link in this browser.",
+    body: "Enter your store address, or email yourself a link if it is already connected.",
   },
   link_expired: {
     title: "That sign-in link has expired",
@@ -27,11 +27,11 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
   },
   link_invalid: {
     title: "That sign-in link did not work",
-    body: "Ask for a new one below. Links can only be used once.",
+    body: "Ask for a new one below — links can only be used once.",
   },
   link_unbound: {
     title: "Open the link in this browser",
-    body: "The link has to be opened in the same browser you used to request it. Ask for a new one here, then use it on this device.",
+    body: "Ask for a new link here, then open it in this same browser.",
   },
   link_missing: {
     title: "That sign-in link did not work",
@@ -137,8 +137,8 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
       </div>
 
       <PageHeader
-        title="Connect your Shopify store"
-        description="Approve the app once. After that, open it from Apps in Shopify admin. Email is a same-browser return path — it cannot change a price."
+        title="Connect your store"
+        description="Email cannot write prices."
       />
 
       {bounce !== undefined ? (
@@ -197,13 +197,11 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
         </summary>
         <div className="space-y-4 border-t border-border px-4 py-4 sm:px-5">
           <p className="max-w-prose text-base text-ink-muted">
-            We send a one-time link. Open it in this same browser — a different device will not
-            work. If this email has not connected a store yet, the next screen is Connect.
+            We send a one-time link — open it in this same browser.
           </p>
           {sent ? (
             <Notice tone="info" title="Check your email">
-              Open the link in this same browser to finish. If nothing arrives, wait a minute and
-              try again.
+              Open the link in this same browser.
             </Notice>
           ) : (
             <form

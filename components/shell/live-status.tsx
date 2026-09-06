@@ -29,12 +29,8 @@ export async function LiveStatus() {
     // Real mode, unknown shop: say nothing rather than guess. The page body
     // carries the full open-from-Shopify explanation.
     return (
-      <div className="rounded-lg border border-border bg-surface-muted px-3 py-2.5">
-        <div className="text-xs font-medium text-ink-muted">Right now</div>
-        <p className="mt-1 text-base font-medium text-ink">No store connected</p>
-        <p className="mt-0.5 text-xs text-ink-subtle">
-          Open Priceflag from your Shopify admin to see what is live.
-        </p>
+      <div className="rounded-lg border border-border bg-surface-muted px-3 py-2">
+        <p className="text-base font-medium text-ink">No store connected</p>
       </div>
     );
   }
@@ -43,12 +39,8 @@ export async function LiveStatus() {
 
   if (!first || !live.anything_live) {
     return (
-      <div className="rounded-lg border border-border bg-surface-muted px-3 py-2.5">
-        <div className="text-xs font-medium text-ink-muted">Right now</div>
-        <p className="mt-1 text-base font-medium text-ink">No prices are changing</p>
-        <p className="mt-0.5 text-xs text-ink-subtle">
-          Nothing Priceflag set is live on your storefront.
-        </p>
+      <div className="rounded-lg border border-border bg-surface-muted px-3 py-2">
+        <p className="text-base font-medium text-ink">Nothing live</p>
       </div>
     );
   }
@@ -58,7 +50,7 @@ export async function LiveStatus() {
   return (
     <Link
       href={`/rollouts/${first.id}`}
-      className="group block rounded-lg border border-live-border bg-surface px-3 py-2.5 outline-none hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-focus"
+      className="group block rounded-lg border border-live-border bg-surface px-3 py-2 outline-none hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-focus"
     >
       <div className="flex items-center justify-between gap-2">
         <Badge tone={tone} size="sm" dot pulse={first.status === "running"}>
@@ -66,10 +58,10 @@ export async function LiveStatus() {
         </Badge>
         <IconChevronRight size={15} className="text-ink-subtle" />
       </div>
-      <p className="mt-1.5 truncate text-base font-medium text-ink">{first.name}</p>
-      <p className="mt-0.5 text-xs text-ink-subtle">
-        New prices on {first.variants_live} of {first.variants_total} products
-        {live.rollouts.length > 1 ? ` · ${live.rollouts.length - 1} more` : ""}
+      <p className="mt-1 truncate text-base font-medium text-ink">{first.name}</p>
+      <p className="mt-0.5 tabular-nums text-xs text-ink-subtle">
+        {first.variants_live}/{first.variants_total}
+        {live.rollouts.length > 1 ? ` · ${live.rollouts.length - 1}` : ""}
       </p>
     </Link>
   );
@@ -82,12 +74,11 @@ export async function StoreCard() {
   if (ctx.mode === "demo") {
     const { shop } = getDemoStore();
     return (
-      <div className="rounded-lg border border-border px-3 py-2.5">
-        <p className="truncate text-base font-medium text-ink">{shop.domain.split(".")[0]}</p>
-        <p className="truncate text-xs text-ink-subtle">{shop.domain}</p>
+      <div className="rounded-lg border border-border px-3 py-2">
+        <p className="truncate text-base font-medium text-ink">{shop.domain}</p>
         {shop.mode === "demo" ? (
           <Badge tone="hold" size="sm" className="mt-1.5">
-            Demo data
+            Demo
           </Badge>
         ) : null}
       </div>
@@ -96,20 +87,18 @@ export async function StoreCard() {
 
   if (ctx.shop === null) {
     return (
-      <div className="rounded-lg border border-border px-3 py-2.5">
+      <div className="rounded-lg border border-border px-3 py-2">
         <p className="truncate text-base font-medium text-ink">Not connected</p>
-        <p className="truncate text-xs text-ink-subtle">Open this from your Shopify admin</p>
       </div>
     );
   }
 
   const domain = ctx.shop.shop_domain;
   return (
-    <div className="rounded-lg border border-border px-3 py-2.5">
-      <p className="truncate text-base font-medium text-ink">{domain.split(".")[0]}</p>
-      <p className="truncate text-xs text-ink-subtle">{domain}</p>
+    <div className="rounded-lg border border-border px-3 py-2">
+      <p className="truncate text-base font-medium text-ink">{domain}</p>
       <Badge tone="live" size="sm" className="mt-1.5">
-        Live data
+        Live
       </Badge>
     </div>
   );

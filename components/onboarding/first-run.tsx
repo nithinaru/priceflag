@@ -1,4 +1,5 @@
-import { ButtonLink, Card, CardBody, CardHeader, Notice } from "@/components/ui";
+import type { ReactNode } from "react";
+import { ButtonLink, Card, CardBody, CardHeader } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
@@ -9,21 +10,11 @@ import { countOf } from "@/components/format";
  * Written for the store Lane B actually synced, because that is what a young
  * store looks like: **17 repriceable variants, not one unit cost saved, and zero
  * orders in 180 days.** None of that is an error, and none of it should read like
- * one — but a screen full of "unknown" reads like a broken app unless it says
- * plainly what is missing, why it is missing, and which of it the merchant can
- * fix in the next two minutes.
+ * one.
  *
- * So the steps are ordered by *what unlocks what*, not by what is easiest:
- *
- * 1. Costs come first, because they are the one number Shopify cannot give us and
- *    they turn on every profit figure in the product **immediately** — no waiting
- *    for orders.
- * 2. Orders come second, because they are the thing the merchant cannot rush.
- *    Their absence is stated once, honestly, and framed as "not yet" rather than
- *    "cannot".
- *
- * A store with no orders can still change prices safely. That is the point worth
- * making loudest, because it is true and it is the reason to stay.
+ * Steps are ordered by *what unlocks what*:
+ * 1. Costs — Shopify cannot give us these; they turn on profit immediately.
+ * 2. Orders — the merchant cannot rush these; stated once as "not yet".
  */
 
 export type StoreReadiness = {
@@ -36,33 +27,28 @@ export type StoreReadiness = {
 };
 
 export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
-  const { productCount, repriceableCount, missingCostCount, daysWithSales, hasAnyRollout } =
+  const { productCount, missingCostCount, daysWithSales, hasAnyRollout } =
     readiness;
 
   const catalogDone = productCount > 0;
   const costsDone = catalogDone && missingCostCount === 0;
-  const everyCostMissing = repriceableCount > 0 && missingCostCount >= repriceableCount;
   const noSales = daysWithSales === 0;
 
   // Nothing to guide once the store is set up and has made a change.
   if (costsDone && hasAnyRollout && !noSales) return null;
 
+  const remaining = [!catalogDone, !costsDone, !hasAnyRollout].filter(Boolean).length;
+
   return (
     <Card tone="accent" edge>
-      <CardHeader
-        title="Get set up"
-      />
-      <CardBody className="space-y-5">
-        <ol className="space-y-4">
+      <CardHeader title={remaining > 0 ? `Get set up · ${remaining}` : "Get set up"} />
+      <CardBody className="space-y-3">
+        <ol className="space-y-2.5">
           <Step
             index={1}
             done={catalogDone}
             title={catalogDone ? "Your store is connected" : "Connect your store"}
-            body={
-              catalogDone
-                ? `${countOf(productCount, "product")} loaded, ${repriceableCount} of them repriceable. Gift cards and subscription products are never repriced.`
-                : "We will read your products, their prices and your order history."
-            }
+            body={catalogDone ? countOf(productCount, "product") : undefined}
             action={
               catalogDone ? null : (
                 <ButtonLink href="/connect" variant="neon" size="sm">
@@ -75,13 +61,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             index={2}
             done={costsDone}
             title="Add what your products cost you"
-            body={
-              costsDone
-                ? "Every product has a cost saved, so every profit figure in Priceflag is real."
-                : everyCostMissing
-                  ? `None of your ${repriceableCount} products has a cost saved. Shopify only knows a cost if you have filled it in, and without it we can show you revenue but never profit — so we leave profit blank rather than guess at it.`
-                  : `${countOf(missingCostCount, "product")} still has no cost saved, so its profit is unknown.`
-            }
+            body={costsDone ? undefined : countOf(missingCostCount, "product")}
             action={
               costsDone ? null : (
                 <ButtonLink
@@ -100,11 +80,6 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             index={3}
             done={hasAnyRollout}
             title="Make your first price change"
-            body={
-              hasAnyRollout
-                ? "You have set one up. Every change is staged a few products at a time and can be undone in one click."
-                : "Pick a few products, see what the change could do, and set the limit that pauses it for review. Nothing goes live until you confirm the draft."
-            }
             action={
               hasAnyRollout ? null : (
                 <ButtonLink href="/products" variant="secondary" size="sm">
@@ -116,21 +91,7 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
         </ol>
 
         {noSales && catalogDone ? (
-          <Notice tone="info" title="No orders yet — here is what that changes, and what it does not">
-            <p className="max-w-prose">
-              We predict what a price change will do by learning from what your store has already
-              sold. With no orders yet there is nothing to learn from, so{" "}
-              <strong className="font-medium text-ink">
-                we will not show you a prediction at all
-              </strong>{" "}
-              rather than dress up a guess as one.
-            </p>
-            <p className="mt-2 max-w-prose">
-              You can still plan a price change today. Set a limit that pauses the rollout, move a
-              few products at a time, and keep manual rollback one click away. As orders come in
-              we start building the range, and we will tell you the moment it is worth reading.
-            </p>
-          </Notice>
+          <p className="text-sm text-ink-muted">No orders yet — no forecast until there are.</p>
         ) : null}
       </CardBody>
     </Card>
@@ -148,8 +109,8 @@ function Step({
   index: number;
   done: boolean;
   title: string;
-  body: string;
-  action: React.ReactNode;
+  body?: string;
+  action: ReactNode;
   highlight?: boolean;
 }) {
   return (
@@ -174,7 +135,7 @@ function Step({
           </span>
           {action}
         </div>
-        <p className="mt-0.5 max-w-prose text-base text-ink-muted">{body}</p>
+        {body ? <p className="mt-0.5 text-base text-ink-muted">{body}</p> : null}
       </div>
     </li>
   );

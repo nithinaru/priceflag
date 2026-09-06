@@ -28,39 +28,39 @@ const ITEMS: NavItem[] = [
   {
     href: "/",
     label: "Overview",
-    icon: <IconGauge size={17} />,
+    icon: <IconGauge size={24} />,
   },
   {
     href: "/products",
     label: "Products",
-    icon: <IconTag size={17} />,
+    icon: <IconTag size={24} />,
   },
   {
     href: "/rollouts",
     label: "Price changes",
-    icon: <IconLayers size={17} />,
+    icon: <IconLayers size={24} />,
   },
   {
     href: "/journal",
     label: "Price journal",
-    icon: <IconBook size={17} />,
+    icon: <IconBook size={24} />,
   },
   {
     href: "/connect",
     label: "Connect store",
-    icon: <IconPlus size={17} />,
+    icon: <IconPlus size={24} />,
   },
   {
     href: "/settings",
     label: "Settings",
-    icon: <IconSettings size={17} />,
+    icon: <IconSettings size={24} />,
   },
 ];
 
 const FOUNDER_LAB_ITEM: NavItem = {
   href: "/model-lab",
   label: "Founder Lab",
-  icon: <IconBeaker size={17} />,
+  icon: <IconBeaker size={24} />,
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -97,17 +97,17 @@ export function Nav({
   return (
     <>
       {/* Desktop: a permanent rail. */}
-      <div className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-surface lg:flex">
+      <div className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-border bg-surface lg:flex">
         <Brand />
         <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
         <RailFooter statusSlot={statusSlot} storeSlot={storeSlot} />
       </div>
 
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
-      <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 lg:hidden">
-        <Link href="/" className="flex items-center gap-2 rounded-md text-ink">
-          <IconIbis size={22} />
-          <span className="font-display text-md leading-none">Priceflag</span>
+      <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3 lg:hidden">
+        <Link href="/" className="flex items-center gap-2.5 rounded-md text-ink">
+          <IconIbis size={28} />
+          <span className="font-display text-2xl leading-none">Priceflag</span>
         </Link>
         <button
           type="button"
@@ -158,10 +158,10 @@ export function Nav({
 
 function Brand() {
   return (
-    <div className="flex items-center gap-2.5 border-b border-border px-4 py-4">
-      <IconIbis size={26} />
+    <div className="flex items-center gap-3 border-b border-border px-4 py-5">
+      <IconIbis size={32} />
       <div className="min-w-0">
-        <div className="font-display text-md leading-tight text-ink">Priceflag</div>
+        <div className="font-display text-2xl leading-tight text-ink">Priceflag</div>
       </div>
     </div>
   );
@@ -208,17 +208,17 @@ function NavList({
                 href={item.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group flex items-center gap-2.5 rounded-md px-2.5 py-2 outline-none " +
+                  "group flex items-center gap-3 rounded-md px-3 py-2.5 outline-none " +
                     "focus-visible:ring-2 focus-visible:ring-focus",
                   active
                     ? "bg-accent-tint text-accent"
-                    : "text-ink-muted hover:bg-surface-muted hover:text-ink",
+                    : "text-ink hover:bg-surface-muted",
                 )}
               >
-                <span className={cn("shrink-0", active ? "text-accent" : "text-ink-subtle")}>
+                <span className={cn("shrink-0", active ? "text-accent" : "text-ink")}>
                   {item.icon}
                 </span>
-                <span className="block text-base font-medium">{item.label}</span>
+                <span className="block text-lg font-medium leading-tight">{item.label}</span>
               </Link>
             </li>
           );

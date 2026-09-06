@@ -13,7 +13,7 @@ import {
   Notice,
 } from "@/components/ui";
 import { useToast } from "@/components/ui/toast";
-import { IconArrowRight, IconCheck, IconTag } from "@/components/ui/icons";
+import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf, formatMoney, formatPct, marginPct, parseMoneyToCents } from "@/components/format";
 import { merchantJson } from "@/components/lib/merchant-api";
 import type { Product } from "@/lib/types";
@@ -149,7 +149,6 @@ export function BulkCosts({
         <EmptyState
           icon={<IconCheck size={19} />}
           title="Every product has a cost"
-          description="Nothing left to add. Every profit figure in Priceflag is worked out from a real cost, not an assumption."
           action={
             <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
               Back to your products
@@ -171,7 +170,11 @@ export function BulkCosts({
       <Card>
         <CardHeader
           title="Add what each product costs you"
-          description="Type a cost and press Enter to drop to the next one. Each one saves on its own, so you can stop whenever you like."
+          description={
+            remaining === 0
+              ? "Every one done."
+              : `${remaining} of ${countOf(products.length, "product")} still need a cost.`
+          }
         />
         <CardBody flush>
           <ul className="divide-y divide-border border-t border-border">

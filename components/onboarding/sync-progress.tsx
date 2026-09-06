@@ -143,7 +143,7 @@ export function SyncProgressPanel({
       {progress.catalog.ready && !progress.history.ready ? (
         <Notice
           tone="info"
-          title="You can start choosing products now"
+          title="Catalog is ready"
           action={
             <ButtonLink
               href="/products"
@@ -154,10 +154,7 @@ export function SyncProgressPanel({
               See your products
             </ButtonLink>
           }
-        >
-          Your catalog is ready. Sales history keeps loading in the background — you do not have to
-          wait here, and nothing is lost if you close this tab.
-        </Notice>
+        />
       ) : null}
     </div>
   );

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Badge, PageHeader, TextLink } from "@/components/ui";
+import { Badge, PageHeader } from "@/components/ui";
 import { CatalogTable } from "@/components/catalog/catalog-table";
 import { countOf } from "@/components/format";
 import {
@@ -58,12 +58,6 @@ export default async function ProductsPage({
         currency={data.currency}
         demoMode={demoMode}
       />
-
-      <p className="text-base text-ink-muted">
-        Want to see what is already changing?{" "}
-        <TextLink href="/rollouts">Your price changes</TextLink> shows everything going out,
-        waiting, and finished.
-      </p>
     </div>
   );
 }

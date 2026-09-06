@@ -79,22 +79,10 @@ export function KillSwitch({
         killSwitchEngaged ? "border-breach/40 bg-breach-soft" : "border-border"
       }`}
     >
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-        <div className="min-w-0 max-w-prose">
-          <h2 className="text-base font-semibold text-ink">
-            {killSwitchEngaged ? "Price changes are disabled" : "Put everything back"}
-          </h2>
-          <p className="mt-0.5 text-base text-ink-muted">
-            {killSwitchEngaged
-              ? "The store-wide stop is still engaged. Priceflag cannot start, advance, or resume a price change until Shopify is verified at every original price and you explicitly re-enable writes."
-              : nothingLive
-              ? "Priceflag is not holding a price on any product right now, so there is nothing to undo."
-              : `Undo every price Priceflag has ever changed, across every price change at once. ${countOf(
-                  affectedSkus,
-                  "product",
-                )} would go back to the price it had before Priceflag touched it.`}
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <h2 className="text-base font-semibold text-ink">
+          {killSwitchEngaged ? "Price changes disabled" : "Put everything back"}
+        </h2>
         <div className="flex flex-wrap gap-2">
           {killSwitchEngaged ? (
             <Button

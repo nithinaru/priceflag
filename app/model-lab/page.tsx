@@ -22,7 +22,6 @@ export default function ModelLabPage() {
     <div className="space-y-6">
       <PageHeader
         title="Founder Lab"
-        description="A pricing scenario against the real forecast and rollout planner. No Shopify writes."
         meta={<Badge tone="live" dot>No Shopify writes</Badge>}
       />
       <FounderLab initialInput={initialInput} initialResult={initialResult} />

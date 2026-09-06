@@ -85,10 +85,7 @@ export function GuardrailBuilder({
 
   return (
     <Card>
-      <CardHeader
-        title="When should we stop?"
-        description="Write the limit now, while you are calm about it. We check every day and pause for your decision when it is crossed."
-      />
+      <CardHeader title="When should we stop?" />
       <CardBody className="space-y-5">
         <p className="max-w-2xl text-md leading-relaxed text-ink">
           If daily{" "}
