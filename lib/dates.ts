@@ -62,24 +62,11 @@ export function diffDays(from: DayString, to: DayString): number {
   return Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / DAY_MS);
 }
 
-/** Inclusive list of days. */
-export function dayRange(from: DayString, to: DayString): DayString[] {
-  const span = diffDays(from, to);
-  if (span < 0) return [];
-  const days: DayString[] = [];
-  for (let i = 0; i <= span; i += 1) days.push(addDays(from, i));
-  return days;
-}
-
 /** ISO day of week, 1 = Monday … 7 = Sunday. Matches Postgres `isodow`. */
 export function isoDayOfWeek(day: DayString): number {
   assertDayString(day);
   const weekday = new Date(`${day}T12:00:00Z`).getUTCDay(); // 0 = Sunday
   return weekday === 0 ? 7 : weekday;
-}
-
-export function isWeekend(day: DayString): boolean {
-  return isoDayOfWeek(day) >= 6;
 }
 
 /** Midnight-to-midnight UTC instants spanning a shop-timezone day. */

@@ -8,7 +8,7 @@ import type { Rollout, RolloutReading, RolloutVariant } from "@/lib/types";
  * Exact persisted money when present; otherwise the same frozen-SKU reconstruction
  * the report and evaluator use for legacy rows. Never invents profit.
  */
-export function moneyForReading(
+function moneyForReading(
   rollout: Rollout,
   variants: readonly RolloutVariant[],
   reading: RolloutReading,

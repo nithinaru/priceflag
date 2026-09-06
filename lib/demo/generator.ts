@@ -579,10 +579,3 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
     window: { from: startDay, to: endDay, days: historyDays },
   };
 }
-
-/** Convenience for tests: the demo variant gids that Priceflag will actually reprice. */
-export function repriceableDemoVariantGids(store: DemoStore): string[] {
-  return store.products
-    .filter((product) => !product.is_gift_card && !product.has_selling_plan && !product.requires_selling_plan)
-    .map((product) => product.variant_gid);
-}

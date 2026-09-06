@@ -146,10 +146,6 @@ export function exclusionReasonFor(product: Product): ExclusionReason {
   return null;
 }
 
-export function isRepriceable(product: Product): boolean {
-  return exclusionReasonFor(product) === null;
-}
-
 // ---------------------------------------------------------------------------
 // order_days
 // ---------------------------------------------------------------------------

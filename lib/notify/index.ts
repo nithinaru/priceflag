@@ -148,15 +148,4 @@ export const notify: Notifier = async (notification) => {
   }
 };
 
-/** Records instead of sending. Used by the simulator and the smoke suite. */
-export function collectingNotifier(): { notifier: Notifier; sent: Notification[] } {
-  const sent: Notification[] = [];
-  return {
-    sent,
-    notifier: async (notification) => {
-      sent.push(notification);
-    },
-  };
-}
-
 export { formatCents };

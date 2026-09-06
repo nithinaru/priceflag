@@ -7,11 +7,11 @@ import type { RolloutReading } from "@/lib/types";
 
 /** Accent blue for the expected band — not the mint surface tint. */
 export const BAND_STROKE = "#1E2EDE";
-export const BAND_FILL = "rgba(30, 46, 222, 0.1)";
+const BAND_FILL = "rgba(30, 46, 222, 0.1)";
 /** Navy actual stroke — matches `--pf-ink`. */
 export const ACTUAL_STROKE = "#0d2168";
 /** Neon is reserved for the live (latest) mark. */
-export const LIVE_MARK = "#d8f24b";
+const LIVE_MARK = "#d8f24b";
 
 export type BandAccessors<T> = {
   day: (row: T) => string;

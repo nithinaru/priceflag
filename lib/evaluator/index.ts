@@ -1334,9 +1334,3 @@ export async function startRollout(
   await (options.notifier ?? notify)({ kind: 'started', shop, rollout: started, detail: applied.applied });
   return applied;
 }
-
-/** How many whole days a rollout has been in its current stage. */
-export function daysInStage(rollout: Rollout, timezone: string, now = new Date()): number {
-  if (rollout.stage_entered_at === null) return 0;
-  return diffDays(dayInTimeZone(new Date(rollout.stage_entered_at), timezone), dayInTimeZone(now, timezone));
-}

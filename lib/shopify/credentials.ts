@@ -183,29 +183,3 @@ export function assertWritable(shop: Shop): void {
     );
   }
 }
-
-/**
- * Ensure a shop row exists for the statically-configured store.
- *
- * The static-token path has no install flow, so nothing else would ever create
- * the row that every other table's foreign key points at. Idempotent.
- */
-export async function ensureStaticShop(adapter: StoreAdapter): Promise<Shop | null> {
-  const domain = staticShopDomain();
-  if (domain === null) return null;
-
-  const existing = await adapter.getShopByDomain(domain);
-  if (existing !== null) return existing;
-
-  return adapter.upsertShop({
-    shop_domain: domain,
-    name: domain.replace(/\.myshopify\.com$/, ''),
-    mode: 'real',
-    api_version: getShopifyApiVersion(),
-    // No token stored: the static path reads it from env every time, so there is
-    // no plaintext or ciphertext of it in the database at all.
-    access_token_enc: null,
-    scopes: 'read_products,write_products,read_orders,read_all_orders(implicit)',
-    installed_at: new Date().toISOString(),
-  });
-}

@@ -272,23 +272,3 @@ function rank(assessment: GuardrailAssessment): number {
 function daysApart(from: DayString, to: DayString): number {
   return Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000);
 }
-
-/**
- * Turn a rule back into the sentence it was built from. Only for rules that
- * arrive without one — a stored `sentence` is what the merchant agreed to and is
- * always preferred verbatim.
- */
-export function describeRule(rule: GuardrailRule): string {
-  if (rule.sentence) return rule.sentence;
-
-  const metric = rule.metric === 'units' ? 'daily units' : `daily ${rule.metric}`;
-  const scope = rule.scope === 'product' ? ' for any single product' : '';
-  const days = rule.consecutive_days === 1 ? '' : ` for ${rule.consecutive_days} days in a row`;
-  const consequence =
-    rule.action === 'rollback_all' ? 'put every price back automatically' : 'pause the rollout and let you know';
-
-  if (rule.comparison === 'below_absolute') {
-    return `If ${metric}${scope} fall below ${rule.absolute_floor ?? 0}${days}, ${consequence}.`;
-  }
-  return `If ${metric}${scope} fall more than ${(rule.threshold_pct ?? 0).toFixed(0)}% below expected${days}, ${consequence}.`;
-}
