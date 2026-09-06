@@ -260,7 +260,7 @@ function fragmentBridgeHtml(destination: string): string {
 <title>Signing you in…</title>
 <style>
   body{margin:0;min-height:100vh;display:grid;place-items:center;background:#030818;
-       color:#f3ecde;font:400 16px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+       color:#ffffff;font:400 16px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
   a{color:#d8f24b}
 </style>
 <p id="s">Signing you in…</p>

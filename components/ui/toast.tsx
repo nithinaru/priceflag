@@ -78,19 +78,19 @@ export function useToast(): ToastContextValue {
 
 const TONES: Record<ToastTone, { card: string; icon: ReactNode }> = {
   info: {
-    card: "border-accent-border bg-surface",
+    card: "border-border bg-surface",
     icon: <IconInfo size={18} className="text-accent" />,
   },
   success: {
-    card: "border-live-border bg-surface",
+    card: "border-border bg-surface",
     icon: <IconCheckCircle size={18} className="text-live" />,
   },
   warning: {
-    card: "border-hold-border bg-surface",
+    card: "border-border bg-surface",
     icon: <IconAlert size={18} className="text-hold" />,
   },
   error: {
-    card: "border-breach-border bg-surface",
+    card: "border-border bg-surface",
     icon: <IconAlert size={18} className="text-breach" />,
   },
 };

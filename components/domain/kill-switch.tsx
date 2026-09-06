@@ -74,11 +74,7 @@ export function KillSwitch({
   const releasing = mode === "release";
 
   return (
-    <div
-      className={`rounded-lg border px-4 py-3.5 ${
-        killSwitchEngaged ? "border-breach/40 bg-breach-soft" : "border-border"
-      }`}
-    >
+    <div className="rounded-lg border border-border bg-surface px-4 py-3.5">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <h2 className="text-base font-semibold text-ink">
           {killSwitchEngaged ? "Price changes disabled" : "Put everything back"}

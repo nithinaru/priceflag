@@ -45,7 +45,7 @@ export function ExpectedRangeMark({
       <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-sm bg-surface-inset" />
 
       <div
-        className="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-sm border border-accent bg-accent-tint"
+        className="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-sm border border-accent bg-surface"
         style={{
           left: scale(reading.expected_low),
           width: `${clamp(
@@ -94,7 +94,7 @@ export function ExpectedRangeLegend({ className }: { className?: string }) {
     >
       <li className="flex items-center gap-1.5">
         <span
-          className="h-2.5 w-6 rounded-sm border border-accent bg-accent-tint"
+          className="h-2.5 w-6 rounded-sm border border-accent bg-surface"
           aria-hidden="true"
         />
         Range we expected

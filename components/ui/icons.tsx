@@ -39,7 +39,7 @@ function FreehandIcon({
 
 /**
  * The Priceflag ibis, from priceflag.org/ibis.svg. Logo only — nav tools stay
- * Freehand. `currentColor` so cream chrome is navy and the lime footer is ink.
+ * Freehand. `currentColor` so white chrome is navy and the lime footer is ink.
  */
 export function IconIbis({
   size = 22,

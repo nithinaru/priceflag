@@ -37,13 +37,7 @@ export function StageTimeline({
             <div className="flex flex-col items-center">
               <StageMarker state={state} />
               {!isLast ? (
-                <div
-                  className={cn(
-                    "w-px flex-1",
-                    state === "done" ? "bg-live-border" : "bg-border",
-                  )}
-                  aria-hidden="true"
-                />
+                <div className="w-px flex-1 bg-border" aria-hidden="true" />
               ) : null}
             </div>
             <div className={cn("min-w-0 flex-1", isLast ? "pb-0" : "pb-5")}>
@@ -124,7 +118,7 @@ function StageMarker({ state }: { state: StageVisualState }) {
   const shared = "flex size-6 shrink-0 items-center justify-center rounded-full border";
   if (state === "done") {
     return (
-      <span className={cn(shared, "border-live-border bg-live-tint text-live")} aria-hidden="true">
+      <span className={cn(shared, "border-border bg-surface text-live")} aria-hidden="true">
         <IconCheck size={13} />
       </span>
     );
@@ -138,7 +132,7 @@ function StageMarker({ state }: { state: StageVisualState }) {
   }
   if (state === "paused") {
     return (
-      <span className={cn(shared, "border-hold-border bg-hold-tint text-hold")} aria-hidden="true">
+      <span className={cn(shared, "border-border bg-surface text-hold")} aria-hidden="true">
         <IconPause size={13} />
       </span>
     );
