@@ -273,6 +273,12 @@
     animation: none !important;
     transform: translateX(-25%);
   }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
 
 /* Square navy baseboard. Neon type is allowed on this strip only. */

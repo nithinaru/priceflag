@@ -123,6 +123,7 @@ export default async function OverviewPage({
             key={summary.id}
             tone={summary.health === "breaching" ? "breach" : summary.status === "paused" ? "hold" : "live"}
             edge
+            runningPulse={summary.status === "running"}
           >
             <CardHeader
               title={summary.name}

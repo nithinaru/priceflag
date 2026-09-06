@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/components/cn";
 import { Button } from "@/components/ui";
+import { LiquidNav } from "@/components/motion/liquid-nav";
+import { MotionViewTransition } from "@/components/motion/view-transition";
 import {
   IconBeaker,
   IconBook,
@@ -159,10 +161,14 @@ export function Nav({
 function Brand() {
   return (
     <div className="flex items-center gap-3 border-b border-border px-4 py-5">
-      <IconIbis size={32} />
-      <div className="min-w-0">
-        <div className="font-display text-2xl leading-tight text-ink">Priceflag</div>
-      </div>
+      <MotionViewTransition name="pf-brand">
+        <div className="flex items-center gap-3">
+          <IconIbis size={32} />
+          <div className="min-w-0">
+            <div className="font-display text-2xl leading-tight text-ink">Priceflag</div>
+          </div>
+        </div>
+      </MotionViewTransition>
     </div>
   );
 }
@@ -197,33 +203,35 @@ function NavList({
   className?: string;
 }) {
   const items = showFounderLab ? [...ITEMS.slice(0, 2), FOUNDER_LAB_ITEM, ...ITEMS.slice(2)] : ITEMS;
+  const activeHref = items.find((item) => isActive(pathname, item.href))?.href ?? "/";
   return (
-    <nav className={className} aria-label="Main">
-      <ul className="space-y-0.5">
-        {items.map((item) => {
-          const active = isActive(pathname, item.href);
-          return (
-            <li key={item.href}>
-              <Link
-                href={item.href}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "group flex items-center gap-3 rounded-md px-3 py-2.5 outline-none " +
-                    "focus-visible:ring-2 focus-visible:ring-focus",
-                  active
-                    ? "bg-neon text-neon-ink"
-                    : "text-ink hover:bg-canvas",
-                )}
-              >
-                <span className={cn("shrink-0", active ? "text-neon-ink" : "text-ink")}>
-                  {item.icon}
-                </span>
-                <span className="block text-lg font-medium leading-tight">{item.label}</span>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-    </nav>
+    <LiquidNav activeKey={activeHref} transition="smooth" className={className}>
+      <nav aria-label="Main">
+        <ul className="space-y-0.5">
+          {items.map((item) => {
+            const active = isActive(pathname, item.href);
+            return (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  data-liquid-nav={item.href}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "group flex items-center gap-3 rounded-md px-3 py-2.5 outline-none " +
+                      "focus-visible:ring-2 focus-visible:ring-focus",
+                    active ? "text-neon-ink" : "text-ink hover:bg-canvas",
+                  )}
+                >
+                  <span className={cn("shrink-0", active ? "text-neon-ink" : "text-ink")}>
+                    {item.icon}
+                  </span>
+                  <span className="block text-lg font-medium leading-tight">{item.label}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </LiquidNav>
   );
 }

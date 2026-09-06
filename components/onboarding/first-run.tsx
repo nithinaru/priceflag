@@ -3,6 +3,7 @@ import { ButtonLink, Card, CardBody, CardHeader } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
+import { LiquidMorph } from "@/components/motion/liquid-morph";
 
 /**
  * First-run guidance (R24, A5).
@@ -115,19 +116,31 @@ function Step({
 }) {
   return (
     <li className="flex gap-3">
-      <span
-        className={cn(
-          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+      <LiquidMorph
+        transition={done ? "snappy" : highlight ? "bouncy" : "smooth"}
+        fill={
           done
-            ? "border-live-border bg-live-tint text-live"
+            ? "var(--pf-live-tint)"
             : highlight
-              ? "border-accent bg-accent text-accent-ink"
-              : "border-border bg-surface-muted text-ink-muted",
-        )}
-        aria-hidden="true"
+              ? "var(--pf-accent)"
+              : "var(--pf-surface-muted)"
+        }
+        className="mt-0.5 size-6 shrink-0"
       >
-        {done ? <IconCheck size={13} /> : index}
-      </span>
+        <span
+          className={cn(
+            "flex size-6 items-center justify-center rounded-full border bg-transparent text-xs font-semibold",
+            done
+              ? "border-live-border text-live"
+              : highlight
+                ? "border-accent text-accent-ink"
+                : "border-border text-ink-muted",
+          )}
+          aria-hidden="true"
+        >
+          {done ? <IconCheck size={13} /> : index}
+        </span>
+      </LiquidMorph>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
           <span className={cn("text-md font-medium", done ? "text-ink-muted" : "text-ink")}>

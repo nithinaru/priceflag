@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
+import { MotionViewTransition } from "@/components/motion/view-transition";
 
 /**
  * App chrome that hides the merchant nav on `/signin`. That page is reachable
@@ -31,16 +32,18 @@ export function ConditionalShell({
       {hideNav ? null : nav}
 
       <div className={hideNav ? undefined : "lg:pl-72"}>
-        <main
-          id="main"
-          className={
-            hideNav
-              ? "mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-4 py-10 sm:px-6"
-              : "mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-9"
-          }
-        >
-          {children}
-        </main>
+        <MotionViewTransition>
+          <main
+            id="main"
+            className={
+              hideNav
+                ? "mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-4 py-10 sm:px-6"
+                : "mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-9"
+            }
+          >
+            {children}
+          </main>
+        </MotionViewTransition>
         {hideNav ? null : footer}
       </div>
     </div>

@@ -1,6 +1,10 @@
+"use client";
+
 import Link from "next/link";
 import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { DotsLoading } from "@/components/motion/anime-presence";
+import { MetalCta } from "@/components/motion/metal-cta";
 
 export type ButtonVariant =
   | "primary"
@@ -76,6 +80,10 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   fullWidth?: boolean;
 };
 
+function isMetalVariant(variant: ButtonVariant): boolean {
+  return variant === "neon" || variant === "neonDark";
+}
+
 export function Button({
   variant = "secondary",
   size = "md",
@@ -90,7 +98,7 @@ export function Button({
   type = "button",
   ...props
 }: ButtonProps) {
-  return (
+  const button = (
     <button
       type={type}
       disabled={disabled || loading}
@@ -98,7 +106,7 @@ export function Button({
       className={buttonClasses(variant, size, cn(fullWidth && "w-full", className))}
       {...props}
     >
-      {loading ? <Spinner /> : iconLeft}
+      {loading ? <DotsLoading /> : iconLeft}
       <span>{children}</span>
       {loading ? null : iconRight}
       {loading && loadingLabel ? (
@@ -107,6 +115,18 @@ export function Button({
         </span>
       ) : null}
     </button>
+  );
+
+  if (!isMetalVariant(variant)) return button;
+
+  return (
+    <MetalCta
+      paused={loading}
+      theme={variant === "neonDark" ? "dark" : "light"}
+      className={fullWidth ? "w-full" : undefined}
+    >
+      {button}
+    </MetalCta>
   );
 }
 
@@ -129,7 +149,7 @@ export function ButtonLink({
   children,
   ...props
 }: ButtonLinkProps) {
-  return (
+  const link = (
     <Link
       className={buttonClasses(variant, size, cn(fullWidth && "w-full", className))}
       {...props}
@@ -138,6 +158,14 @@ export function ButtonLink({
       <span>{children}</span>
       {iconRight}
     </Link>
+  );
+
+  if (!isMetalVariant(variant)) return link;
+
+  return (
+    <MetalCta theme={variant === "neonDark" ? "dark" : "light"} className={fullWidth ? "w-full" : undefined}>
+      {link}
+    </MetalCta>
   );
 }
 
@@ -175,24 +203,3 @@ export function TextLink({
   );
 }
 
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin"
-      width={14}
-      height={14}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}

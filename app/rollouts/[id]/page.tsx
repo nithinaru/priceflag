@@ -176,7 +176,7 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
       ) : null}
 
       {/* What is live right now. */}
-      <Card tone={cardTone} edge={cardTone !== "default"}>
+      <Card tone={cardTone} edge={cardTone !== "default"} runningPulse={rollout.status === "running"}>
         <CardHeader
           title={
             live.variants_live > 0

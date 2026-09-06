@@ -1,11 +1,46 @@
 import type { ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { FlowNumber } from "@/components/motion/flow-number";
 
 /**
  * A single number with its label and, where it exists, the sentence that makes
  * it meaningful. No stat ships without that sentence — an unexplained number is
  * the thing this UI is trying not to do (PRD R25).
  */
+const FLOWABLE =
+  /^([+$−-]?)(\$?)(\d{1,3}(?:,\d{3})*|\d+)(\.\d+)?(%?)$/;
+
+function flowableValue(value: ReactNode): ReactNode {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return <FlowNumber value={value} />;
+  }
+  if (typeof value !== "string") return value;
+  const match = value.trim().match(FLOWABLE);
+  if (!match) return value;
+  const signToken = match[1] ?? "";
+  const dollar = match[2] ?? "";
+  const digits = (match[3] ?? "").replace(/,/g, "");
+  const fraction = match[4] ?? "";
+  const percent = match[5] ?? "";
+  const magnitude = Number(`${digits}${fraction}`);
+  if (!Number.isFinite(magnitude)) return value;
+  const negative = signToken === "−" || signToken === "-";
+  const plus = signToken === "+";
+  const prefix = `${plus ? "+" : negative ? "−" : ""}${dollar}`;
+  return (
+    <FlowNumber
+      value={magnitude}
+      prefix={prefix || undefined}
+      suffix={percent || undefined}
+      format={
+        fraction
+          ? { minimumFractionDigits: fraction.length - 1, maximumFractionDigits: fraction.length - 1 }
+          : { maximumFractionDigits: 0 }
+      }
+    />
+  );
+}
+
 export function Stat({
   label,
   value,
@@ -32,7 +67,7 @@ export function Stat({
           tone === "breach" && "text-breach",
         )}
       >
-        {value}
+        {flowableValue(value)}
       </dd>
       {note ? <dd className="mt-1 text-sm text-ink-muted">{note}</dd> : null}
     </div>

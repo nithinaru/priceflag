@@ -1,5 +1,6 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { LiveCardOutline } from "@/components/motion/anime-presence";
 
 export type CardTone = "default" | "live" | "hold" | "breach" | "accent";
 
@@ -10,6 +11,7 @@ export type CardTone = "default" | "live" | "hold" | "breach" | "accent";
 export function Card({
   tone: _tone = "default",
   edge: _edge = false,
+  runningPulse = false,
   className,
   children,
   ...props
@@ -17,19 +19,23 @@ export function Card({
   tone?: CardTone;
   /** Ignored. Status is words + a small mark, not a coloured bar. */
   edge?: boolean;
+  /** Spring outline while a rollout is running. */
+  runningPulse?: boolean;
 } & HTMLAttributes<HTMLElement>) {
   return (
-    <section
-      className={cn(
-        // `min-w-0` so a card that is a grid or flex child can shrink below its
-        // content width; without it a wide table pushes the whole page sideways.
-        "relative min-w-0 overflow-hidden rounded-lg border border-border bg-surface shadow-sm",
-        className,
-      )}
-      {...props}
-    >
-      {children}
-    </section>
+    <LiveCardOutline active={runningPulse}>
+      <section
+        className={cn(
+          // `min-w-0` so a card that is a grid or flex child can shrink below its
+          // content width; without it a wide table pushes the whole page sideways.
+          "relative min-w-0 overflow-hidden rounded-lg border border-border bg-surface shadow-sm",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </section>
+    </LiveCardOutline>
   );
 }
 

@@ -1,6 +1,9 @@
-import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+"use client";
+
+import { useRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { cn } from "@/components/cn";
 import { IconAlert, IconSearch } from "@/components/ui/icons";
+import { useFocusSpring } from "@/components/motion/anime-presence";
 
 /**
  * Controls are 16px text below `sm` so iOS Safari does not zoom on focus, and
@@ -66,8 +69,11 @@ type InputProps = InputHTMLAttributes<HTMLInputElement> & {
 };
 
 export function Input({ invalid = false, prefix, suffix, className, ...props }: InputProps) {
+  const ref = useRef<HTMLInputElement>(null);
+  useFocusSpring(ref);
   const control = (
     <input
+      ref={ref}
       aria-invalid={invalid || undefined}
       className={cn(
         CONTROL,
@@ -110,6 +116,8 @@ export function SearchInput({
   className,
   ...props
 }: Omit<InputHTMLAttributes<HTMLInputElement>, "type">) {
+  const ref = useRef<HTMLInputElement>(null);
+  useFocusSpring(ref);
   return (
     <div className="relative">
       <IconSearch
@@ -117,6 +125,7 @@ export function SearchInput({
         className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-subtle"
       />
       <input
+        ref={ref}
         type="search"
         className={cn(CONTROL, CONTROL_HEIGHT, "border-border-strong pl-9 pr-3", className)}
         {...props}
@@ -131,8 +140,11 @@ export function Select({
   children,
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean }) {
+  const ref = useRef<HTMLSelectElement>(null);
+  useFocusSpring(ref);
   return (
     <select
+      ref={ref}
       aria-invalid={invalid || undefined}
       className={cn(
         CONTROL,

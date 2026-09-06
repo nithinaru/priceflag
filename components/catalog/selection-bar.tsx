@@ -4,6 +4,7 @@ import { cn } from "@/components/cn";
 import { Button } from "@/components/ui/button";
 import { IconArrowRight, IconClose } from "@/components/ui/icons";
 import { countOf, formatPct } from "@/components/format";
+import { PresenceEnter } from "@/components/motion/anime-presence";
 
 /**
  * The selection bar. Appears only when something is selected, states exactly
@@ -38,7 +39,7 @@ export function SelectionBar({
       aria-live="polite"
     >
       {count === 0 ? null : (
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-xl border border-border-strong bg-surface px-4 py-3 shadow-lg">
+      <PresenceEnter show className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-xl border border-border-strong bg-surface px-4 py-3 shadow-lg">
         <div className="min-w-0">
           <p className="text-base font-semibold text-ink">
             {countOf(count, "product")} selected
@@ -67,7 +68,7 @@ export function SelectionBar({
             Preview a price change
           </Button>
         </div>
-      </div>
+      </PresenceEnter>
       )}
     </div>
   );
