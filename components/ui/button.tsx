@@ -28,7 +28,7 @@ export type ButtonSize = "sm" | "md" | "lg";
  */
 
 const BASE =
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md border font-medium " +
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border font-medium " +
   "whitespace-nowrap transition-[background-color,border-color,color,box-shadow] duration-200 " +
   "ease-[cubic-bezier(0.22,1,0.36,1)] " +
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 " +
@@ -205,7 +205,7 @@ export function TextLink({
   return (
     <Link
       className={cn(
-        "rounded-sm font-medium text-accent underline decoration-accent-border decoration-1 " +
+        "cursor-pointer rounded-sm font-medium text-accent underline decoration-accent-border decoration-1 " +
           "underline-offset-2 hover:decoration-accent focus-visible:outline-2 " +
           "focus-visible:outline-offset-2 focus-visible:outline-focus",
         standalone && "inline-flex min-h-6 items-center",
