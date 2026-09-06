@@ -432,37 +432,48 @@ def refit_real_stores(out_dir: Path, gates_ok: bool, gate_metrics: dict, require
                         ok = False
                     else:
                         receipts.append((shop_domain, result.model_run_id, result.rows_written))
-        ok &= _recommendations_for_shop(
-            source,
-            client,
-            shop_domain,
-            fits,
-            orders,
-            generated_at,
-            gates_ok,
-            all_recommendations,
-            receipts,
-        )
-        ok &= _counterfactuals_for_shop(
-            source,
-            client,
-            shop_domain,
-            orders,
-            generated_at,
-            gates_ok,
-            all_counterfactuals,
-            receipts,
-        )
-        ok &= _reports_for_shop(
-            source,
-            client,
-            shop_domain,
-            orders,
-            generated_at,
-            gates_ok,
-            all_reports,
-            receipts,
-        )
+                elif result.reason == "write_failed" and evidence["failure_code"] is None:
+                    evidence["failure_code"] = "ingest_write_failed"
+        try:
+            ok &= _recommendations_for_shop(
+                source,
+                client,
+                shop_domain,
+                fits,
+                orders,
+                generated_at,
+                gates_ok,
+                all_recommendations,
+                receipts,
+            )
+            ok &= _counterfactuals_for_shop(
+                source,
+                client,
+                shop_domain,
+                orders,
+                generated_at,
+                gates_ok,
+                all_counterfactuals,
+                receipts,
+            )
+            ok &= _reports_for_shop(
+                source,
+                client,
+                shop_domain,
+                orders,
+                generated_at,
+                gates_ok,
+                all_reports,
+                receipts,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            # Ingest may already have succeeded. A later export outage must keep
+            # the attested shop counts instead of replacing them with an empty proof.
+            follow_on = _operational_failure_code(error)
+            print(f"    follow-on export failed ({follow_on})")
+            ok = False
+            if evidence["failure_code"] is None:
+                evidence["failure_code"] = follow_on
 
     (out_dir / "elasticity_fits.json").write_text(json.dumps(all_fits, indent=2, default=str))
     (out_dir / "expected_bands.json").write_text(json.dumps(all_bands, indent=2, default=str))
