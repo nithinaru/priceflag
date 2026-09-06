@@ -97,14 +97,12 @@ test('signInScreenUrl defaults to this app /signin', () => {
     APP_URL: process.env.APP_URL,
     SIGNIN_URL: process.env.SIGNIN_URL,
     SIGNIN_ORIGINS: process.env.SIGNIN_ORIGINS,
-    NODE_ENV: process.env.NODE_ENV,
     VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
   };
   process.env.APP_URL = 'https://pilot.priceflag.org';
   delete process.env.SIGNIN_URL;
   delete process.env.SIGNIN_ORIGINS;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  process.env.NODE_ENV = 'test';
   try {
     assert(
       signInScreenUrl() === 'https://pilot.priceflag.org/signin',
