@@ -83,34 +83,6 @@ export function readingsDomainMax(readings: readonly RolloutReading[]): number {
   return largest > 0 ? Math.ceil((largest * 1.08) / 5) * 5 : 10;
 }
 
-/** Legend for the mark. Present whenever the mark is — identity, not colour. */
-export function ExpectedRangeLegend({ className }: { className?: string }) {
-  return (
-    <ul
-      className={cn(
-        "flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-ink-muted",
-        className,
-      )}
-    >
-      <li className="flex items-center gap-1.5">
-        <span
-          className="h-2.5 w-6 rounded-sm border border-accent bg-surface"
-          aria-hidden="true"
-        />
-        Range we expected
-      </li>
-      <li className="flex items-center gap-1.5">
-        <span className="size-2.5 rounded-full bg-ink ring-2 ring-surface" aria-hidden="true" />
-        Units sold
-      </li>
-      <li className="flex items-center gap-1.5">
-        <span className="size-2.5 rounded-full bg-breach ring-2 ring-surface" aria-hidden="true" />
-        Below the range
-      </li>
-    </ul>
-  );
-}
-
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));

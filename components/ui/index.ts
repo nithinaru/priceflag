@@ -9,13 +9,13 @@
  * - every component has an empty, loading and error story, or it is not done
  */
 
-export { Badge, Tag } from "@/components/ui/badge";
+export { Badge } from "@/components/ui/badge";
 export type { BadgeTone, BadgeSize } from "@/components/ui/badge";
 
 export { Button, ButtonLink, TextLink, buttonClasses } from "@/components/ui/button";
 export type { ButtonVariant, ButtonSize } from "@/components/ui/button";
 
-export { Card, CardBody, CardDivider, CardFooter, CardHeader } from "@/components/ui/card";
+export { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 export type { CardTone } from "@/components/ui/card";
 
 export { EmptyState } from "@/components/ui/empty-state";
@@ -38,7 +38,7 @@ export {
 } from "@/components/ui/live-machine";
 export type { LiveMachineMode } from "@/components/ui/live-machine";
 
-export { Skeleton, SkeletonCard, SkeletonTable, SkeletonText } from "@/components/ui/skeleton";
+export { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
 
 export { DetailList, DetailRow, Stat, StatGroup } from "@/components/ui/stat";
 

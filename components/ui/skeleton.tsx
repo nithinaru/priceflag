@@ -24,7 +24,7 @@ export function Skeleton({
   );
 }
 
-export function SkeletonText({
+function SkeletonText({
   lines = 3,
   className,
 }: {

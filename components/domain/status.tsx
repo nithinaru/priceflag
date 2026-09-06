@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 import type { CardTone } from "@/components/ui/card";
 import { cn } from "@/components/cn";
@@ -176,10 +175,6 @@ const CONFIDENCE: Record<Confidence, ConfidenceMeta> = {
   },
 };
 
-export function confidenceMeta(tier: Confidence): ConfidenceMeta {
-  return CONFIDENCE[tier];
-}
-
 export function ConfidenceBadge({ tier, size = "sm" }: { tier: Confidence; size?: "sm" | "md" }) {
   return (
     <Badge tone={CONFIDENCE[tier].tone} size={size}>
@@ -215,7 +210,7 @@ export function ConfidenceNote({
  * The stored sentence, rendered verbatim — it is what the merchant read when
  * they agreed to it, and the contract says never to regenerate it.
  */
-export function guardrailSentences(guardrails: Guardrails): string[] {
+function guardrailSentences(guardrails: Guardrails): string[] {
   return guardrails.rules.map((rule) => rule.sentence);
 }
 
@@ -260,10 +255,6 @@ const VERDICT: Record<ReadingVerdict, { label: string; tone: BadgeTone }> = {
   below: { label: "Below range", tone: "breach" },
   above: { label: "Above range", tone: "live" },
 };
-
-export function verdictMeta(verdict: ReadingVerdict): { label: string; tone: BadgeTone } {
-  return VERDICT[verdict];
-}
 
 export function VerdictBadge({
   verdict,
@@ -328,15 +319,6 @@ export function ExclusionBadge({ reason }: { reason: ExclusionReason }) {
 /** "3 of 6 products" — a step is a set of products, never a share of traffic. */
 export function stageScopeLabel(count: number, total: number): string {
   return `${count} of ${total} ${total === 1 ? "product" : "products"}`;
-}
-
-export function Explained({ children, note }: { children: ReactNode; note: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <div>{children}</div>
-      <p className="text-sm text-ink-muted">{note}</p>
-    </div>
-  );
 }
 
 export { countOf };

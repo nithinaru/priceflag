@@ -66,21 +66,3 @@ export function Badge({
     </span>
   );
 }
-
-/**
- * A one-word label above a value. Not a status — used for row metadata such as
- * "cost from Shopify" where colour would over-signal.
- */
-export function Tag({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-5 items-center rounded-sm border border-border bg-surface px-1.5 text-2xs " +
-          "font-medium uppercase text-ink-subtle",
-        className,
-      )}
-    >
-      {children}
-    </span>
-  );
-}

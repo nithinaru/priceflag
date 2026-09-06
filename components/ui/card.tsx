@@ -105,8 +105,3 @@ export function CardFooter({ className, children }: { className?: string; childr
     </div>
   );
 }
-
-/** A horizontal rule that lines up with card padding. */
-export function CardDivider() {
-  return <div className="border-t border-border" role="presentation" />;
-}
