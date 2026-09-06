@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Balancer from "react-wrap-balancer";
 import { cn } from "@/components/cn";
 
 /**
@@ -28,7 +29,9 @@ export function PageHeader({
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div className="min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h1 className="font-display text-2xl text-ink">{title}</h1>
+            <h1 className="font-display text-2xl text-ink">
+              <Balancer as="span">{title}</Balancer>
+            </h1>
             {meta}
           </div>
           {description ? (

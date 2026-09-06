@@ -41,7 +41,7 @@ export function ConditionalShell({
         >
           {children}
         </main>
-        {hideNav ? null : <div className="px-4 pb-0 sm:px-6 lg:px-8">{footer}</div>}
+        {hideNav ? null : footer}
       </div>
     </div>
   );

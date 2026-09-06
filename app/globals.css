@@ -18,61 +18,55 @@
 :root {
   color-scheme: light;
 
-  /* Cream paper / navy ink — light invert of priceflag.org. */
-  --pf-canvas: #f4f7ea;
-  --pf-surface: #f3ecde;
-  --pf-surface-muted: #ebe4d3;
-  --pf-surface-inset: #e2dbc8;
+  /* White canvas. Muted/inset are not second fills — they share canvas. */
+  --pf-canvas: #ffffff;
+  --pf-surface: #ffffff;
+  --pf-surface-muted: #ffffff;
+  --pf-surface-inset: #ffffff;
   --pf-overlay: rgb(3 8 24 / 0.44);
 
-  --pf-border: #d8d0bc;
-  --pf-border-strong: #c4bba4;
+  /* Hairline navy, not a cream field. */
+  --pf-border: rgb(13 33 104 / 0.14);
+  --pf-border-strong: rgb(13 33 104 / 0.28);
 
   /*
-   * Text. Both clear WCAG AA (4.5:1) on **every** background they are used on,
-   * not just on canvas and surface — the A7 audit found `ink-subtle` at 4.26 on
-   * `surface-inset` and 4.40 on the status tints, which is where `CellNote` and
-   * the small captions actually sit (a selected catalog row, a breached reading
-   * row, a saved cost row). Darkened until the worst pairing passes:
-   *   surface 5.32 · surface-inset 4.53 · accent-tint 4.67
+   * Text on white. Pairings vs #ffffff:
+   *   ink 12.6 · muted 8.5 · subtle 5.4 — all WCAG AA for body copy.
    */
   --pf-ink: #0d2168;
   --pf-ink-muted: #3a4a7a;
   --pf-ink-subtle: #5a6790;
-  --pf-ink-inverse: #f3ecde;
+  --pf-ink-inverse: #ffffff;
 
-  /* Quiet actions: navy. Lime is reserved for neon CTAs and the footer slab. */
-  --pf-accent: #0d2168;
-  --pf-accent-hover: #071238;
-  --pf-accent-active: #030818;
-  --pf-accent-ink: #f3ecde;
-  --pf-accent-tint: #e8ead4;
-  --pf-accent-border: #b8c0a0;
+  /* Links, focus, secondary. Neon is the primary CTA / selection highlight. */
+  --pf-accent: #1e2ede;
+  --pf-accent-hover: #1624b8;
+  --pf-accent-active: #101c9a;
+  --pf-accent-ink: #ffffff;
+  --pf-accent-tint: #ffffff;
+  --pf-accent-border: rgb(13 33 104 / 0.14);
 
   --pf-neon: #d8f24b;
   --pf-neon-ink: #13200a;
 
-  /* Status. Meaning is fixed across the app:
-     live   = a Priceflag price is on the storefront right now
-     hold   = waiting on purpose (holding a stage, scheduled, paused)
-     breach = below the expected range, or a rollback happened
-     Never use accent to mean "healthy" — green means live, blue means action. */
-  --pf-live: #0d7748;
-  --pf-live-tint: #e3f4eb;
-  --pf-live-border: #b2dfc7;
+  /* Status. Meaning is WORDS plus a small neon or accent mark — not tinted panels.
+     leftover *-tint / *-border classes must not paint mint, pink, amber, or cream. */
+  --pf-live: #1e2ede;
+  --pf-live-tint: #ffffff;
+  --pf-live-border: rgb(13 33 104 / 0.14);
 
-  --pf-hold: #875600;
-  --pf-hold-tint: #fdf2df;
-  --pf-hold-border: #eed8a4;
+  --pf-hold: #0d2168;
+  --pf-hold-tint: #ffffff;
+  --pf-hold-border: rgb(13 33 104 / 0.14);
 
-  --pf-breach: #bc2e27;
-  --pf-breach-tint: #fdebea;
-  --pf-breach-border: #f2c2bf;
+  --pf-breach: #0d2168;
+  --pf-breach-tint: #ffffff;
+  --pf-breach-border: rgb(13 33 104 / 0.14);
 
-  --pf-neutral-tint: #eef0f4;
-  --pf-neutral-border: #d7dce4;
+  --pf-neutral-tint: #ffffff;
+  --pf-neutral-border: rgb(13 33 104 / 0.14);
 
-  --pf-focus: #0d2168;
+  --pf-focus: #1e2ede;
 
   --pf-shadow-sm: 0 1px 2px 0 rgb(16 24 40 / 0.06);
   --pf-shadow-md: 0 4px 12px -2px rgb(16 24 40 / 0.1), 0 2px 4px -2px rgb(16 24 40 / 0.06);
@@ -281,7 +275,7 @@
   }
 }
 
-/* Marketing footer, inverted: navy slab, neon type. */
+/* Square navy baseboard. Neon type is allowed on this strip only. */
 .pf-app-foot {
   --foot-ink: #d8f24b;
   --foot-ink-soft: rgb(216 242 75 / 0.68);
@@ -289,140 +283,35 @@
   position: relative;
   z-index: 2;
   overflow: hidden;
-  border-radius: 26px 26px 0 0;
+  border-radius: 0;
   background: #030818;
   color: var(--foot-ink);
-  box-shadow: 0 50vh 0 0 #030818;
 }
 
 .pf-app-foot-inner {
   box-sizing: border-box;
-  max-width: 1520px;
-  margin: 0 auto;
-  padding: clamp(40px, 5.2vw, 76px) clamp(20px, 4vw, 64px) clamp(18px, 2.2vw, 30px);
+  width: 100%;
+  padding: clamp(18px, 2vw, 28px) clamp(16px, 2.5vw, 32px);
 }
 
-.pf-app-foot a:not(.pf-app-foot-cta),
-.pf-app-foot button.pf-app-foot-link {
+.pf-app-foot a {
   color: var(--foot-ink);
   text-decoration: none;
-  background: none;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  cursor: pointer;
 }
 
-.pf-app-foot a:not(.pf-app-foot-cta):hover,
-.pf-app-foot a:not(.pf-app-foot-cta):focus,
-.pf-app-foot button.pf-app-foot-link:hover {
-  color: #f4f7ea;
+.pf-app-foot a:hover,
+.pf-app-foot a:focus {
+  color: #ffffff;
 }
 
-.pf-app-foot .pf-app-foot-cta,
-.pf-app-foot .pf-app-foot-cta:hover,
-.pf-app-foot .pf-app-foot-cta:focus,
-.pf-app-foot .pf-app-foot-cta:visited {
-  color: #13200a;
-}
-
-.pf-app-foot-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: clamp(30px, 4vw, 72px);
-}
-
-.pf-app-foot-lead {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 380px;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: clamp(16px, 1.8vw, 24px);
-}
-
-.pf-app-foot-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45em;
+.pf-app-foot-shop {
+  margin: 0 0 12px;
   font-family: var(--font-hedvig), Georgia, serif;
-  font-size: clamp(19px, 1.5vw, 22px);
+  font-size: 0.9375rem;
   font-weight: 400;
   letter-spacing: -0.01em;
-  line-height: 1;
-}
-
-.pf-app-foot-head {
-  margin: 0;
-  font-family: var(--font-hedvig), Georgia, serif;
-  font-size: clamp(29px, 3.4vw, 50px);
-  font-weight: 400;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  text-wrap: balance;
-}
-
-.pf-app-foot-nav {
-  display: flex;
-  flex: 0 1 auto;
-  gap: clamp(34px, 5vw, 92px);
-  padding-top: clamp(4px, 1vw, 10px);
-}
-
-.pf-app-foot-col {
-  display: flex;
-  min-width: max-content;
-  list-style: none;
-  flex-direction: column;
-  gap: clamp(10px, 1vw, 13px);
-  margin: 0;
-  padding: 0;
-}
-
-.pf-app-foot-link {
-  position: relative;
-  display: inline-flex;
-  width: max-content;
-  align-items: center;
-  gap: 9px;
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
-  line-height: 1.25;
-}
-
-.pf-app-foot-link::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: -2px;
-  left: 0;
-  height: 1px;
-  transform: scaleX(0);
-  transform-origin: left center;
-  background: currentColor;
-  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.pf-app-foot-link:hover::after,
-.pf-app-foot-link:focus-visible::after {
-  transform: scaleX(1);
-}
-
-.pf-app-foot-word {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-top: clamp(44px, 6vw, 86px);
-}
-
-.pf-app-foot-word text {
-  font-family: var(--font-hedvig), Georgia, serif;
-  font-size: 1000px;
-  font-weight: 400;
-  fill: #d8f24b;
+  line-height: 1.3;
+  color: var(--foot-ink);
 }
 
 .pf-app-foot-bar {
@@ -431,13 +320,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px clamp(20px, 3vw, 40px);
-  margin-top: clamp(26px, 2.4vw, 34px);
   border-top: 1px solid var(--foot-rule);
-  padding-top: clamp(16px, 1.6vw, 22px);
+  padding-top: clamp(12px, 1.4vw, 18px);
   font-size: 13.5px;
   letter-spacing: -0.005em;
   line-height: 1.4;
   color: var(--foot-ink-soft);
+}
+
+.pf-app-foot-shop + .pf-app-foot-bar {
+  margin-top: 0;
 }
 
 .pf-app-foot-legal {
@@ -453,29 +345,4 @@
 .pf-app-foot-legal a:hover,
 .pf-app-foot-legal a:focus {
   color: #d8f24b;
-}
-
-@media (max-width: 900px) {
-  .pf-app-foot-top {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .pf-app-foot-lead {
-    flex: 0 0 auto;
-  }
-
-  .pf-app-foot-nav {
-    display: grid;
-    max-width: 440px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: clamp(14px, 3vw, 26px) clamp(24px, 6vw, 60px);
-    padding-top: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pf-app-foot-link::after {
-    transition: none;
-  }
 }

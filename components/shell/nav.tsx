@@ -211,11 +211,11 @@ function NavList({
                   "group flex items-center gap-3 rounded-md px-3 py-2.5 outline-none " +
                     "focus-visible:ring-2 focus-visible:ring-focus",
                   active
-                    ? "bg-accent-tint text-accent"
-                    : "text-ink hover:bg-surface-muted",
+                    ? "bg-neon text-neon-ink"
+                    : "text-ink hover:bg-canvas",
                 )}
               >
-                <span className={cn("shrink-0", active ? "text-accent" : "text-ink")}>
+                <span className={cn("shrink-0", active ? "text-neon-ink" : "text-ink")}>
                   {item.icon}
                 </span>
                 <span className="block text-lg font-medium leading-tight">{item.label}</span>

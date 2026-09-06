@@ -1,6 +1,9 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  experimental: {
+    viewTransition: true,
+  },
   // Price writes and the evaluator run in Node (crypto, pg advisory locks) — never edge.
   serverExternalPackages: ['@supabase/supabase-js'],
   // The development machine has another lockfile above this repository. Pin the

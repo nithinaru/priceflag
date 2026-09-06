@@ -29,6 +29,8 @@ export type { NoticeTone } from "@/components/ui/notice";
 
 export { PageHeader } from "@/components/ui/page-header";
 
+export { PageSection } from "@/components/ui/page-section";
+
 export {
   LiveMachine,
   liveMachineModeForRollout,

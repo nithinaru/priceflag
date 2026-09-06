@@ -29,9 +29,9 @@ export function EmptyState({
         <div
           className={cn(
             "mb-4 flex size-11 items-center justify-center rounded-full border",
-            tone === "default" && "border-border bg-surface-muted text-ink-subtle",
-            tone === "hold" && "border-hold-border bg-hold-tint text-hold",
-            tone === "breach" && "border-breach-border bg-breach-tint text-breach",
+            "border-border bg-surface text-ink-subtle",
+            tone === "hold" && "text-ink",
+            tone === "breach" && "text-ink",
           )}
         >
           {icon}

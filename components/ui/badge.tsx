@@ -8,21 +8,14 @@ export type BadgeSize = "sm" | "md";
  * Status colour meanings are fixed app-wide (see app/globals.css):
  * live = on the storefront now · hold = waiting on purpose · breach = below the
  * expected range or reverted · accent = an action or a link · neutral = a fact.
+ * Panels stay white; a small neon or accent mark carries the tone.
  */
-
-const TONES: Record<BadgeTone, string> = {
-  neutral: "border-neutral-border bg-neutral-tint text-ink-muted",
-  live: "border-live-border bg-live-tint text-live",
-  hold: "border-hold-border bg-hold-tint text-hold",
-  breach: "border-breach-border bg-breach-tint text-breach",
-  accent: "border-accent-border bg-accent-tint text-accent",
-};
 
 const DOTS: Record<BadgeTone, string> = {
   neutral: "bg-ink-subtle",
-  live: "bg-live",
-  hold: "bg-hold",
-  breach: "bg-breach",
+  live: "bg-neon",
+  hold: "bg-accent",
+  breach: "bg-accent",
   accent: "bg-accent",
 };
 
@@ -49,16 +42,16 @@ export function Badge({
   className?: string;
   children: ReactNode;
 }) {
+  const showMark = dot || tone !== "neutral";
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border font-medium",
-        TONES[tone],
+        "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-border bg-surface font-medium text-ink",
         SIZES[size],
         className,
       )}
     >
-      {dot ? (
+      {showMark ? (
         <span className="relative flex size-1.5 shrink-0" aria-hidden="true">
           {pulse ? (
             <span
@@ -82,7 +75,7 @@ export function Tag({ className, children }: { className?: string; children: Rea
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center rounded-sm bg-surface-inset px-1.5 text-2xs " +
+        "inline-flex h-5 items-center rounded-sm border border-border bg-surface px-1.5 text-2xs " +
           "font-medium uppercase text-ink-subtle",
         className,
       )}
