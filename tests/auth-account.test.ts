@@ -176,6 +176,7 @@ async function main(): Promise<void> {
     assert(secure.sameSite === 'lax', `unexpected sameSite ${secure.sameSite}`);
     assert(secure.secure === true, 'https did not produce a Secure cookie');
     assert(secure.path === '/', `unexpected path ${secure.path}`);
+    assert(!('domain' in secure) || secure.domain === undefined, 'session cookie must be host-only');
     assert(secure.maxAge === USER_COOKIE_MAX_AGE_SECONDS, 'maxAge does not match the signed expiry');
     assert(userCookieOptions(false).secure === false, 'plain http produced a Secure cookie');
   });

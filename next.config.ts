@@ -14,6 +14,42 @@ const nextConfig: NextConfig = {
   // Hide the Next.js “N” badge in local/dev overlays.
   devIndicators: false,
   eslint: { ignoreDuringBuilds: true },
+  async redirects() {
+    // These only fire when the host is bound to this project (`priceflag-app`).
+    // `signin.priceflag.org` still lives on `priceflagv1` until it is moved;
+    // `product.priceflag.org` has no DNS yet. See PILOT_RUNBOOK.md.
+    const dashboard = 'https://dashboard.priceflag.org';
+    const aliasHosts = ['signin.priceflag.org', 'product.priceflag.org'] as const;
+    return aliasHosts.flatMap((host) => {
+      const onHost = { type: 'host' as const, value: host };
+      return [
+        {
+          source: '/auth/callback',
+          has: [onHost],
+          destination: `${dashboard}/auth/callback`,
+          permanent: true,
+        },
+        {
+          source: '/api/auth/callback',
+          has: [onHost],
+          destination: `${dashboard}/api/auth/callback`,
+          permanent: true,
+        },
+        {
+          source: '/',
+          has: [onHost],
+          destination: `${dashboard}/signin`,
+          permanent: true,
+        },
+        {
+          source: '/:path*',
+          has: [onHost],
+          destination: `${dashboard}/signin`,
+          permanent: true,
+        },
+      ];
+    });
+  },
   async headers() {
     return [
       {

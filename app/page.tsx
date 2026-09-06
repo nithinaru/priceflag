@@ -42,7 +42,7 @@ import { readingSentence, type RolloutHealth } from "@/lib/engine/readings";
 import { getDemoStore, DEMO_END_DAY } from "@/components/demo/store";
 import { getJournal, getLive, getRolloutBundles, getRollouts } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealOverview, type OverviewData } from "@/app/lib/store-data";
 import { StoreSeries } from "@/components/charts/store-series";
 import {
@@ -71,6 +71,7 @@ export default async function OverviewPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const demoMode = ctx.mode === "demo";

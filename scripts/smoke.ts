@@ -33,7 +33,7 @@ loadEnv();
 import { DemoAdapter } from '../lib/adapters/demo';
 import { SupabaseAdapter } from '../lib/adapters/supabase';
 import type { StoreAdapter } from '../lib/adapters/types';
-import { hasSupabaseConfig } from '../lib/config';
+import { hasSupabaseConfig, getAppUrl } from '../lib/config';
 import {
   CONTRACT_VERSION,
   DEFAULT_STAGE_PLAN,
@@ -86,13 +86,16 @@ import { signOAuthParams, signWebhookBody, verifyOAuthHmac, verifyWebhookHmac } 
 import {
   adminGraphqlUrl,
   buildAuthorizeUrl,
+  canonicalOAuthStartUrl,
   createOAuthState,
+  defaultRedirectUri,
   exchangeCodeForToken,
   isValidShopDomain,
   missingScopes,
   normalizeShopDomain,
   postInstallUrl,
   ShopifyAuthError,
+  shouldCanonicalizeOAuthStart,
   verifyOAuthState,
 } from '../lib/shopify/oauth';
 import { resolveShopFromRequest, verifySessionToken } from '../lib/shopify/session';
@@ -524,6 +527,40 @@ async function testShopifyAuth(): Promise<void> {
     // Absent `grant_options[]` is what makes the token offline. An online token
     // would expire and auto-rollback would silently stop working at 3am.
     assertEqual(url.searchParams.get('grant_options[]'), null, 'no grant_options means an offline token');
+  });
+
+  await test('APP_URL never binds OAuth to a forbidden vercel.app project host', () => {
+    const previous = {
+      APP_URL: process.env.APP_URL,
+      VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+      VERCEL_URL: process.env.VERCEL_URL,
+      VERCEL_ENV: process.env.VERCEL_ENV,
+    };
+    try {
+      process.env.APP_URL = 'https://priceflag-app.vercel.app';
+      process.env.VERCEL_PROJECT_PRODUCTION_URL = 'priceflag-app.vercel.app';
+      delete process.env.VERCEL_URL;
+      process.env.VERCEL_ENV = 'production';
+      assertEqual(getAppUrl(), 'http://localhost:3000', 'forbidden hosts are skipped');
+      assertEqual(defaultRedirectUri(), 'https://dashboard.priceflag.org/api/auth/callback', 'session origin, not vercel.app');
+
+      process.env.APP_URL = 'https://dashboard.priceflag.org';
+      assertEqual(getAppUrl(), 'https://dashboard.priceflag.org', 'pinned dashboard origin');
+      assertEqual(defaultRedirectUri(), 'https://dashboard.priceflag.org/api/auth/callback', 'callback on APP_URL');
+
+      const offHost = new URL('https://priceflag-app.vercel.app/api/auth?shop=acme-dev.myshopify.com');
+      assert(shouldCanonicalizeOAuthStart(offHost), 'project host must bounce to APP_URL before setting cookies');
+      assertEqual(
+        canonicalOAuthStartUrl(offHost),
+        'https://dashboard.priceflag.org/api/auth?shop=acme-dev.myshopify.com',
+        'canonical install start',
+      );
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   await test('post-install returns to the Shopify Admin app handle, never the client id', () => {

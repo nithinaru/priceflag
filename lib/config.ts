@@ -92,11 +92,45 @@ export function getShopifyScopes(): string[] {
     .filter(Boolean);
 }
 
-/** Public origin, no trailing slash. */
-export function getAppUrl(): string {
-  const raw = env('APP_URL') ?? env('VERCEL_PROJECT_PRODUCTION_URL') ?? 'http://localhost:3000';
+/**
+ * Hostnames that must never be the public app origin. OAuth `redirect_uri`,
+ * magic-link callbacks, and webhook URLs bind to `getAppUrl()`; using the
+ * Vercel project host (or the retired company-homepage host) sends Shopify
+ * back to a different site than the cookie was set on.
+ */
+const FORBIDDEN_APP_HOSTS = new Set([
+  'priceflag.vercel.app',
+  'priceflagv1.vercel.app',
+  'priceflag-app.vercel.app',
+]);
+
+function originFromEnvValue(raw: string): string | undefined {
+  if (raw === '') return undefined;
   const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
-  return withScheme.replace(/\/+$/, '');
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return undefined;
+  }
+  if (url.username || url.password) return undefined;
+  if (FORBIDDEN_APP_HOSTS.has(url.hostname.toLowerCase())) return undefined;
+  return url.origin;
+}
+
+/** Public origin, no trailing slash. Never a forbidden vercel.app project host. */
+export function getAppUrl(): string {
+  return (
+    originFromEnvValue(env('APP_URL') ?? '') ??
+    originFromEnvValue(env('VERCEL_PROJECT_PRODUCTION_URL') ?? '') ??
+    originFromEnvValue(env('VERCEL_URL') ?? '') ??
+    'http://localhost:3000'
+  );
+}
+
+/** Cookie Secure flag for OAuth/session cookies: derived from APP_URL, not the inbound request. */
+export function appUrlIsHttps(): boolean {
+  return new URL(getAppUrl()).protocol === 'https:';
 }
 
 export function getDemoStatePath(): string {

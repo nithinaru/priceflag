@@ -15,6 +15,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 import { env, requireEnv } from '../config';
+import { magicLinkCallbackUrl } from './session-host';
 
 export function hasAuthConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && anonKey() !== undefined;
@@ -51,7 +52,13 @@ export function createAuthClient(): SupabaseClient {
   });
 }
 
-/** Where Supabase should send someone after they click the link in the email. */
+/**
+ * Where Supabase should send someone after they click the link in the email.
+ *
+ * Always the session origin (`lib/auth/session-host.ts`), never the request
+ * host and never a marketing subdomain. Passing `appUrl` still goes through
+ * that rewrite so a mis-set APP_URL cannot put localhost in the email.
+ */
 export function callbackUrl(appUrl: string): string {
-  return `${appUrl.replace(/\/+$/, '')}/auth/callback`;
+  return magicLinkCallbackUrl(appUrl);
 }

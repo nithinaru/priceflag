@@ -23,8 +23,8 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 
-import { getAppUrl } from '@/lib/config';
 import { createAuthClient, hasAuthConfig } from '@/lib/auth/supabase-auth';
+import { isAllowedSessionHost, sessionOrigin } from '@/lib/auth/session-host';
 import { signInScreenUrl } from '@/lib/auth/signin-origin';
 import { safeDestination } from '@/lib/auth/redirect';
 import {
@@ -44,7 +44,7 @@ const DEFAULT_DESTINATION = '/';
 
 /** Resolve-and-compare, not a prefix test. See `lib/auth/redirect.ts`. */
 function destinationFrom(raw: string | null): string {
-  return safeDestination(raw, getAppUrl());
+  return safeDestination(raw, sessionOrigin());
 }
 
 /**
@@ -81,8 +81,9 @@ async function establishSession(
   });
 
   const landing = await landingFor(userId, destination);
-  const response = NextResponse.redirect(new URL(landing, getAppUrl()), { status: 303 });
-  const isHttps = new URL(getAppUrl()).protocol === 'https:';
+  const origin = sessionOrigin();
+  const response = NextResponse.redirect(new URL(landing, origin), { status: 303 });
+  const isHttps = new URL(origin).protocol === 'https:';
   response.cookies.set(USER_COOKIE, signUserCookie({ userId, email }), userCookieOptions(isHttps));
   // The nonce is single-use: it has done its job, and leaving it would let a
   // second link minted in this browser be opened anywhere.
@@ -161,7 +162,7 @@ function isSameOrigin(request: NextRequest): boolean {
   const origin = request.headers.get('origin');
   if (origin === null) return false;
   try {
-    return new URL(origin).origin === new URL(getAppUrl()).origin;
+    return isAllowedSessionHost(new URL(origin).hostname);
   } catch {
     return false;
   }

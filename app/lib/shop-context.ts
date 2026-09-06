@@ -28,6 +28,7 @@
  */
 
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
 import { USER_COOKIE, verifyUserCookie } from '@/lib/auth/account';
 import { getShopDomainForAccount } from '@/lib/auth/account-shops';
@@ -41,10 +42,21 @@ import type { Shop } from '@/lib/types';
 export type PageSearchParams = Record<string, string | string[] | undefined>;
 
 export type PageShopContext =
-  | { mode: 'demo'; shop: null }
+  | { mode: 'demo'; shop: null; installShop: null }
   /** `shop: null` in real mode means "we do not know who you are" — the caller
-   * renders the open-from-Shopify-admin / connect state, never a guess. */
-  | { mode: 'real'; shop: Shop | null };
+   * renders the open-from-Shopify-admin / connect state, never a guess.
+   * `installShop` is a Shopify-signed domain that is not connected yet, so the
+   * App URL should start OAuth instead of showing an empty dashboard. */
+  | { mode: 'real'; shop: Shop | null; installShop: string | null };
+
+/**
+ * Shopify sends first-time installs to the App URL with signed `shop`/`hmac`.
+ * That must become `GET /api/auth`, not a "no store connected" empty state.
+ */
+export function maybeBeginShopifyInstall(ctx: PageShopContext): void {
+  if (ctx.mode !== 'real' || ctx.shop !== null || ctx.installShop === null) return;
+  redirect(`/api/auth?shop=${encodeURIComponent(ctx.installShop)}`);
+}
 
 /** Tight replay bound for hmac-signed launch params. Session tokens carry their own `exp`. */
 const LAUNCH_MAX_AGE_SECONDS = 5 * 60;
@@ -116,19 +128,24 @@ async function shopFromAccountCookie(): Promise<string | null> {
 }
 
 export async function resolveShopForPage(searchParams: PageSearchParams): Promise<PageShopContext> {
-  if (getMode() === 'demo') return { mode: 'demo', shop: null };
+  if (getMode() === 'demo') return { mode: 'demo', shop: null, installShop: null };
+
+  async function fromSignedDomain(domain: string): Promise<PageShopContext> {
+    const shop = await connectedShop(domain);
+    return { mode: 'real', shop, installShop: shop === null ? domain : null };
+  }
 
   if (hasShopifyConfig()) {
     const fromToken = shopFromIdToken(searchParams);
-    if (fromToken !== null) return { mode: 'real', shop: await connectedShop(fromToken) };
+    if (fromToken !== null) return fromSignedDomain(fromToken);
 
     const fromLaunch = shopFromLaunchParams(searchParams);
-    if (fromLaunch !== null) return { mode: 'real', shop: await connectedShop(fromLaunch) };
+    if (fromLaunch !== null) return fromSignedDomain(fromLaunch);
 
     const cookieValue = (await cookies()).get(SHOP_COOKIE)?.value;
     if (cookieValue !== undefined) {
       const fromCookie = verifyShopCookie(cookieValue);
-      if (fromCookie !== null) return { mode: 'real', shop: await connectedShop(fromCookie) };
+      if (fromCookie !== null) return fromSignedDomain(fromCookie);
     }
   }
 
@@ -136,20 +153,20 @@ export async function resolveShopForPage(searchParams: PageSearchParams): Promis
   // which is exactly the signin.priceflag.org path: a real person, verified by
   // email, who is not inside the admin iframe.
   const fromAccount = await shopFromAccountCookie();
-  if (fromAccount !== null) return { mode: 'real', shop: await connectedShop(fromAccount) };
+  if (fromAccount !== null) return fromSignedDomain(fromAccount);
 
   if (!isProductionRuntime()) {
     const raw = firstValue(searchParams['shop']) ?? env('SHOPIFY_SHOP_DOMAIN');
     if (raw !== undefined) {
       try {
-        return { mode: 'real', shop: await connectedShop(normalizeShopDomain(raw)) };
+        return fromSignedDomain(normalizeShopDomain(raw));
       } catch {
         // Not a shop domain — fall through to the unknown state.
       }
     }
   }
 
-  return { mode: 'real', shop: null };
+  return { mode: 'real', shop: null, installShop: null };
 }
 
 /**

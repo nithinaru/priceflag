@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Badge, PageHeader, PageSection } from "@/components/ui";
 import { ConnectPanel, type ConnectedShopState } from "@/components/onboarding/connect-panel";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getAdapter } from "@/lib/adapters";
 import { describeEnvironment } from "@/lib/config";
 import { syncProgressFromRun } from "@/lib/sync";
@@ -32,6 +32,7 @@ export default async function ConnectPage({
   const shopifyConfigured = environment.shopify || environment.shopifyStaticToken;
 
   const context = await resolveShopForPage(params);
+  maybeBeginShopifyInstall(context);
   let connected: ConnectedShopState | null = null;
   if (context.mode === "real" && context.shop !== null) {
     const run = await getAdapter().getLatestSyncRun(context.shop.id);

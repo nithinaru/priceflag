@@ -67,7 +67,15 @@ function nextPath(raw: string | undefined): string | undefined {
   return raw;
 }
 
-export function SignInForm({ error, next }: { error?: string; next?: string }) {
+export function SignInForm({
+  appUrl,
+  error,
+  next,
+}: {
+  appUrl: string;
+  error?: string;
+  next?: string;
+}) {
   const [domain, setDomain] = useState("");
   const [shopError, setShopError] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -92,7 +100,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
       return;
     }
     setShopError(null);
-    window.open(`/api/auth?shop=${encodeURIComponent(normalized)}`, "_top");
+    window.open(`${appUrl}/api/auth?shop=${encodeURIComponent(normalized)}`, "_top");
   }
 
   async function sendMagicLink() {
@@ -104,7 +112,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
     setEmailError(null);
     setSending(true);
     try {
-      const response = await fetch("/api/auth/magic-link", {
+      const response = await fetch(`${appUrl}/api/auth/magic-link`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",

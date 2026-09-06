@@ -1,10 +1,11 @@
 /**
  * `POST /api/auth/magic-link` — email somebody a sign-in link.
  *
- * Called cross-origin by the sign-in screen on signin.priceflag.org, which is a
- * static page in the marketing repo. Doing the send here rather than there is
- * what keeps every key out of that page: the browser posts an email address to
- * us, and this route is the only thing that talks to Supabase.
+ * Prefer same-origin from `$APP_URL/signin` (dashboard.priceflag.org). A branded
+ * door on signin.priceflag.org should bounce there rather than mint cookies on a
+ * different host. CORS still allows that marketing origin to POST here so an
+ * old static form keeps working: the emailed link and the bind cookie always
+ * belong to the session origin, not the form's host.
  *
  * This route is deliberately reachable without the `pf_access` preview gate (see
  * `middleware.ts`) — the sign-in screen is public, so the form has to work for
@@ -19,8 +20,8 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 
-import { getAppUrl } from '@/lib/config';
 import { callbackUrl, createAuthClient, hasAuthConfig } from '@/lib/auth/supabase-auth';
+import { sessionOrigin } from '@/lib/auth/session-host';
 import { allowedOrigin, corsHeaders } from '@/lib/auth/signin-origin';
 import {
   createLinkNonce,
@@ -109,7 +110,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // account — see `lib/auth/link-binding.ts`.
   const nonce = createLinkNonce();
 
-  const redirectTo = new URL(callbackUrl(getAppUrl()));
+  const session = sessionOrigin();
+  const redirectTo = new URL(callbackUrl(session));
   redirectTo.searchParams.set(LINK_NONCE_PARAM, nonce);
   if (next !== null) redirectTo.searchParams.set('next', next);
 
@@ -151,7 +153,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   response.cookies.set(
     LINK_NONCE_COOKIE,
     nonce,
-    linkNonceCookieOptions(request.nextUrl.protocol === 'https:'),
+    linkNonceCookieOptions(new URL(session).protocol === 'https:'),
   );
   return response;
 }

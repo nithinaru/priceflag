@@ -4,7 +4,7 @@ import { JournalTable } from "@/components/journal/journal-table";
 import { countOf } from "@/components/domain/status";
 import { getJournal, getRollouts } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealJournal, getRealRolloutNames } from "@/app/lib/store-data";
 import type { JournalEntry } from "@/lib/types";
 
@@ -25,6 +25,7 @@ export default async function JournalPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   let entries: JournalEntry[];

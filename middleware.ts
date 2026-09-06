@@ -89,6 +89,8 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 
+import { canonicalSessionUrl, isAliasEntryHost, isBrandedEntryHost } from '@/lib/auth/session-host';
+
 /** Cookie name. Deliberately not obviously guessable from the product name. */
 const COOKIE = 'pf_access';
 
@@ -437,11 +439,14 @@ function unauthorized(): NextResponse {
   return response;
 }
 
-/** In-app `/signin`, or `SIGNIN_URL` when the marketing host is still in use. */
+/** In-app `/signin`. Ignore SIGNIN_URL when it points at a marketing/alias host. */
 function signInScreenTarget(request: NextRequest): URL {
   if (SIGNIN_URL !== undefined && SIGNIN_URL !== '') {
     try {
-      return new URL(SIGNIN_URL);
+      const configured = new URL(SIGNIN_URL);
+      if (!isBrandedEntryHost(configured.hostname) && !isAliasEntryHost(configured.hostname)) {
+        return configured;
+      }
     } catch {
       // Fall through to the in-app screen rather than 500 a signed-out visitor.
     }
@@ -499,6 +504,11 @@ function previewDenied(request: NextRequest): NextResponse {
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname, searchParams } = request.nextUrl;
+
+  const sessionUrl = canonicalSessionUrl(request.nextUrl.hostname, pathname, request.nextUrl.search);
+  if (sessionUrl !== null) {
+    return NextResponse.redirect(sessionUrl, 308);
+  }
 
   if (isExempt(pathname)) return NextResponse.next();
 

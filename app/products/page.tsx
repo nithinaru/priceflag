@@ -9,7 +9,7 @@ import {
 } from "@/components/demo/store";
 import { getLiveVariantGids } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealCatalog, type CatalogData } from "@/app/lib/store-data";
 
 export const metadata: Metadata = {
@@ -31,6 +31,7 @@ export default async function ProductsPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const demoMode = ctx.mode === "demo";

@@ -13,11 +13,9 @@ import { after, NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
 import { linkAccountToShop } from '@/lib/auth/account-shops';
-import {
-  INSTALL_INITIATOR_COOKIE,
-  installInitiatorCookieOptions,
-} from '@/lib/auth/link-binding';
-import { getAppUrl, getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
+import { INSTALL_INITIATOR_COOKIE, installInitiatorCookieOptions } from '@/lib/auth/link-binding';
+import { sessionOrigin } from '@/lib/auth/session-host';
+import { getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
 import { encryptSecret } from '@/lib/crypto';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
 import { verifyOAuthHmac } from '@/lib/shopify/hmac';
@@ -202,7 +200,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // sync-time freshness, which the merchant can live with; a failed install
     // is the thing they cannot.
     try {
-      await reconcileWebhooks(credentialsFromShop(installedShop), getAppUrl());
+      await reconcileWebhooks(credentialsFromShop(installedShop), sessionOrigin());
     } catch (cause) {
       console.error(
         `[install] webhook registration failed for ${shop}: ` +
@@ -240,7 +238,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // Both are single-use: the state nonce, and the record of who started this.
   response.cookies.delete(OAUTH_STATE_COOKIE);
   response.cookies.set(INSTALL_INITIATOR_COOKIE, '', {
-    ...installInitiatorCookieOptions(request.nextUrl.protocol === 'https:'),
+    ...installInitiatorCookieOptions(new URL(sessionOrigin()).protocol === 'https:'),
     maxAge: 0,
   });
   return response;

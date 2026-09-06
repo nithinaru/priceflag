@@ -4,7 +4,8 @@ import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
 import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
-import { getAppUrl, getMode } from '@/lib/config';
+import { sessionOrigin } from '@/lib/auth/session-host';
+import { getMode } from '@/lib/config';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
 import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 
@@ -21,7 +22,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 409 },
       );
     }
-    const result = await reconcileWebhooks(credentialsFromShop(shop), getAppUrl());
+    const result = await reconcileWebhooks(credentialsFromShop(shop), sessionOrigin());
     return NextResponse.json(
       {
         reconciled: true,

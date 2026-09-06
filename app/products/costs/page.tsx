@@ -4,7 +4,7 @@ import { BulkCosts } from "@/components/catalog/bulk-costs";
 import { getDemoStore } from "@/components/demo/store";
 import { exclusionReasonFor, type Product } from "@/lib/types";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealCatalog } from "@/app/lib/store-data";
 
 export const metadata: Metadata = {
@@ -26,6 +26,7 @@ export default async function CostsPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   let products: Product[];

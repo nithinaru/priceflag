@@ -23,7 +23,7 @@ import { formatDay } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
 import { getRolloutBundles, type RolloutBundle } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealRolloutBundles } from "@/app/lib/store-data";
 import type { RolloutStatus } from "@/lib/types";
 
@@ -43,6 +43,7 @@ export default async function RolloutsPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const bundles =

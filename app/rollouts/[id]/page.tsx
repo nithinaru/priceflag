@@ -51,7 +51,7 @@ import { readingSentence, verdictForReading } from "@/lib/engine/readings";
 import { getDemoStore } from "@/components/demo/store";
 import { getJournalForRollout, getRolloutBundle } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealJournalForRollout, getRealRolloutBundle } from "@/app/lib/store-data";
 import { getMode } from "@/lib/config";
 
@@ -86,6 +86,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function RolloutPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const demoMode = ctx.mode === "demo";

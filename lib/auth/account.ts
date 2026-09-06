@@ -125,7 +125,6 @@ export function userCookieOptions(isHttps: boolean): {
   sameSite: 'lax';
   secure: boolean;
   path: string;
-  domain?: string;
   maxAge: number;
 } {
   return {
@@ -136,16 +135,9 @@ export function userCookieOptions(isHttps: boolean): {
     sameSite: 'lax',
     secure: isHttps,
     path: '/',
-    // Unset by default, which makes the cookie host-only — it is sent to
-    // dashboard.priceflag.org and nowhere else. That is the tighter default and
-    // it is all the app needs: the sign-in screen never reads this cookie, it
-    // only asks the app to send an email.
-    //
-    // Set `AUTH_COOKIE_DOMAIN=.priceflag.org` only if a sibling host genuinely
-    // needs the same session. That widens delivery to every subdomain,
-    // including the static marketing site, so it is a deliberate trade rather
-    // than a default.
-    domain: env('AUTH_COOKIE_DOMAIN'),
+    // Always host-only. `AUTH_COOKIE_DOMAIN=.priceflag.org` would also send
+    // `pf_user` to signin.priceflag.org and the marketing site; those hosts
+    // must not hold the session (`lib/auth/session-host.ts`).
     maxAge: USER_COOKIE_MAX_AGE_SECONDS,
   };
 }

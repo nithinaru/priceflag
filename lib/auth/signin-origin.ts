@@ -12,6 +12,7 @@
  */
 
 import { env, getAppUrl } from '../config';
+import { isAliasEntryHost, isBrandedEntryHost, sessionOrigin } from './session-host';
 
 const MARKETING_ORIGIN = 'https://signin.priceflag.org';
 
@@ -68,20 +69,25 @@ export function allowedOrigin(origin: string | null): string | null {
 /**
  * The sign-in screen itself.
  *
- * Defaults to this app's `/signin`. `SIGNIN_URL` still overrides so the static
- * marketing page keeps working when it is set.
+ * Defaults to this app's `/signin` on the session host. `SIGNIN_URL` still
+ * overrides for a non-marketing origin; a value on signin.priceflag.org is
+ * ignored so signed-out visitors are not sent to the static `/signin.html`.
  */
 export function signInScreenUrl(params: Record<string, string> = {}): string {
   const configured = env('SIGNIN_URL');
-  let url: URL;
+  let url: URL | undefined;
   if (configured !== undefined) {
     try {
       url = new URL(configured);
+      if (isBrandedEntryHost(url.hostname) || isAliasEntryHost(url.hostname)) {
+        url = undefined;
+      }
     } catch {
-      url = new URL(configured, `${getAppUrl()}/`);
+      url = new URL(configured, `${sessionOrigin()}/`);
     }
-  } else {
-    url = new URL('/signin', `${getAppUrl()}/`);
+  }
+  if (url === undefined) {
+    url = new URL('/signin', `${sessionOrigin()}/`);
   }
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   return url.toString();

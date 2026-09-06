@@ -11,7 +11,16 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import {
+  allowedSessionHosts,
+  canonicalSessionUrl,
+  magicLinkCallbackUrl,
+  oauthCallbackUrl,
+  sessionOrigin,
+} from '../lib/auth/session-host';
 import { allowedOrigin, signInScreenUrl } from '../lib/auth/signin-origin';
+import { callbackUrl } from '../lib/auth/supabase-auth';
+import { defaultRedirectUri } from '../lib/shopify/oauth';
 
 let passed = 0;
 
@@ -133,18 +142,159 @@ test('sign-in UI is Shopify-first, email is a return path', () => {
   assert(shopIndex !== -1 && emailIndex !== -1 && shopIndex < emailIndex, 'Shopify must precede email');
 });
 
-test('SIGNIN_URL still overrides the screen location', () => {
-  const previous = process.env.SIGNIN_URL;
-  process.env.SIGNIN_URL = 'https://signin.priceflag.org/';
-  process.env.APP_URL = process.env.APP_URL ?? 'https://pilot.priceflag.org';
+test('magic-link and OAuth callbacks stay on the session host', () => {
+  const previous = {
+    APP_URL: process.env.APP_URL,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    VERCEL_URL: process.env.VERCEL_URL,
+  };
+  process.env.APP_URL = 'https://dashboard.priceflag.org';
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  delete process.env.VERCEL_URL;
+  try {
+    assert(sessionOrigin() === 'https://dashboard.priceflag.org', sessionOrigin());
+    assert(
+      magicLinkCallbackUrl() === 'https://dashboard.priceflag.org/auth/callback',
+      magicLinkCallbackUrl(),
+    );
+    assert(
+      callbackUrl('https://signin.priceflag.org') === 'https://dashboard.priceflag.org/auth/callback',
+      'marketing origin must not appear in the emailed callback',
+    );
+    assert(
+      callbackUrl('http://localhost:3000') === 'http://localhost:3000/auth/callback',
+      'local APP_URL stays local outside production',
+    );
+    assert(
+      oauthCallbackUrl() === 'https://dashboard.priceflag.org/api/auth/callback',
+      oauthCallbackUrl(),
+    );
+    assert(
+      defaultRedirectUri() === 'https://dashboard.priceflag.org/api/auth/callback',
+      defaultRedirectUri(),
+    );
+    assert(allowedSessionHosts().includes('dashboard.priceflag.org'), 'dashboard must be an allowed session host');
+    assert(
+      canonicalSessionUrl('signin.priceflag.org', '/auth/callback', '?bind=abc') ===
+        'https://dashboard.priceflag.org/auth/callback?bind=abc',
+      'branded door must preserve the token query on the session host',
+    );
+    assert(
+      canonicalSessionUrl('signin.priceflag.org', '/') === 'https://dashboard.priceflag.org/signin',
+      'signin host root must land on dashboard /signin',
+    );
+    assert(
+      canonicalSessionUrl('product.priceflag.org', '/') === 'https://dashboard.priceflag.org/signin',
+      'product host is an app door, not a second cookie host',
+    );
+    assert(
+      canonicalSessionUrl('dashboard.priceflag.org', '/signin') === null,
+      'session host must not bounce to itself',
+    );
+    assert(canonicalSessionUrl('priceflag.org', '/') === null, 'marketing apex stays on priceflagv1');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('production never emails localhost or vercel.app callbacks', () => {
+  const previous = {
+    APP_URL: process.env.APP_URL,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    VERCEL_URL: process.env.VERCEL_URL,
+  };
+  process.env.VERCEL_ENV = 'production';
+  process.env.APP_URL = 'http://localhost:3000';
+  delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  delete process.env.VERCEL_URL;
+  try {
+    assert(sessionOrigin() === 'https://dashboard.priceflag.org', sessionOrigin());
+    assert(
+      magicLinkCallbackUrl() === 'https://dashboard.priceflag.org/auth/callback',
+      magicLinkCallbackUrl(),
+    );
+    assert(
+      oauthCallbackUrl() === 'https://dashboard.priceflag.org/api/auth/callback',
+      oauthCallbackUrl(),
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('middleware bounces branded entry hosts before the preview gate', () => {
+  assert(
+    middleware.includes('canonicalSessionUrl'),
+    'middleware must canonicalize signin.priceflag.org onto the session host',
+  );
+  const body = middleware.slice(middleware.indexOf('export async function middleware'));
+  const bounce = body.indexOf('canonicalSessionUrl');
+  const exempt = body.indexOf('isExempt(pathname)');
+  assert(bounce !== -1 && exempt !== -1 && bounce < exempt, 'host bounce must run before exemptions');
+});
+
+test('sign-in form posts magic links and OAuth to the absolute app host', () => {
+  const form = readFileSync(resolve(process.cwd(), 'app/signin/sign-in-form.tsx'), 'utf8');
+  assert(form.includes('${appUrl}/api/auth?shop='), 'Shopify OAuth must be absolute on the app host');
+  assert(form.includes('${appUrl}/api/auth/magic-link'), 'magic-link POST must be absolute on the app host');
+});
+
+test('SIGNIN_URL still overrides the screen location for a non-marketing origin', () => {
+  const previous = {
+    SIGNIN_URL: process.env.SIGNIN_URL,
+    APP_URL: process.env.APP_URL,
+  };
+  process.env.SIGNIN_URL = 'https://pilot.priceflag.org/signin';
+  process.env.APP_URL = 'https://pilot.priceflag.org';
   try {
     assert(
-      signInScreenUrl({ error: 'sign_in_required' }).startsWith('https://signin.priceflag.org/'),
+      signInScreenUrl({ error: 'sign_in_required' }).startsWith('https://pilot.priceflag.org/signin'),
       'SIGNIN_URL override ignored',
     );
   } finally {
-    if (previous === undefined) delete process.env.SIGNIN_URL;
-    else process.env.SIGNIN_URL = previous;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('next.config 308s alias hosts onto the dashboard', () => {
+  const config = readFileSync(resolve(process.cwd(), 'next.config.ts'), 'utf8');
+  assert(config.includes("value: 'signin.priceflag.org'"), 'signin host redirect missing');
+  assert(config.includes("value: 'product.priceflag.org'"), 'product host redirect missing');
+  assert(config.includes('https://dashboard.priceflag.org/signin'), 'dashboard sign-in destination missing');
+  assert(config.includes('permanent: true'), 'redirects must be 308');
+});
+
+test('SIGNIN_URL on the branded door is ignored', () => {
+  const previous = {
+    SIGNIN_URL: process.env.SIGNIN_URL,
+    APP_URL: process.env.APP_URL,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+  };
+  process.env.SIGNIN_URL = 'https://signin.priceflag.org/';
+  process.env.APP_URL = 'https://dashboard.priceflag.org';
+  process.env.VERCEL_ENV = 'production';
+  try {
+    assert(
+      signInScreenUrl({ error: 'sign_in_required' }).startsWith('https://dashboard.priceflag.org/signin'),
+      'branded SIGNIN_URL must not steal the session host',
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

@@ -371,6 +371,19 @@ async function main(): Promise<void> {
     const authorize = new URL(start.headers.get('location') as string);
     assert.equal(authorize.hostname, SHOP);
     assert.equal(authorize.searchParams.get('state'), state);
+    assert.equal(
+      authorize.searchParams.get('redirect_uri'),
+      `${APP_ORIGIN}/api/auth/callback`,
+      'callback is APP_URL, not the inbound host',
+    );
+
+    const offHost = await startOAuth(new NextRequest(`https://priceflag-app.vercel.app/api/auth?shop=${SHOP}`));
+    assert.equal(offHost.status, 307);
+    assert.equal(offHost.cookies.get(OAUTH_STATE_COOKIE)?.value, undefined, 'must not mint state on the wrong host');
+    const bounce = new URL(offHost.headers.get('location') as string);
+    assert.equal(bounce.origin, APP_ORIGIN);
+    assert.equal(bounce.pathname, '/api/auth');
+    assert.equal(bounce.searchParams.get('shop'), SHOP);
 
     const callbackParams = new URLSearchParams({
       code: 'synthetic-one-time-code',

@@ -11,7 +11,8 @@ import { after, NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
 import { merchantErrorResponse, resolveAuthenticatedShop } from '@/lib/api/merchant';
-import { getAppUrl, getMode } from '@/lib/config';
+import { sessionOrigin } from '@/lib/auth/session-host';
+import { getMode } from '@/lib/config';
 import { resolveShopCredentials } from '@/lib/shopify/credentials';
 import { reconcileWebhooks } from '@/lib/shopify/webhooks';
 import { runSync, syncProgressFromRun } from '@/lib/sync';
@@ -88,7 +89,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // That gives an installed shop a visible retry path after a transient
     // registration failure or an app-domain move, and removes duplicate HTTP
     // subscriptions before they can double-count orders.
-    await reconcileWebhooks(credentials, getAppUrl());
+    await reconcileWebhooks(credentials, sessionOrigin());
 
     const initialRun = await adapter.createSyncRun(shop.id, options.catalogOnly ? 'catalog' : 'full');
 
