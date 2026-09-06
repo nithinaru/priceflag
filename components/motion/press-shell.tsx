@@ -25,6 +25,7 @@ export function PressShell({
     const node = ref.current;
     if (!node || disabled) return;
 
+    const target: HTMLSpanElement = node;
     let hovered = false;
 
     function rest() {
@@ -34,7 +35,7 @@ export function PressShell({
     function toHover() {
       if (prefersReducedMotion()) return;
       hovered = true;
-      animate(node, {
+      animate(target, {
         ...rest(),
         duration: 280,
         ease: "out(3)",
@@ -44,7 +45,7 @@ export function PressShell({
     function toRest() {
       if (prefersReducedMotion()) return;
       hovered = false;
-      animate(node, {
+      animate(target, {
         scale: 1,
         translateY: 0,
         duration: 320,
@@ -54,7 +55,7 @@ export function PressShell({
 
     function toPress() {
       if (prefersReducedMotion()) return;
-      animate(node, {
+      animate(target, {
         scale: 0.97,
         translateY: 0.5,
         duration: 70,
@@ -64,7 +65,7 @@ export function PressShell({
 
     function fromPress() {
       if (prefersReducedMotion()) return;
-      animate(node, {
+      animate(target, {
         ...rest(),
         ease: spring({ bounce: 0.22, duration: 420 }),
       });
@@ -81,21 +82,21 @@ export function PressShell({
       fromPress();
     }
 
-    node.addEventListener("pointerenter", toHover);
-    node.addEventListener("pointerleave", toRest);
-    node.addEventListener("pointerdown", toPress);
-    node.addEventListener("pointerup", fromPress);
-    node.addEventListener("pointercancel", toRest);
-    node.addEventListener("keydown", onKeyDown);
-    node.addEventListener("keyup", onKeyUp);
+    target.addEventListener("pointerenter", toHover);
+    target.addEventListener("pointerleave", toRest);
+    target.addEventListener("pointerdown", toPress);
+    target.addEventListener("pointerup", fromPress);
+    target.addEventListener("pointercancel", toRest);
+    target.addEventListener("keydown", onKeyDown);
+    target.addEventListener("keyup", onKeyUp);
     return () => {
-      node.removeEventListener("pointerenter", toHover);
-      node.removeEventListener("pointerleave", toRest);
-      node.removeEventListener("pointerdown", toPress);
-      node.removeEventListener("pointerup", fromPress);
-      node.removeEventListener("pointercancel", toRest);
-      node.removeEventListener("keydown", onKeyDown);
-      node.removeEventListener("keyup", onKeyUp);
+      target.removeEventListener("pointerenter", toHover);
+      target.removeEventListener("pointerleave", toRest);
+      target.removeEventListener("pointerdown", toPress);
+      target.removeEventListener("pointerup", fromPress);
+      target.removeEventListener("pointercancel", toRest);
+      target.removeEventListener("keydown", onKeyDown);
+      target.removeEventListener("keyup", onKeyUp);
     };
   }, [disabled]);
 
