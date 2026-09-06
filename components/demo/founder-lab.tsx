@@ -447,7 +447,7 @@ function FounderReadout({ result, running }: { result: FounderLabResult; running
 function TraceRow({ number, title, detail }: { number: number; title: string; detail: string }) {
   return (
     <li className="flex gap-3 rounded-md border border-border bg-surface px-3 py-2.5">
-      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent-tint text-xs font-semibold text-accent">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-xs font-semibold text-ink">
         {number}
       </span>
       <div className="min-w-0">
