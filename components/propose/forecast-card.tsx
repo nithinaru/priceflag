@@ -17,6 +17,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { RangeBar } from "@/components/propose/range-bar";
+import { ScenarioFan } from "@/components/charts/scenario-fan";
 import {
   ConfidenceBadge,
   ConfidenceNote,
@@ -274,6 +275,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
           </summary>
 
           <div className="border-t border-border">
+            <ScenarioFan forecast={forecast} />
             <Table
               layout="intrinsic"
               caption="What happens to revenue and profit at each level of unit-sales change"

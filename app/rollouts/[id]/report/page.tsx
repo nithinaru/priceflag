@@ -10,11 +10,14 @@ import {
   DetailRow,
   Notice,
   PageHeader,
+  PageSection,
   Stat,
   StatGroup,
   TextLink,
 } from "@/components/ui";
 import { RangeBar } from "@/components/propose/range-bar";
+import { CumulativeDelta } from "@/components/charts/cumulative-delta";
+import { runningActualVsOldPrice } from "@/components/charts/reading-economics";
 import { changeWords, countOf, rolloutStatusMeta, RolloutStatusBadge } from "@/components/domain/status";
 import { formatDay, formatMoneyDelta, formatPctDelta, formatUnits } from "@/components/format";
 import { getDemoStore } from "@/components/demo/store";
@@ -86,6 +89,7 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
   }
 
   const profitKnown = report.realized.profit_delta_cents !== null;
+  const running = runningActualVsOldPrice(rollout, bundle.variants, bundle.readings);
 
   return (
     <div className="space-y-6">
@@ -169,6 +173,14 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
               />
             ) : null}
             <PredictedVsRealized
+              label={`Revenue over ${report.window.days} days`}
+              low={report.predicted.low.revenue_delta_cents}
+              high={report.predicted.high.revenue_delta_cents}
+              predicted={report.predicted.expected.revenue_delta_cents}
+              realized={report.realized.revenue_delta_cents}
+              format={money}
+            />
+            <PredictedVsRealized
               label="Unit sales"
               low={report.predicted.low.units_change_pct}
               high={report.predicted.high.units_change_pct}
@@ -187,6 +199,29 @@ export default async function ReportPage({ params, searchParams }: PageProps) {
           range.
         </Notice>
       )}
+
+      <PageSection title="Running actual against the old price">
+        <p className="max-w-prose text-base text-ink-muted">
+          The last point on each chart is the same total as the figures above.
+        </p>
+        <CumulativeDelta
+          days={running.revenue}
+          currency={currency}
+          label={`Cumulative revenue over ${report.window.days} days`}
+        />
+        {profitKnown ? (
+          <CumulativeDelta
+            days={running.profit}
+            currency={currency}
+            label={`Cumulative profit over ${report.window.days} days`}
+            showProfitGaps
+          />
+        ) : (
+          <p className="text-sm text-ink-muted">
+            Profit is unknown — a cost is missing, so we will not draw a profit line.
+          </p>
+        )}
+      </PageSection>
 
       {report.elasticity_update ? (
         <Card>

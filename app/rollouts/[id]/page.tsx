@@ -31,7 +31,8 @@ import { IconClock, IconInbox } from "@/components/ui/icons";
 import { RollbackButton } from "@/components/domain/rollback-button";
 import { ConfirmRolloutButton } from "@/components/domain/confirm-rollout-button";
 import { PauseRolloutButton } from "@/components/domain/pause-rollout-button";
-import { UnitsChart } from "@/components/rollout/orders-chart";
+import { RolloutMetricCharts } from "@/components/charts/metric-charts";
+import { enrichReadings } from "@/components/charts/reading-economics";
 import { StageTimeline } from "@/components/domain/stage-timeline";
 import { ExpectedRangeMark, readingsDomainMax } from "@/components/domain/expected-range";
 import { PriceMove, SourceBadge } from "@/components/domain/journal";
@@ -91,7 +92,8 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
   const bundle = demoMode ? getRolloutBundle(id) : await getRealRolloutBundle(ctx.shop!, id);
   if (!bundle) notFound();
 
-  const { rollout, variants, readings, events, live, can, health, health_sentence } = bundle;
+  const { rollout, variants, events, live, can, health, health_sentence } = bundle;
+  const readings = enrichReadings(rollout, variants, bundle.readings);
   const currency = demoMode ? getDemoStore().shop.currency : ctx.shop!.currency;
   const journal = demoMode
     ? getJournalForRollout(rollout.id)
@@ -240,18 +242,25 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
         <div className="min-w-0 space-y-6">
           {/* Units sold against expectation. */}
           <Card>
-            <CardHeader title="Unit sales" />
+            <CardHeader title="How it landed" />
             {readings.length > 0 ? (
               <CardBody>
-                <UnitsChart readings={readings} stageCount={rollout.stages.length} />
+                <RolloutMetricCharts
+                  readings={readings}
+                  stageCount={rollout.stages.length}
+                  currency={currency}
+                  liveLatest={rollout.status === "running"}
+                />
               </CardBody>
             ) : null}
             <CardBody flush>
-              <Table caption="Daily units">
+              <Table caption="Daily units, revenue and profit">
                 <THead>
                   <TR>
                     <TH>Day</TH>
                     <TH numeric>Units sold</TH>
+                    <TH numeric>Revenue</TH>
+                    <TH numeric>Profit</TH>
                     <TH numeric>We expected</TH>
                     <TH className="w-[34%] min-w-[10rem]">How it landed</TH>
                     <TH>Verdict</TH>
@@ -259,7 +268,7 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
                 </THead>
                 <TBody>
                   {readings.length === 0 ? (
-                    <TableEmptyRow colSpan={5}>Nothing to compare yet</TableEmptyRow>
+                    <TableEmptyRow colSpan={7}>Nothing to compare yet</TableEmptyRow>
                   ) : (
                     readings
                       .slice()
@@ -276,6 +285,16 @@ export default async function RolloutPage({ params, searchParams }: PageProps) {
                             <TD className="whitespace-nowrap">{formatDay(reading.day)}</TD>
                             <TD numeric className="font-medium">
                               {formatUnits(reading.actual_units)}
+                            </TD>
+                            <TD numeric>
+                              {formatMoney(reading.actual_revenue_cents, { currency, showCents: false })}
+                            </TD>
+                            <TD numeric>
+                              {reading.actual_profit_cents === null ? (
+                                <span className="text-ink-muted">Unknown</span>
+                              ) : (
+                                formatMoney(reading.actual_profit_cents, { currency, showCents: false })
+                              )}
                             </TD>
                             <TD numeric className="whitespace-nowrap text-ink-muted">
                               {reading.band_floored

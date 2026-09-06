@@ -13,6 +13,7 @@ import {
   liveMachineModeForRollout,
   liveMachineStage,
   PageHeader,
+  PageSection,
   Stat,
   StatGroup,
   TBody,
@@ -36,13 +37,20 @@ import {
   changeWords,
   countOf,
 } from "@/components/domain/status";
-import { formatDateTime, formatUnits } from "@/components/format";
+import { formatDateTime, formatDay, formatMoney, formatUnits } from "@/components/format";
 import { readingSentence, type RolloutHealth } from "@/lib/engine/readings";
-import { getDemoStore } from "@/components/demo/store";
+import { getDemoStore, DEMO_END_DAY } from "@/components/demo/store";
 import { getJournal, getLive, getRolloutBundles, getRollouts } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
 import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealOverview, type OverviewData } from "@/app/lib/store-data";
+import { StoreSeries } from "@/components/charts/store-series";
+import {
+  TRADING_WINDOW_DAYS,
+  aggregateDailyTrading,
+  tradingTotals,
+} from "@/components/charts/aggregate-trading";
+import { addDays } from "@/lib/dates";
 
 export const metadata: Metadata = {
   title: "Overview",
@@ -80,6 +88,73 @@ export default async function OverviewPage({
           has nothing live, so "what is live right now" is not yet the question
           the merchant is asking (R24). */}
       <FirstRunGuide readiness={readiness} />
+
+      {data.trading ? (
+        <PageSection title="Last 30 days">
+          <p className="max-w-prose text-base text-ink-muted">
+            Store totals. Every visitor saw the same price on a given day.
+          </p>
+          <StatGroup columns={3}>
+            <Stat
+              label="Revenue"
+              value={formatMoney(data.trading.totals.revenue_cents, {
+                currency: data.currency,
+                showCents: false,
+              })}
+            />
+            <Stat
+              label="Profit"
+              value={
+                data.trading.totals.profit_cents === null
+                  ? "Unknown"
+                  : formatMoney(data.trading.totals.profit_cents, {
+                      currency: data.currency,
+                      showCents: false,
+                    })
+              }
+              note={
+                data.trading.totals.profit_cents === null
+                  ? "A selling product is missing a cost, so profit is not a number."
+                  : undefined
+              }
+            />
+            <Stat label="Units sold" value={formatUnits(data.trading.totals.units)} />
+          </StatGroup>
+          <StoreSeries days={data.trading.days} currency={data.currency} />
+          <Table caption="Daily store totals for the last 30 days">
+            <THead>
+              <TR>
+                <TH>Day</TH>
+                <TH numeric>Units</TH>
+                <TH numeric>Revenue</TH>
+                <TH numeric>Profit</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {data.trading.days
+                .slice()
+                .reverse()
+                .map((day) => (
+                  <TR key={day.day}>
+                    <TD className="whitespace-nowrap">{formatDay(day.day)}</TD>
+                    <TD numeric>{formatUnits(day.units)}</TD>
+                    <TD numeric>
+                      {formatMoney(day.revenue_cents, { currency: data.currency, showCents: false })}
+                    </TD>
+                    <TD numeric>
+                      {day.profit_cents === null ? (
+                        <span className="text-ink-muted">Unknown</span>
+                      ) : (
+                        formatMoney(day.profit_cents, { currency: data.currency, showCents: false })
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+            </TBody>
+          </Table>
+        </PageSection>
+      ) : null}
+
 
       {paused.map((rollout) => {
         const reason = bundles.get(rollout.id)?.rollout.paused_reason ?? null;
@@ -299,6 +374,10 @@ function demoOverview(): OverviewData {
   const store = getDemoStore();
   const rollouts = getRollouts();
   const repriceable = store.products.filter((product) => exclusionReasonFor(product) === null);
+  const fromDay = addDays(DEMO_END_DAY, -(TRADING_WINDOW_DAYS - 1));
+  const windowed = store.orderDays.filter((row) => row.day >= fromDay && row.day <= DEMO_END_DAY);
+  const tradingDays = aggregateDailyTrading(windowed, store.products);
+  const totals = tradingTotals(tradingDays);
 
   return {
     shopDomain: store.shop.domain,
@@ -320,6 +399,7 @@ function demoOverview(): OverviewData {
       ).size,
       hasAnyRollout: rollouts.length > 0,
     },
+    trading: totals.units > 0 ? { days: tradingDays, totals } : null,
   };
 }
 
