@@ -13,7 +13,6 @@
 import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import type { StoreAdapter } from '@/lib/adapters/types';
 import {
   MerchantApiError,
   merchantErrorResponse,
