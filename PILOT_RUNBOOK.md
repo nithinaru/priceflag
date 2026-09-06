@@ -29,9 +29,24 @@ same answer.
 | **Production app URL** | https://dashboard.priceflag.org |
 | **Vercel deployment** | https://priceflag-app.vercel.app (project `priceflag-app`) |
 
-`APP_URL` in production env must be the public dashboard or product host
-(`https://dashboard.priceflag.org` or `https://product.priceflag.org`), never
-the `vercel.app` project hostname. OAuth and magic links bind to that origin.
+`APP_URL` in production env must be `https://dashboard.priceflag.org`, never a
+`vercel.app` project hostname and never `product.priceflag.org` or
+`signin.priceflag.org`. OAuth, magic links, and the `pf_user` cookie bind to
+that origin only.
+
+### Launch domains (Vercel dashboard — DNS cannot be changed from this repo)
+
+Do **not** add these hosts to `priceflagv1`, and never deploy this repo there.
+`priceflag.org` / `www.priceflag.org` stay on the homepage project.
+
+| Host | Observed now | Required action on Vercel |
+|---|---|---|
+| `dashboard.priceflag.org` | Bound to `priceflag-app`. Signed-out `/` currently 303s to `https://signin.priceflag.org/` because Production `SIGNIN_URL` points at the marketing door. | On **priceflag-app → Settings → Environment Variables → Production**: set `APP_URL=https://dashboard.priceflag.org` and `SIGNIN_URL=https://dashboard.priceflag.org/signin` (or delete `SIGNIN_URL`). Leave `AUTH_COOKIE_DOMAIN` unset. |
+| `signin.priceflag.org` | CNAME to Vercel; **priceflagv1** serves `307 → /signin.html`. That static page is why the email link is broken (wrong host for `pf_link` / `/auth/callback`). | **priceflagv1 → Settings → Domains** → remove `signin.priceflag.org` only. **priceflag-app → Settings → Domains** → Add `signin.priceflag.org` (accept “move from another project” if offered). After the next *app* deploy, this repo 308s the host to `https://dashboard.priceflag.org/signin` (callbacks keep `/auth/callback`). |
+| `product.priceflag.org` | NXDOMAIN — no records. | **priceflag-app → Settings → Domains** → Add `product.priceflag.org`. Vercel will ask for a CNAME to `cname.vercel-dns.com` (or an A/ALIAS it prints). Same 308 to dashboard `/signin`. |
+| `priceflag.org` | Homepage on `priceflagv1`. | Leave it. |
+
+Redirects in `next.config.ts` / `middleware.ts` do nothing until the alias hosts resolve to `priceflag-app`. This repo does not deploy itself.
 
 ## Product invariants
 

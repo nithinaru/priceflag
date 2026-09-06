@@ -72,7 +72,7 @@ assert.doesNotMatch(stage, /"\$\{VC\[@\]\}" promote/);
 assert.match(stage, /ENV_FILE="\.env\.production\.local"/);
 assert.match(stage, /PRICEFLAG_SHOP_ALLOWLIST/);
 assert.match(stage, /dashboard\.priceflag\.org/);
-assert.match(stage, /product\.priceflag\.org/);
+assert.match(readFileSync(resolve(process.cwd(), 'next.config.ts'), 'utf8'), /product\.priceflag\.org/);
 assert.match(stage, /AUTH_SESSION_SECRET/);
 assert.match(stage, /SUPABASE_PUBLISHABLE_KEY/);
 assert.doesNotMatch(stage, /APP_URL" != "https:\/\/priceflag-app\.vercel\.app"/);

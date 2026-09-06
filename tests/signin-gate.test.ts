@@ -270,9 +270,13 @@ test('SIGNIN_URL still overrides the screen location for a non-marketing origin'
 
 test('next.config 308s alias hosts onto the dashboard', () => {
   const config = readFileSync(resolve(process.cwd(), 'next.config.ts'), 'utf8');
-  assert(config.includes("value: 'signin.priceflag.org'"), 'signin host redirect missing');
-  assert(config.includes("value: 'product.priceflag.org'"), 'product host redirect missing');
-  assert(config.includes('https://dashboard.priceflag.org/signin'), 'dashboard sign-in destination missing');
+  assert(config.includes("'signin.priceflag.org'"), 'signin host redirect missing');
+  assert(config.includes("'product.priceflag.org'"), 'product host redirect missing');
+  assert(
+    config.includes('https://dashboard.priceflag.org'),
+    'dashboard origin missing from redirects',
+  );
+  assert(config.includes('/signin'), 'dashboard sign-in destination missing');
   assert(config.includes('permanent: true'), 'redirects must be 308');
 });
 

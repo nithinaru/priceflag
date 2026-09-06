@@ -70,11 +70,12 @@ for name in "${REQUIRED_VARS[@]}"; do
 done
 
 case "$APP_URL" in
-  https://dashboard.priceflag.org|https://product.priceflag.org)
+  https://dashboard.priceflag.org)
     ;;
   *)
-    echo "error: production APP_URL must be https://dashboard.priceflag.org or https://product.priceflag.org." >&2
+    echo "error: production APP_URL must be https://dashboard.priceflag.org." >&2
     echo "       Never use a vercel.app hostname — priceflag-app.vercel.app is the project host, not the merchant-facing origin." >&2
+    echo "       product.priceflag.org and signin.priceflag.org 308 onto the dashboard; they are not APP_URL." >&2
     exit 1
     ;;
 esac
