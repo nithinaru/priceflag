@@ -14,12 +14,9 @@ import { cn } from "@/components/cn";
 import {
   Badge,
   Button,
-  Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
   CellNote,
   Notice,
+  PageSection,
   SearchInput,
   Select,
   TBody,
@@ -238,10 +235,8 @@ export function CatalogTable({
         </Notice>
       ) : null}
 
-      <Card>
-        <CardHeader title="Your catalog" />
-
-        <div className="flex flex-wrap items-end gap-3 px-4 pb-4 sm:px-5">
+      <PageSection title="Your catalog">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[13rem] flex-1">
             <label htmlFor="catalog-search" className="mb-1.5 block text-sm font-medium text-ink">
               Search
@@ -300,11 +295,10 @@ export function CatalogTable({
           ) : null}
         </div>
 
-        <CardBody flush>
-          <Table
-            layout="intrinsic"
-            caption="Your products, with price, cost, profit per sale and units sold recently"
-          >
+        <Table
+          layout="intrinsic"
+          caption="Your products, with price, cost, profit per sale and units sold recently"
+        >
             <THead>
               <TR>
                 <TH className="w-10">
@@ -382,9 +376,8 @@ export function CatalogTable({
               )}
             </TBody>
           </Table>
-        </CardBody>
 
-        <CardFooter>
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-muted">
           <span>
             {filtersActive
               ? `Showing ${formatUnits(sorted.length)} of ${countOf(rows.length, "product")}.`
@@ -392,8 +385,8 @@ export function CatalogTable({
             {missingCostInCatalog > 0 ? ` ${missingCostInCatalog} without a cost.` : ""}
           </span>
           <span>Gift cards and subscription products cannot be repriced.</span>
-        </CardFooter>
-      </Card>
+        </div>
+      </PageSection>
 
       {/* Keeps the last row clear of the floating bar. */}
       {selected.length > 0 ? <div className="h-20" aria-hidden="true" /> : null}
@@ -611,8 +604,10 @@ function compareBy(
       );
     case "units":
       return (units[a.variant_gid] ?? 0) - (units[b.variant_gid] ?? 0);
-    default:
-      return 0;
+    default: {
+      const _exhaustive: never = key;
+      return _exhaustive;
+    }
   }
 }
 

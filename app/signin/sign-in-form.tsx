@@ -3,12 +3,11 @@
 import { useState } from "react";
 import {
   Button,
-  Card,
-  CardBody,
   Field,
   Input,
   Notice,
   PageHeader,
+  PageSection,
 } from "@/components/ui";
 import { IconArrowRight, IconChevronRight, IconIbis } from "@/components/ui/icons";
 
@@ -147,46 +146,44 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
         </Notice>
       ) : null}
 
-      <Card>
-        <CardBody className="space-y-4 pt-5">
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              connectShopify();
-            }}
-            className="space-y-4"
+      <PageSection>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            connectShopify();
+          }}
+          className="space-y-4"
+        >
+          <Field
+            label="Store address"
+            htmlFor="shop-domain"
+            hint="From your Shopify admin URL. It ends in .myshopify.com."
+            error={shopError ?? undefined}
           >
-            <Field
-              label="Store address"
-              htmlFor="shop-domain"
-              hint="From your Shopify admin URL. It ends in .myshopify.com."
-              error={shopError ?? undefined}
-            >
-              <Input
-                id="shop-domain"
-                name="shop"
-                value={domain}
-                placeholder="my-store.myshopify.com"
-                autoComplete="off"
-                spellCheck={false}
-                autoCapitalize="none"
-                autoCorrect="off"
-                invalid={shopError !== null}
-                onChange={(event) => {
-                  setDomain(event.target.value);
-                  if (shopError) setShopError(null);
-                }}
-              />
-            </Field>
-            <Button type="submit" variant="neon" size="lg" fullWidth iconRight={<IconArrowRight />}>
-              Continue with Shopify
-            </Button>
-          </form>
-        </CardBody>
-      </Card>
+            <Input
+              id="shop-domain"
+              name="shop"
+              value={domain}
+              placeholder="my-store.myshopify.com"
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
+              autoCorrect="off"
+              invalid={shopError !== null}
+              onChange={(event) => {
+                setDomain(event.target.value);
+                if (shopError) setShopError(null);
+              }}
+            />
+          </Field>
+          <Button type="submit" variant="neon" size="lg" fullWidth iconRight={<IconArrowRight />}>
+            Continue with Shopify
+          </Button>
+        </form>
+      </PageSection>
 
-      <details className="group rounded-lg border border-border bg-surface shadow-sm" open={emailOpen || undefined}>
-        <summary className="cursor-pointer list-none px-4 py-3.5 text-base font-medium text-ink marker:hidden sm:px-5 [&::-webkit-details-marker]:hidden">
+      <details className="group" open={emailOpen || undefined}>
+        <summary className="cursor-pointer list-none py-1 text-base font-medium text-ink marker:hidden [&::-webkit-details-marker]:hidden">
           <span className="flex items-center justify-between gap-3">
             Already connected? Open from email
             <IconChevronRight
@@ -195,7 +192,7 @@ export function SignInForm({ error, next }: { error?: string; next?: string }) {
             />
           </span>
         </summary>
-        <div className="space-y-4 border-t border-border px-4 py-4 sm:px-5">
+        <div className="space-y-4 pt-4">
           <p className="max-w-prose text-base text-ink-muted">
             We send a one-time link — open it in this same browser.
           </p>

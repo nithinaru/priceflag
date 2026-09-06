@@ -1,9 +1,9 @@
-import { ButtonLink, Card, EmptyState } from "@/components/ui";
+import { ButtonLink, EmptyState, PageSection } from "@/components/ui";
 import { IconSearch } from "@/components/ui/icons";
 
 export default function NotFound() {
   return (
-    <Card>
+    <PageSection>
       <EmptyState
         icon={<IconSearch size={19} />}
         title="We couldn't find that"
@@ -19,6 +19,6 @@ export default function NotFound() {
           </ButtonLink>
         }
       />
-    </Card>
+    </PageSection>
   );
 }

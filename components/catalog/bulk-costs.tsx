@@ -5,12 +5,9 @@ import { cn } from "@/components/cn";
 import {
   Button,
   ButtonLink,
-  Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
   EmptyState,
   Notice,
+  PageSection,
 } from "@/components/ui";
 import { useToast } from "@/components/ui/toast";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
@@ -145,7 +142,7 @@ export function BulkCosts({
 
   if (products.length === 0) {
     return (
-      <Card>
+      <PageSection>
         <EmptyState
           icon={<IconCheck size={19} />}
           title="Every product has a cost"
@@ -155,7 +152,7 @@ export function BulkCosts({
             </ButtonLink>
           }
         />
-      </Card>
+      </PageSection>
     );
   }
 
@@ -167,18 +164,14 @@ export function BulkCosts({
         write back to Shopify.
       </Notice>
 
-      <Card>
-        <CardHeader
-          title="Add what each product costs you"
-          description={
-            remaining === 0
-              ? "Every one done."
-              : `${remaining} of ${countOf(products.length, "product")} still need a cost.`
-          }
-        />
-        <CardBody flush>
-          <ul className="divide-y divide-border border-t border-border">
-            {products.map((product, index) => {
+      <PageSection title="Add what each product costs you">
+        <p className="max-w-prose text-base text-ink-muted">
+          {remaining === 0
+            ? "Every one done."
+            : `${remaining} of ${countOf(products.length, "product")} still need a cost.`}
+        </p>
+        <ul className="divide-y divide-border border-y border-border">
+          {products.map((product, index) => {
               const saved = values[product.variant_gid] ?? null;
               const draft = drafts[product.variant_gid] ?? "";
               const error = errors[product.variant_gid];
@@ -190,10 +183,7 @@ export function BulkCosts({
               return (
                 <li
                   key={product.variant_gid}
-                  className={cn(
-                    "flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-5",
-                    saved !== null && "bg-live-tint/40",
-                  )}
+                  className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3"
                 >
                   <div className="min-w-[10rem] flex-1">
                     <div className="font-medium text-ink">
@@ -276,9 +266,8 @@ export function BulkCosts({
                 </li>
               );
             })}
-          </ul>
-        </CardBody>
-        <CardFooter>
+        </ul>
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-muted">
           <span>
             {done === 0
               ? `${countOf(products.length, "product")} to go.`
@@ -295,8 +284,8 @@ export function BulkCosts({
               Jump to the first one
             </Button>
           )}
-        </CardFooter>
-      </Card>
+        </div>
+      </PageSection>
     </div>
   );
 }

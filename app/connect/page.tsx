@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Badge, PageHeader } from "@/components/ui";
+import { Badge, PageHeader, PageSection } from "@/components/ui";
 import { ConnectPanel, type ConnectedShopState } from "@/components/onboarding/connect-panel";
 import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getAdapter } from "@/lib/adapters";
@@ -71,9 +71,11 @@ export default async function ConnectPage({
       />
 
       {!shopifyConfigured && environment.mode !== "demo" ? (
-        <p className="text-base text-ink-muted">
-          Shopify is not configured on this deployment.
-        </p>
+        <PageSection>
+          <p className="text-base text-ink-muted">
+            Shopify is not configured on this deployment.
+          </p>
+        </PageSection>
       ) : null}
 
       <ConnectPanel

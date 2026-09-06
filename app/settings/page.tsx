@@ -2,12 +2,10 @@ import type { Metadata } from "next";
 import {
   Badge,
   ButtonLink,
-  Card,
-  CardBody,
-  CardHeader,
   DetailList,
   DetailRow,
   PageHeader,
+  PageSection,
 } from "@/components/ui";
 import { NotificationSettings } from "@/components/settings/notification-settings";
 import { countOf } from "@/components/format";
@@ -52,35 +50,27 @@ export default async function SettingsPage({
         description={data.shopDomain}
       />
 
-      <Card tone={demo ? "hold" : "live"} edge>
-        <CardHeader
-          title={data.shopDomain}
-          action={
-            demo ? (
-              <ButtonLink href="/connect" variant="neon" size="sm">
-                Connect a real store
-              </ButtonLink>
-            ) : null
-          }
-        >
-          <div className="pt-1">
-            <Badge tone={demo ? "hold" : "live"} size="md" dot>
-              {demo ? "Demo" : "Live"}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardBody>
-          <DetailList>
-            <DetailRow label="Store">{data.shopDomain}</DetailRow>
-            <DetailRow label="Products loaded">{countOf(data.productCount, "product")}</DetailRow>
-            <DetailRow label="On a Priceflag price right now">
-              {data.liveCount === 0 ? "None" : countOf(data.liveCount, "product")}
-            </DetailRow>
-            <DetailRow label="Currency">{data.currency}</DetailRow>
-            <DetailRow label="Day boundaries">{data.timezone}</DetailRow>
-          </DetailList>
-        </CardBody>
-      </Card>
+      <PageSection title={data.shopDomain}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Badge tone={demo ? "hold" : "live"} size="md" dot>
+            {demo ? "Demo" : "Live"}
+          </Badge>
+          {demo ? (
+            <ButtonLink href="/connect" variant="neon" size="sm">
+              Connect a real store
+            </ButtonLink>
+          ) : null}
+        </div>
+        <DetailList>
+          <DetailRow label="Store">{data.shopDomain}</DetailRow>
+          <DetailRow label="Products loaded">{countOf(data.productCount, "product")}</DetailRow>
+          <DetailRow label="On a Priceflag price right now">
+            {data.liveCount === 0 ? "None" : countOf(data.liveCount, "product")}
+          </DetailRow>
+          <DetailRow label="Currency">{data.currency}</DetailRow>
+          <DetailRow label="Day boundaries">{data.timezone}</DetailRow>
+        </DetailList>
+      </PageSection>
 
       <NotificationSettings
         initialEmails={data.notifyEmails}
