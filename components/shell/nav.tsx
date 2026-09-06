@@ -117,7 +117,7 @@ export function Nav({
           aria-expanded={drawerOpen}
           aria-controls="pf-mobile-nav"
           className={
-            "inline-flex items-center gap-2 rounded-md border border-border-strong px-2.5 py-1.5 " +
+            "inline-flex cursor-pointer items-center gap-2 rounded-md border border-border-strong px-2.5 py-1.5 " +
             "text-sm font-medium text-ink outline-none hover:bg-surface-muted " +
             "focus-visible:ring-2 focus-visible:ring-focus"
           }
@@ -144,7 +144,7 @@ export function Nav({
                 type="button"
                 onClick={() => setDrawerOpen(false)}
                 aria-label="Close menu"
-                className="rounded-md p-1.5 text-ink-subtle outline-none hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
+                className="cursor-pointer rounded-md p-1.5 text-ink-subtle outline-none hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
               >
                 <IconClose size={18} />
               </button>
