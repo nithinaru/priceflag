@@ -22,6 +22,9 @@ export function MetalCta({
       variant="button"
       theme={theme}
       paused={paused || reduce}
+      ringCssPx={4.5}
+      scale={1.45}
+      shaderScale={1.85}
       className={cn("inline-flex max-w-full", className)}
     >
       {children}

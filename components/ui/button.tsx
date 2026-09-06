@@ -5,6 +5,7 @@ import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from "react";
 import { cn } from "@/components/cn";
 import { DotsLoading } from "@/components/motion/anime-presence";
 import { MetalCta } from "@/components/motion/metal-cta";
+import { PressShell } from "@/components/motion/press-shell";
 
 export type ButtonVariant =
   | "primary"
@@ -28,30 +29,31 @@ export type ButtonSize = "sm" | "md" | "lg";
 
 const BASE =
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md border font-medium " +
-  "whitespace-nowrap transition-[background-color,border-color,color] duration-100 " +
+  "whitespace-nowrap transition-[background-color,border-color,color,box-shadow] duration-200 " +
+  "ease-[cubic-bezier(0.22,1,0.36,1)] " +
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 " +
   "focus-visible:ring-offset-canvas disabled:pointer-events-none disabled:opacity-50";
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "border-transparent bg-accent text-accent-ink hover:bg-accent-hover active:bg-accent-active",
+    "border-transparent bg-accent text-accent-ink hover:bg-accent-hover " +
+    "hover:shadow-[0_6px_16px_-8px_rgb(30_46_222_/_0.55)]",
   secondary:
-    "border-border-strong bg-surface text-ink hover:bg-surface-muted active:bg-surface-inset",
+    "border-border-strong bg-surface text-ink hover:bg-surface-muted " +
+    "hover:border-border hover:shadow-[0_6px_14px_-8px_rgb(13_33_104_/_0.28)]",
   ghost: "border-transparent bg-transparent text-ink-muted hover:bg-surface-muted hover:text-ink",
   danger: "border-breach-border bg-breach-tint text-breach hover:bg-breach hover:text-white",
   "danger-quiet": "border-transparent bg-transparent text-breach hover:bg-breach-tint",
   neon:
     "relative overflow-hidden rounded-full border-transparent bg-[#d8f24b] text-[#13200a] " +
     "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.45),0_0_18px_rgba(216,242,75,0.5)] " +
-    "transition-[background-color,border-color,color,transform,box-shadow] duration-150 " +
-    "hover:-translate-y-0.5 hover:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),0_0_28px_rgba(216,242,75,0.65),0_6px_16px_rgba(19,32,10,0.12)] " +
-    "active:translate-y-0 active:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.35),0_0_14px_rgba(216,242,75,0.4)] " +
-    "motion-reduce:transition-[background-color,border-color,color,box-shadow] motion-reduce:hover:translate-y-0 motion-reduce:active:translate-y-0 " +
+    "hover:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),0_0_28px_rgba(216,242,75,0.65),0_8px_18px_rgba(19,32,10,0.12)] " +
     "after:pointer-events-none after:absolute after:inset-y-0 after:w-1/3 after:-skew-x-12 after:bg-gradient-to-r after:from-transparent after:via-white/35 after:to-transparent " +
-    "after:-translate-x-[250%] hover:after:translate-x-[350%] after:transition-transform after:duration-500 after:ease-out motion-reduce:after:hidden",
+    "after:-translate-x-[250%] hover:after:translate-x-[350%] after:transition-transform after:duration-700 after:ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:after:hidden",
   neonDark:
     "rounded-full border-transparent bg-[#030818] text-[#d8f24b] " +
-    "shadow-[inset_0_1px_0_0_rgba(216,242,75,0.1)] hover:bg-[#0a1020] active:bg-[#020610]",
+    "shadow-[inset_0_1px_0_0_rgba(216,242,75,0.1)] hover:bg-[#0a1020] " +
+    "hover:shadow-[0_0_22px_rgba(216,242,75,0.22)]",
 };
 
 const SIZES: Record<ButtonSize, string> = {
@@ -98,10 +100,11 @@ export function Button({
   type = "button",
   ...props
 }: ButtonProps) {
+  const blocked = Boolean(disabled || loading);
   const button = (
     <button
       type={type}
-      disabled={disabled || loading}
+      disabled={blocked}
       aria-busy={loading || undefined}
       className={buttonClasses(variant, size, cn(fullWidth && "w-full", className))}
       {...props}
@@ -117,9 +120,7 @@ export function Button({
     </button>
   );
 
-  if (!isMetalVariant(variant)) return button;
-
-  return (
+  const framed = isMetalVariant(variant) ? (
     <MetalCta
       paused={loading}
       theme={variant === "neonDark" ? "dark" : "light"}
@@ -127,6 +128,14 @@ export function Button({
     >
       {button}
     </MetalCta>
+  ) : (
+    button
+  );
+
+  return (
+    <PressShell disabled={blocked} className={fullWidth ? "w-full" : undefined}>
+      {framed}
+    </PressShell>
   );
 }
 
@@ -160,12 +169,18 @@ export function ButtonLink({
     </Link>
   );
 
-  if (!isMetalVariant(variant)) return link;
-
-  return (
+  const framed = isMetalVariant(variant) ? (
     <MetalCta theme={variant === "neonDark" ? "dark" : "light"} className={fullWidth ? "w-full" : undefined}>
       {link}
     </MetalCta>
+  ) : (
+    link
+  );
+
+  return (
+    <PressShell className={fullWidth ? "w-full" : undefined}>
+      {framed}
+    </PressShell>
   );
 }
 
