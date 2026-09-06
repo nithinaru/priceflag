@@ -128,11 +128,6 @@ export function getAppUrl(): string {
   );
 }
 
-/** Cookie Secure flag for OAuth/session cookies: derived from APP_URL, not the inbound request. */
-export function appUrlIsHttps(): boolean {
-  return new URL(getAppUrl()).protocol === 'https:';
-}
-
 export function getDemoStatePath(): string {
   return env('PRICEFLAG_DEMO_STATE') ?? '.priceflag/demo-state.json';
 }
