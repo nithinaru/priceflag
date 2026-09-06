@@ -3,11 +3,8 @@
 import { useMemo, useState } from "react";
 import {
   Button,
-  Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
   CellNote,
+  PageSection,
   SearchInput,
   Select,
   TBody,
@@ -94,23 +91,8 @@ export function JournalTable({
   const rolloutOptions = Object.entries(rolloutNames);
 
   return (
-    <Card>
-      <CardHeader
-        title="All price changes"
-        action={
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={download}
-            disabled={filtered.length === 0}
-            iconLeft={<IconDownload size={15} />}
-          >
-            Download {filtersActive ? "these" : "all"} as CSV
-          </Button>
-        }
-      />
-
-      <div className="flex flex-wrap items-end gap-3 px-4 pb-4 sm:px-5">
+    <PageSection title="All price changes">
+      <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[13rem] flex-1">
           <label htmlFor="journal-search" className="mb-1.5 block text-sm font-medium text-ink">
             Search
@@ -186,79 +168,85 @@ export function JournalTable({
             Clear filters
           </Button>
         ) : null}
+
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={download}
+          disabled={filtered.length === 0}
+          iconLeft={<IconDownload size={15} />}
+        >
+          Download {filtersActive ? "these" : "all"} as CSV
+        </Button>
       </div>
 
-      <CardBody flush>
-        <Table layout="intrinsic" caption="Journal">
-          <THead>
-            <TR>
-              <TH>When</TH>
-              <TH>Product</TH>
-              <TH numeric>Price</TH>
-              <TH numeric>Change</TH>
-              <TH>Who</TH>
-              <TH>Why</TH>
-            </TR>
-          </THead>
-          <TBody>
-            {filtered.length === 0 ? (
-              <TableEmptyRow colSpan={6}>
-                {filtersActive ? "Nothing matches" : "No price changes yet"}
-              </TableEmptyRow>
-            ) : (
-              filtered.map((entry) => {
-                const changePct =
-                  entry.before_price_cents > 0
-                    ? ((entry.after_price_cents - entry.before_price_cents) /
-                        entry.before_price_cents) *
-                      100
-                    : 0;
-                return (
-                  <TR key={entry.id}>
-                    <TD className="whitespace-nowrap text-ink-muted">
-                      {formatDateTime(entry.applied_at)}
-                    </TD>
-                    <TD>
-                      <div className="font-medium">{entry.title}</div>
-                      <CellNote>{entry.sku ?? "No SKU"}</CellNote>
-                    </TD>
-                    <TD numeric>
-                      <PriceMove
-                        fromCents={entry.before_price_cents}
-                        toCents={entry.after_price_cents}
-                        currency={entry.currency}
-                      />
-                    </TD>
-                    <TD numeric>{formatPctDelta(changePct, 1)}</TD>
-                    <TD>
-                      <SourceBadge source={entry.source} actor={entry.actor} />
-                    </TD>
-                    <TD className="max-w-[18rem]">
-                      <div className="text-ink-muted">{entry.reason ?? "—"}</div>
-                      {entry.rollout_id ? (
-                        <CellNote>
-                          <TextLink href={`/rollouts/${entry.rollout_id}`}>
-                            Open this change
-                          </TextLink>
-                        </CellNote>
-                      ) : null}
-                    </TD>
-                  </TR>
-                );
-              })
-            )}
-          </TBody>
-        </Table>
-      </CardBody>
+      <Table layout="intrinsic" caption="Journal">
+        <THead>
+          <TR>
+            <TH>When</TH>
+            <TH>Product</TH>
+            <TH numeric>Price</TH>
+            <TH numeric>Change</TH>
+            <TH>Who</TH>
+            <TH>Why</TH>
+          </TR>
+        </THead>
+        <TBody>
+          {filtered.length === 0 ? (
+            <TableEmptyRow colSpan={6}>
+              {filtersActive ? "Nothing matches" : "No price changes yet"}
+            </TableEmptyRow>
+          ) : (
+            filtered.map((entry) => {
+              const changePct =
+                entry.before_price_cents > 0
+                  ? ((entry.after_price_cents - entry.before_price_cents) /
+                      entry.before_price_cents) *
+                    100
+                  : 0;
+              return (
+                <TR key={entry.id}>
+                  <TD className="whitespace-nowrap text-ink-muted">
+                    {formatDateTime(entry.applied_at)}
+                  </TD>
+                  <TD>
+                    <div className="font-medium">{entry.title}</div>
+                    <CellNote>{entry.sku ?? "No SKU"}</CellNote>
+                  </TD>
+                  <TD numeric>
+                    <PriceMove
+                      fromCents={entry.before_price_cents}
+                      toCents={entry.after_price_cents}
+                      currency={entry.currency}
+                    />
+                  </TD>
+                  <TD numeric>{formatPctDelta(changePct, 1)}</TD>
+                  <TD>
+                    <SourceBadge source={entry.source} actor={entry.actor} />
+                  </TD>
+                  <TD className="max-w-[18rem]">
+                    <div className="text-ink-muted">{entry.reason ?? "—"}</div>
+                    {entry.rollout_id ? (
+                      <CellNote>
+                        <TextLink href={`/rollouts/${entry.rollout_id}`}>
+                          Open this change
+                        </TextLink>
+                      </CellNote>
+                    ) : null}
+                  </TD>
+                </TR>
+              );
+            })
+          )}
+        </TBody>
+      </Table>
 
-      <CardFooter>
-        <span>
-          {filtersActive
-            ? `${filtered.length} of ${countOf(entries.length, "change")}`
-            : countOf(entries.length, "change")}
-        </span>
-      </CardFooter>
-    </Card>
+      <div className="text-sm text-ink-muted">
+        {filtersActive
+          ? `${filtered.length} of ${countOf(entries.length, "change")}`
+          : countOf(entries.length, "change")}
+      </div>
+    </PageSection>
   );
 }
 
