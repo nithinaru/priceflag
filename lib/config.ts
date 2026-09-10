@@ -76,13 +76,17 @@ export function hasSupabaseConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && env('SUPABASE_SERVICE_ROLE_KEY') !== undefined;
 }
 
-/** Path B: OAuth credentials for a Partner-Dashboard app. */
+/**
+ * Path B: OAuth credentials for a Partner-Dashboard app.
+ *
+ * `SHOPIFY_APP_HANDLE` is deliberately not required. It used to be, because
+ * every install ended by redirecting to the app's home inside the Shopify admin
+ * and that URL is built from the handle. Installs now land on Priceflag's own
+ * dashboard with a session, so the handle buys nothing — and requiring it would
+ * refuse to start an OAuth flow that would otherwise work.
+ */
 export function hasShopifyConfig(): boolean {
-  return (
-    env('SHOPIFY_API_KEY') !== undefined &&
-    env('SHOPIFY_API_SECRET') !== undefined &&
-    env('SHOPIFY_APP_HANDLE') !== undefined
-  );
+  return env('SHOPIFY_API_KEY') !== undefined && env('SHOPIFY_API_SECRET') !== undefined;
 }
 
 /** Path A: a static Admin API token from an admin-created custom app. */

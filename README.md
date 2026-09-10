@@ -191,23 +191,29 @@ contracts/      JSON Schemas + DB schema docs — the law between lanes (Lane B 
 supabase/       migrations (Lane B)
 ml/             Python models: elasticity, demand baselines, counterfactual, eval harness (Lane C)
 scripts/        smoke test, store simulator (Lane B)
-lib/auth/       magic-link accounts: the pf_user session cookie and account→shop link
+lib/auth/       store accounts: the pf_user session cookie and account→shop link
 PRD.md · CLAUDE.md · PILOT_RUNBOOK.md
 ```
 
 ## Signing in
 
-Two independent ways in, answering different questions:
+Installing the Shopify app is the entire sign-up. A merchant types their store
+address on `/signin`, approves Priceflag once, and lands on their dashboard
+signed in — no password, no emailed link, no separate connect step. The account
+is keyed by the store's own `shops.id`, so the session resolves to a store by
+construction.
 
-- **From the Shopify admin** — the app is embedded, Shopify signs a session
-  token, and no Priceflag account is involved. This is the everyday path.
-- **From signin.priceflag.org** — a magic link proves control of an email
-  address and mints the `pf_user` cookie. For somebody who has not installed
-  yet, or who opens the dashboard directly rather than through Shopify.
+Two ways to arrive after that, answering different questions:
+
+- **From the Shopify admin** — the app is embedded and Shopify signs a session
+  token. This is the everyday path.
+- **From dashboard.priceflag.org** — the `pf_user` cookie minted when the
+  install completed, good for 30 days.
 
 Neither authorises a price write; that still requires a Shopify session token,
-checked in the route handler, every time. The sign-in screen itself is
-`signin.html` in the website repo — static, and holding no keys.
+checked in the route handler, every time. The marketing door at
+`signin.priceflag.org` lives in the website repo — static, holding no keys, and
+308ing to the dashboard.
 
 Setup, including the Supabase and Vercel steps that cannot live in the repo, is
 in [docs/auth-setup.md](docs/auth-setup.md).

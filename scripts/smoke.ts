@@ -93,7 +93,6 @@ import {
   isValidShopDomain,
   missingScopes,
   normalizeShopDomain,
-  postInstallUrl,
   ShopifyAuthError,
   shouldCanonicalizeOAuthStart,
   verifyOAuthState,
@@ -561,18 +560,6 @@ async function testShopifyAuth(): Promise<void> {
         else process.env[key] = value;
       }
     }
-  });
-
-  await test('post-install returns to the Shopify Admin app handle, never the client id', () => {
-    assertEqual(
-      postInstallUrl('acme-dev.myshopify.com', 'priceflag-beta'),
-      'https://admin.shopify.com/store/acme-dev/apps/priceflag-beta',
-      'embedded app home',
-    );
-    assertThrows(
-      () => postInstallUrl('acme-dev.myshopify.com', 'not/a-handle'),
-      'invalid app handle',
-    );
   });
 
   await test('the callback HMAC verifies exactly as Shopify computes it', () => {

@@ -223,25 +223,16 @@ async function main(): Promise<void> {
   try {
     browser = await chromium.launch();
     const context = await browser.newContext({
-      // Two separate doors: Vercel's Deployment Protection would 302 every
-      // navigation to SSO, and the app's own access gate (middleware.ts) would
-      // 401 it. Both need satisfying to reach a page.
+      // Vercel's Deployment Protection would 302 every navigation to SSO before
+      // the app ever sees it.
       extraHTTPHeaders: BYPASS === '' ? {} : { 'x-vercel-protection-bypass': BYPASS, 'x-vercel-set-bypass-cookie': 'true' },
     });
 
-    const accessSecret = process.env.APP_ACCESS_SECRET ?? '';
-    if (accessSecret !== '') {
-      const { hostname } = new URL(BASE_URL);
-      await context.addCookies([
-        { name: 'pf_access', value: accessSecret, domain: hostname, path: '/', httpOnly: true, secure: BASE_URL.startsWith('https') },
-      ]);
-    }
-
-    // Third door: the account gate. The middleware bounces any browser without
-    // a `pf_user` session to the sign-in screen — deliberately, even outside
+    // The app's own door: `middleware.ts` bounces any browser without a
+    // `pf_user` session to the sign-in screen — deliberately, even outside
     // production — so when a signing secret is configured the smoke mints its
-    // own session the same way `/auth/callback` would. Without the secret the
-    // target server could not verify a cookie anyway, so none is sent.
+    // own session the same way `/api/auth/callback` would. Without the secret
+    // the target server could not verify a cookie anyway, so none is sent.
     const sessionSecret = process.env.AUTH_SESSION_SECRET ?? '';
     if (sessionSecret !== '') {
       const { signUserCookie } = await import('../lib/auth/account');

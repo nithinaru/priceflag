@@ -1,40 +1,71 @@
 # Sign-in setup
 
-How a merchant gets from priceflag.org into the app, and the configuration that
-has to exist for it to work.
+How a merchant gets from the marketing site into Priceflag, and the
+configuration that has to exist for it to work.
 
-There are **two** ways in. They are not equal:
+There is **one** way in: install the Shopify app. Finishing that install *is*
+the account — there is no separate sign-up, no password, and no emailed link.
 
-1. **Shopify (the product).** The merchant types `store.myshopify.com` on
-   `$APP_URL/signin`, approves the app, and lands in Shopify admin. Day to day
-   they reopen Priceflag from Apps. Shopify signs a session token;
-   `middleware.ts` verifies it. This is the only path that can install, sync,
-   or write a price.
-2. **Email (the dashboard bookmark).** A magic link proves control of an
-   address and mints a `pf_user` cookie. Use it to reopen the dashboard from a
-   browser that is not the Shopify admin. If that email has not connected a
-   store, the next screen is Connect — then Shopify OAuth records
-   `account_shops`. Production screen:
-   `https://dashboard.priceflag.org/signin`.
-   `signin.priceflag.org` may still exist on the marketing site; it is not the
-   product door.
+```
+merchant types store.myshopify.com
+        │
+        ▼
+GET  /api/auth?shop=…            mints a single-use nonce cookie
+        │
+        ▼
+Shopify's approval screen        one consent, listed below
+        │
+        ▼
+GET  /api/auth/callback          HMAC → nonce → token exchange → shop row
+                                 → reads shop owner → creates account
+                                 → mints `pf_user` → redirects to `/`
+```
 
-Neither email session is authorisation to write a price. Writes still require
-a Shopify session token, checked in the route handler, every time.
+The merchant is signed in and looking at their own dashboard. On later visits
+the `pf_user` cookie (30 days) admits them directly; when it expires, typing
+the store address again is a redirect through Shopify that costs a second,
+because Shopify does not re-ask for a grant it has already given.
 
-### Magic links are bound to one browser
+**None of this authorises a price write.** `pf_user` decides which store's
+dashboard to render. Every write independently requires a Shopify session
+token, checked in the route handler, every time.
 
-A link authenticates whoever opens it, which on its own is a session-fixation
-primitive: request a link to your own address, forward it to somebody else, and
-they are now signed into your account, with anything they connect recorded as
-yours.
+---
 
-So `/api/auth/magic-link` sets a short-lived HttpOnly nonce cookie and puts the
-same nonce in the link; `/auth/callback` requires them to match. A link opened
-anywhere other than the browser that asked for it is refused — and refused
-*before* it is consumed, so the person who genuinely requested it can still use
-it. This is why the sign-in page's `fetch` uses `credentials: 'include'` and why
-the CORS response carries `Access-Control-Allow-Credentials`.
+## The account *is* the store
+
+`accounts.id` is the `shops.id` uuid of the store that was installed. That is
+the whole design: a session cookie resolves to a store by construction, so
+there is no window in which somebody is signed in but unattached, and nothing
+to reconcile afterwards.
+
+The email on the account is the Shopify shop owner's address, read once at
+install from `shop { name email }` (no access scope of its own). It is contact
+information — nothing authenticates against it. If that read fails, the account
+gets `owner@<store>.myshopify.com` as a placeholder and the install proceeds:
+Shopify already considers the app installed at that point, so failing would
+leave a store connected to an app its owner cannot reach.
+
+---
+
+## What the merchant approves
+
+One consent screen is the entire permission conversation:
+
+| Scope | Why |
+| --- | --- |
+| `read_products`, `write_products` | Read the catalog; write the price. |
+| `read_orders`, `read_all_orders` | Sales history for forecasts. Without `read_all_orders` the Admin API silently caps history at 60 days. |
+| `read_inventory`, `write_inventory` | A staged price change has to move with its inventory state. |
+| `read_price_rules`, `write_price_rules` | Priced changes that are expressed as rules rather than variant prices. |
+
+`read_all_orders` needs Shopify's approval on the custom-distribution app
+before any store can install. `/api/auth/callback` **fails the install** if the
+granted scopes are narrower than the requested list, rather than forecasting on
+two months of data while the UI claims 180.
+
+Changing `SHOPIFY_SCOPES` does not re-prompt an already-installed store — each
+one has to go through `/signin` again.
 
 ---
 
@@ -42,147 +73,51 @@ the CORS response carries `Access-Control-Allow-Credentials`.
 
 | Where | What |
 | --- | --- |
-| `$APP_URL/signin` | In-app sign-in screen in this repo. Production: `https://dashboard.priceflag.org/signin`. |
-| `signin.priceflag.org` | Optional marketing-site door (`signin.html` in the **website** repo). Static, no keys. Not the only door. |
-| `dashboard.priceflag.org` | This repo, on Vercel. Public product origin. |
-| `POST /api/auth/magic-link` | Emails the link. Ungated, CORS-restricted to the sign-in origin. |
-| `GET /auth/callback` | Verifies the link, mints `pf_user`, redirects into the app. |
+| `$APP_URL/signin` | The door. One field, one button. Production: `https://dashboard.priceflag.org/signin`. |
+| `signin.priceflag.org` | Marketing-site door (the **website** repo). 308s here; it must not try to mint a session. |
+| `dashboard.priceflag.org` | This repo, on Vercel. The session origin — cookies exist only here. |
+| `GET /api/auth?shop=…` | Starts the install. Reachable by a stranger; that is the point. |
+| `GET /api/auth/callback` | Finishes it, and creates the account. |
+| `POST /api/auth/demo` | Demo mode only. 404 elsewhere. |
 | `POST /auth/sign-out` | Clears `pf_user`. |
-| `accounts`, `account_shops` | Who signed in, and which store they connected. |
+| `POST /api/auth/session` | Mints `pf_shop` from a verified Shopify session token — the embedded-admin path, unrelated to sign-up. |
 
 ---
 
-## Manual steps
+## Environment
 
-These cannot be done from the repo. All four are required.
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `APP_URL` | yes | `https://dashboard.priceflag.org` in production. Never a `vercel.app` host, never `signin.` or `product.`. The OAuth `redirect_uri` is derived from it and must match what is allow-listed on the Shopify app. |
+| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | yes | From the app's API credentials. |
+| `SHOPIFY_SCOPES` | no | Defaults to the list above. |
+| `AUTH_SESSION_SECRET` | yes | Signs `pf_user`. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. If it is missing, an install still completes and stores its token, but lands on `/signin?error=session_not_configured` — set the variable and the next visit works, with no reinstall. |
+| `ENCRYPTION_KEY` | yes | Encrypts the offline token at rest. |
+| `SIGNIN_URL` | no | Overrides where bounces land. Ignored when it points at a branded or alias host, which would put the sign-in screen on a host that cannot hold the cookie. |
+| `PRICEFLAG_MODE` | no | `demo` enables `/api/auth/demo` and the "Open the demo store" button. |
 
-### 1. Supabase — get the publishable key
-
-Supabase → Project Settings → API → **Publishable key** (`sb_publishable_…`, or
-the older `anon` JWT). Set it as `SUPABASE_PUBLISHABLE_KEY`.
-
-This key is safe to expose and is deliberately *not* the service-role key: the
-magic-link endpoint is reachable by anyone, so it must not hold a key that can
-read merchant data.
-
-### 2. Supabase — allow the redirect
-
-Authentication → URL Configuration:
-
-- **Site URL:** `https://dashboard.priceflag.org`
-- **Redirect URLs:** add `https://dashboard.priceflag.org/auth/callback**`
-
-The trailing `**` matters. The callback carries a `?next=` parameter when
-somebody was heading for a specific page, and an exact-match entry rejects it.
-
-### 3. Supabase — the email template (recommended)
-
-Authentication → Email Templates → **Magic Link**. Replace the link with:
-
-```html
-<a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=magiclink">Sign in to Priceflag</a>
-```
-
-`{{ .RedirectTo }}`, **not** `{{ .SiteURL }}`. This is the one detail that will
-silently break sign-in if you get it wrong. `RedirectTo` is the URL the app
-built, and it already carries the `bind` nonce that ties the link to the browser
-that requested it (and the `next` path, when there is one). `SiteURL` is a bare
-origin and carries neither, so every link built from it is rejected at the
-callback as unbound.
-
-This produces the server-side shape, where the callback verifies the token with
-no JavaScript and nothing sensitive ever reaches the page.
-
-If you skip this, the stock template still works — `/auth/callback` falls back to
-a small bridge page that reads the token out of the URL fragment and posts it
-back. It is a real fallback, not a broken state, but the template above is
-better: it needs no JavaScript and puts no token in the browser.
-
-### 4. Vercel — domains and env
-
-Add the app domain, then set the env vars below on the app project.
-
-| Project | Domain |
-| --- | --- |
-| website (`priceflagv1`) | marketing hosts, including `signin.priceflag.org` if still used |
-| app (this repo) | `dashboard.priceflag.org` (also `product.priceflag.org` if aliased) |
-
-```
-SUPABASE_PUBLISHABLE_KEY=sb_publishable_…
-AUTH_SESSION_SECRET=…                       # 32 random bytes, base64url
-APP_URL=https://dashboard.priceflag.org
-SIGNIN_URL=https://dashboard.priceflag.org/signin
-```
-
-`APP_URL` is not optional here. It is the origin the magic link points at, and
-if it is unset the code falls back to the Vercel-generated hostname — so the
-link in the email would go to `priceflag-app.vercel.app` instead of the
-dashboard domain. Production `APP_URL` must be `https://dashboard.priceflag.org`
-or `https://product.priceflag.org`, never a `vercel.app` hostname.
-
-Leave `AUTH_COOKIE_DOMAIN` unset. That makes the session cookie host-only, which
-is all the app needs; widening it to `.priceflag.org` would send the session to
-every subdomain including the static marketing site.
-
-`SIGNIN_URL` should be `$APP_URL/signin` so magic-link failures return to the
-in-app sign-in page. Deploy scripts push that default when the env file omits
-it. Set `SIGNIN_ORIGINS` only if the sign-in screen is served from more than one
-host (for example both the in-app page and `signin.priceflag.org`).
-
-Generate the session secret with:
-
-```
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-```
-
-### 5. Shopify — update the app URLs
-
-In the Partner dashboard, the app URL and the allowed redirect URL both move to
-`dashboard.priceflag.org`. OAuth callbacks fail against a stale host.
+Cookies are **host-only** and live on `APP_URL`'s host. `signin.` and
+`product.priceflag.org` 308 to the dashboard before any cookie is read
+(`lib/auth/session-host.ts`) — an OAuth callback that landed on an alias host
+would arrive without its nonce cookie and fail as `state_mismatch`.
 
 ---
 
-## Intended production access
-
-The intended production setup is:
-
-- A valid magic-link callback is reachable. Completing a genuine link should not
-  401 just because the visitor never used `?access=…`.
-- A valid `pf_user` session is enough to enter the app.
-- Writes still require a Shopify session token in the route handler. Sign-in
-  is not authorisation to change a price.
-
-`APP_ACCESS_SECRET` may still gate preview deployments (Vercel SSO plus the
-invite cookie). Do not treat a 401 on `/auth/callback` as expected production
-behaviour for a genuine magic link.
-
----
-
-## Checking it works
+## Verifying a deployment
 
 ```bash
-# 1. The endpoint is reachable and CORS is right.
-curl -i -X OPTIONS https://dashboard.priceflag.org/api/auth/magic-link \
-  -H 'Origin: https://dashboard.priceflag.org' \
-  -H 'Access-Control-Request-Method: POST'
-# Expect: 204, with access-control-allow-origin echoing the sign-in origin.
-
-# 2. An origin that is not on the list is refused.
-curl -i -X OPTIONS https://dashboard.priceflag.org/api/auth/magic-link \
-  -H 'Origin: https://example.com'
-# Expect: 403.
-
-# 3. A link actually sends.
-curl -i -X POST https://dashboard.priceflag.org/api/auth/magic-link \
-  -H 'Origin: https://dashboard.priceflag.org' \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@example.com"}'
-# Expect: 200 {"sent":true}, and an email within a few seconds.
-
-# 4. The app sends a signed-out browser to the in-app sign-in screen.
-curl -i https://dashboard.priceflag.org/
-# Expect: a redirect to https://dashboard.priceflag.org/signin (or the configured SIGNIN_URL).
+curl -s "$APP_URL/api/health" | jq '.checks'
 ```
 
-Then sign in for real and confirm you land on the dashboard, not back at the
-sign-in screen — that round trip is the one that exercises every piece at once.
+Then, in a browser:
+
+1. `$APP_URL/signin` renders one field and one button, with no password dialog.
+2. Entering a development store's address lands on Shopify's approval screen
+   showing exactly the scopes above.
+3. Approving lands on `$APP_URL/` — the dashboard, not the Shopify admin — with
+   a `pf_user` cookie set.
+4. `POST $APP_URL/auth/sign-out` returns to `/signin?signed_out=1`.
+
+The gate itself is pinned by `npm run test:auth`, which fails if a shared
+preview secret, an HTTP Basic prompt, a `?next=` redirect sink, or the
+magic-link flow reappears.

@@ -31,8 +31,8 @@ same answer.
 
 `APP_URL` in production env must be `https://dashboard.priceflag.org`, never a
 `vercel.app` project hostname and never `product.priceflag.org` or
-`signin.priceflag.org`. OAuth, magic links, and the `pf_user` cookie bind to
-that origin only.
+`signin.priceflag.org`. The Shopify OAuth round-trip and the `pf_user` cookie
+bind to that origin only.
 
 ### Launch domains (Vercel dashboard — DNS cannot be changed from this repo)
 
@@ -42,7 +42,7 @@ Do **not** add these hosts to `priceflagv1`, and never deploy this repo there.
 | Host | Observed now | Required action on Vercel |
 |---|---|---|
 | `dashboard.priceflag.org` | Bound to `priceflag-app`. Signed-out `/` currently 303s to `https://signin.priceflag.org/` because Production `SIGNIN_URL` points at the marketing door. | On **priceflag-app → Settings → Environment Variables → Production**: set `APP_URL=https://dashboard.priceflag.org` and `SIGNIN_URL=https://dashboard.priceflag.org/signin` (or delete `SIGNIN_URL`). Leave `AUTH_COOKIE_DOMAIN` unset. |
-| `signin.priceflag.org` | CNAME to Vercel; **priceflagv1** serves `307 → /signin.html`. That static page is why the email link is broken (wrong host for `pf_link` / `/auth/callback`). | **priceflagv1 → Settings → Domains** → remove `signin.priceflag.org` only. **priceflag-app → Settings → Domains** → Add `signin.priceflag.org` (accept “move from another project” if offered). After the next *app* deploy, this repo 308s the host to `https://dashboard.priceflag.org/signin` (callbacks keep `/auth/callback`). |
+| `signin.priceflag.org` | CNAME to Vercel; **priceflagv1** serves `307 → /signin.html`. That static page must not try to mint a session — the sign-in screen is one field that starts `/api/auth?shop=`. | **priceflagv1 → Settings → Domains** → remove `signin.priceflag.org` only. **priceflag-app → Settings → Domains** → Add `signin.priceflag.org` (accept “move from another project” if offered). After the next *app* deploy, this repo 308s the host to `https://dashboard.priceflag.org/signin` (OAuth callbacks keep `/api/auth/callback`). |
 | `product.priceflag.org` | NXDOMAIN — no records. | **priceflag-app → Settings → Domains** → Add `product.priceflag.org`. Vercel will ask for a CNAME to `cname.vercel-dns.com` (or an A/ALIAS it prints). Same 308 to dashboard `/signin`. |
 | `priceflag.org` | Homepage on `priceflagv1`. | Leave it. |
 
@@ -160,17 +160,23 @@ price. A non-2xx release response means price writes remain disabled.
 
 ## "I get a 401 on every page"
 
-For a page request, that is usually the access gate (`middleware.ts`). Reach the
-app once with `?access=<APP_ACCESS_SECRET>` and it sets a 30-day HttpOnly cookie.
-For a merchant API request, a 401 after passing that gate means the short-lived
-Shopify session token is missing, forged, or expired; refresh it as described
-above.
+There is no shared access key any more. A page request that redirects to
+`/signin` means the browser has neither a Shopify signature nor a valid
+`pf_user` cookie — connect the store (one field, one Shopify approval) and the
+cookie is minted by `/api/auth/callback`.
 
-The access gate is an **interim** preview boundary, not tenant authorization. The
-merchant APIs independently require Shopify session tokens. Machine endpoints
-are exempt because they authenticate themselves, and health is deliberately
-non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/ml/export`, `/api/webhooks/*`,
-`/api/health`.
+A 401 on a **merchant API** request means the short-lived Shopify session token
+is missing, forged, or expired; refresh it as described above. That token, not
+any cookie, is what authorizes a price write.
+
+If a completed install lands on `/signin?error=session_not_configured`, the
+store is connected and the token is stored — the deployment is missing
+`AUTH_SESSION_SECRET`. Set it in Vercel and redeploy; the merchant does **not**
+need to reinstall.
+
+Machine endpoints are reachable without a session because they authenticate
+themselves, and health is deliberately non-sensitive: `/api/cron/evaluate`,
+`/api/ml/ingest`, `/api/ml/export`, `/api/webhooks/*`, `/api/health`.
 
 Operational Shopify webhook callback URLs are capabilities, not public paths:
 subscription reconciliation generates a token bound to both the topic and the
@@ -183,50 +189,37 @@ destructive `shop/redact` requests to the signed `shop_domain` in the payload.
 After changing `APP_URL` or the Shopify API secret, reconcile every invited
 shop's subscriptions before reopening access.
 
-If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
-everything returns 401. Set it in Vercel and redeploy.
+### Reviewers and demo access
 
-### Demo credentials (reviewers)
+There is no reviewer password and no `?access=` link. A reviewer either
+connects a development store (the same one-approval flow a merchant uses), or
+opens a deployment running `PRICEFLAG_MODE=demo`, where `/signin` offers "Open
+the demo store" and `POST /api/auth/demo` mints a session against the seeded
+simulated catalog. That route 404s on a real deployment.
 
-There is a second, separate way in, for people who cannot be handed a secret URL:
-`DEMO_USERNAME` / `DEMO_PASSWORD`, typed into the browser's credential dialog
-(realm: **"Priceflag demo"**). A successful login mints the same HttpOnly cookie
-for **7 days**, so a reviewer authenticates once and then browses normally.
+To close off a demo deployment, unset `PRICEFLAG_MODE=demo` and redeploy: the
+route disappears and outstanding demo cookies resolve to a store that no longer
+has data.
 
-They are deliberately separate from `APP_ACCESS_SECRET` so a review ending does
-not break `smoke-browser.ts` or any `?access=` link.
+### Scopes, and what a merchant approves
 
-**To revoke, the moment a review is over:**
+One consent screen is the entire permission conversation:
 
-```bash
-export PRICEFLAG_DEMO_ACCESS_CONFIRM="REVOKE_DEMO_ACCESS:$(git rev-parse HEAD)"
-bash scripts/vercel-demo-access.sh revoke
+```
+read_products, write_products,
+read_orders, read_all_orders,
+read_inventory, write_inventory,
+read_price_rules, write_price_rules
 ```
 
-The running deployment retains its environment snapshot, so removal alone does
-not revoke the credential. From a clean checkout of the currently approved
-commit, remove `DEMO_PASSWORD` from the ignored `.env.production.local`, run the
-acknowledged `scripts/vercel-stage.sh` flow below, verify the exact staged URL,
-and promote only that artifact. Do not use `vercel deploy --prod`: it can assign
-production traffic from an unverified local tree.
+`read_all_orders` needs Shopify's approval on the custom-distribution app before
+a store can install. Without it the Admin API silently caps history at 60 days,
+so `/api/auth/callback` **fails the install** rather than forecasting on two
+months of data while the UI claims 180.
 
-Once the staged artifact is promoted, revocation is immediate and complete: the
-cookie a demo login mints holds the **password**, not the access secret, so the
-deployment without `DEMO_PASSWORD` invalidates every outstanding reviewer
-session on its next request. Had the cookie carried the access secret, those
-sessions would have kept working for their full lifetime.
-
-**To rotate instead of revoking**, use the same pinned wrapper; it prompts
-without echoing the new password. Existing cookies stop working after the newly
-staged artifact is promoted.
-
-```bash
-export PRICEFLAG_DEMO_ACCESS_CONFIRM="ROTATE_DEMO_ACCESS:$(git rev-parse HEAD)"
-bash scripts/vercel-demo-access.sh rotate
-```
-
-Removing only `DEMO_USERNAME` also disables the path (both must be set), but the
-wrapper clears both values from the pinned Preview and Production environments.
+Changing `SHOPIFY_SCOPES` does not re-prompt an already-installed store. Every
+existing store must go through `/signin` again — the callback rejects a token
+whose granted scopes are narrower than the list.
 
 ## Triage
 
