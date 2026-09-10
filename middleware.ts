@@ -1,126 +1,76 @@
 /**
- * Application access gate — INTERIM MEASURE, not the real thing.
+ * Who is allowed to see a Priceflag page.
  *
- * ## Why this exists
- *
- * Vercel's Standard Deployment Protection **exempts the production domain**, so
- * `priceflag.vercel.app` was serving the whole dashboard — and every mutating
- * route — to anyone who typed the URL. Verified: an unauthenticated `GET
- * /api/journal` returned a real merchant's price history. Priceflag writes prices
- * to a live Shopify store, so that is as bad as it sounds.
- *
- * Protecting all deployments is a paid Vercel feature, and Vercel Authentication
- * requires *team membership* — so it could never let a pilot merchant in anyway.
- * An application-level gate is the only thing that both closes the hole now and
- * survives contact with a real pilot.
+ * There is exactly one way to become somebody here: install the Shopify app.
+ * `/api/auth` starts it, `/api/auth/callback` finishes it, and finishing it
+ * mints the `pf_user` cookie this file checks. There is no sign-up step before
+ * that, no emailed link, and — since the store *is* the account — no shared
+ * preview secret standing in front of the whole deployment any more.
  *
  * ## What this is NOT
  *
- * This is a shared secret, not authentication. It does not identify a merchant,
- * it does not scope a request to a shop, and everyone who has it has all of it.
- * Merchant routes independently require App Bridge session tokens and derive
- * their tenant only from the signed `dest` claim. This gate remains the
- * invite-only preview boundary; it is not merchant authentication.
+ * This is not authorisation for anything that touches money. Admission here
+ * decides whether a browser may render a page. Every price write independently
+ * requires a Shopify session token in the route handler and derives its tenant
+ * only from the signed `dest` claim. A `pf_user` cookie identifies a store; it
+ * never authorises a write.
  *
- * ## Two gates, in order
+ * ## Two ways in, checked in order
  *
- * Shopify-signed traffic is admitted first. A merchant in the admin iframe
- * presents neither cookie, and a signed session token is a stronger claim than
- * either gate below.
+ * 1. **Shopify-signed traffic.** A merchant in the admin iframe presents no
+ *    cookie of ours at all, and a Shopify signature is a stronger claim than any
+ *    cookie: a valid `pf_shop` cookie (minted by `POST /api/auth/session`), a
+ *    valid App Bridge session token (`Authorization: Bearer` or the `id_token`
+ *    launch parameter), or launch params signed with Shopify's query `hmac` and
+ *    bounded to five minutes against replay. All verified with `crypto.subtle` —
+ *    this is the edge runtime and `node:crypto` does not exist here.
  *
- * A request that is not Shopify-signed is admitted when it has a valid `pf_user`
- * cookie — the account session minted by `/auth/callback` after a magic link.
- * Completing that callback **is** entry: it identifies a person and is enough
- * to view the app. Requesting a link (`POST /api/auth/magic-link`) is not entry.
- * Neither claim authorises a price write — that still comes from a Shopify
- * session token, every time, in the route handler.
+ * 2. **A valid `pf_user` cookie**, HMAC-signed by the OAuth callback over
+ *    `{shops.id}.{email}.{expiry}`.
  *
- * Anonymous browsers (no Shopify signature, no `pf_user`) still have to clear
- * the preview gate: the shared `APP_ACCESS_SECRET`. That answers "is this
- * deployment open to a stranger at all". It is shared by every pilot merchant,
- * so it can never identify anyone. It remains the invite-only boundary for
- * merchant pages and APIs that a signed-out browser would otherwise reach.
+ * Anything else is sent to `/signin`, which is one field and one button.
  *
  * ## The exemptions, and why each one is safe
  *
- * These paths bypass the gate because each already authenticates itself, and each
- * would break if it could not be reached without a browser cookie:
+ * These paths are reachable unsigned because each authenticates itself, and each
+ * would break if it could not be reached without a cookie:
  *
  *   - `/api/cron/evaluate` — `CRON_SECRET` bearer, constant-time. The GitHub
- *     Actions evaluator calls it; adding the gate secret there would just be a
- *     second shared secret guarding the same door.
+ *     Actions evaluator calls it.
  *   - `/api/webhooks/*` — Shopify HMAC over the raw body. Shopify cannot send a
  *     cookie, so gating this would silently kill order ingestion.
  *   - `/api/health` — reports capability booleans and no data. Deliberately open
  *     so uptime checks work without a credential.
- *   - `/api/auth` and `/api/auth/callback` — the OAuth round-trip. Shopify's
- *     browser redirects arrive with no cookie and no way to get one; the
- *     callback authenticates itself with Shopify's query HMAC + the state nonce.
- *   - `/signin` — the in-app sign-in screen. Gating the login UI with the
- *     shared secret is what produced the "Priceflag demo" password dialog.
- *   - `/auth/callback` — completing a magic link. Authenticates itself with
- *     Supabase OTP plus the bind cookie; success mints `pf_user`. `/auth/*`
- *     is also account-exempt so sign-out and the callback can run unsigned.
- *
+ *   - `/api/auth` and `/api/auth/callback` — the OAuth round-trip, which is also
+ *     the sign-up. Shopify's browser redirects arrive with no cookie and no way
+ *     to get one; the callback authenticates itself with Shopify's query HMAC
+ *     plus the single-use state nonce.
+ *   - `/api/auth/demo` — mints a demo session, and only ever exists where
+ *     `PRICEFLAG_MODE=demo`. It is a 404 on a real deployment.
+ *   - `/signin` — the door. Gating the sign-in screen behind a credential was
+ *     what produced the old "Priceflag demo" password dialog.
+ *   - `/auth/*` — sign-out, which has to run for somebody whose session is
+ *     already the thing being discarded.
  *   - `/api/ml/ingest` and `/api/ml/export` — `ML_INGEST_SECRET` bearer,
- *     constant-time. The nightly worker has no browser cookie; it never receives
- *     a database credential or the Supabase service key.
- *
- * ## Embedded (Shopify admin) traffic
- *
- * The gate's `pf_access` cookie is SameSite=Lax, which a third-party iframe never
- * sends — so without more, embedding the app in the Shopify admin is structurally
- * impossible. A request is therefore ALSO admitted when it carries a credential
- * Shopify signed (all verified with `crypto.subtle` — this is the edge runtime,
- * `node:crypto` does not exist here):
- *
- *   - a valid `pf_shop` cookie (HMAC-signed by `POST /api/auth/session` after a
- *     session-token verification);
- *   - a valid App Bridge session token (`Authorization: Bearer` or the
- *     `id_token` launch parameter) — HS256, alg pinned, `aud`/`exp`/`dest`
- *     checked, mirroring `lib/shopify/session.ts`;
- *   - iframe launch params signed with Shopify's query `hmac` (same scheme as
- *     the OAuth callback), bounded to five minutes against replay.
- *
- * Admission here does NOT mint `pf_access` — shop-scoped identity is the page
- * session's job (`app/api/auth/session` mints `pf_shop`), and conflating the two
- * cookies would let a one-time launch URL mint the long-lived shared secret.
+ *     constant-time. The nightly worker has no browser cookie.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { canonicalSessionUrl, isAliasEntryHost, isBrandedEntryHost } from '@/lib/auth/session-host';
 
-/** Cookie name. Deliberately not obviously guessable from the product name. */
-const COOKIE = 'pf_access';
-
-/**
- * Demo credentials for reviewers (YC and similar), separate from
- * `APP_ACCESS_SECRET` on purpose so they can be revoked the day the review ends
- * without breaking `smoke-browser.ts` or any `?access=` link.
- *
- * The cookie a demo login mints holds the **demo password**, not the access
- * secret. If it held the secret, clearing `DEMO_PASSWORD` would leave every
- * reviewer's 30-day cookie working — revocation that does not revoke. This way
- * unsetting the password invalidates their sessions on the next request.
- */
-const DEMO_COOKIE_DAYS = 7;
-
-/** Query parameter that mints the cookie: `?access=…` once, then it is stripped. */
-const QUERY_PARAM = 'access';
-
 const EXEMPT_EXACT = new Set([
   '/api/health',
   '/api/cron/evaluate',
   '/api/ml/ingest',
   '/api/ml/export',
+  // The OAuth round-trip, which is the whole sign-up. Both ends arrive from
+  // Shopify's browser redirects with no cookie of ours.
   '/api/auth',
   '/api/auth/callback',
-  // Requesting a link is not entry. Completing `/auth/callback` mints `pf_user`
-  // and that *is* entry for viewing the app (not for writing prices).
-  '/api/auth/magic-link',
+  // Demo mode's stand-in for an install. 404 unless PRICEFLAG_MODE=demo.
+  '/api/auth/demo',
   '/signin',
-  '/auth/callback',
 ]);
 const EXEMPT_PREFIX = ['/api/webhooks/'];
 
@@ -130,11 +80,8 @@ function isExempt(pathname: string): boolean {
 }
 
 /**
- * Paths that pass the preview gate without an account session.
- *
- * `/auth/*` is the sign-in machinery itself — requiring a session to reach the
- * route that creates one would be a closed loop, and requiring one to sign out
- * would strand anybody whose cookie had already expired.
+ * Everything below `/auth/` runs for somebody who is being signed out, so it
+ * cannot itself require a session.
  */
 const ACCOUNT_EXEMPT_PREFIX = ['/auth/'];
 
@@ -156,62 +103,10 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** `Authorization: Basic …`, accepting the secret as either the user or the password. */
-function secretFromBasicAuth(header: string | null): string | null {
-  if (header === null) return null;
-  const match = /^Basic\s+(.+)$/i.exec(header.trim());
-  if (!match) return null;
-  try {
-    const decoded = atob(match[1] as string);
-    const separator = decoded.indexOf(':');
-    if (separator === -1) return decoded;
-    // Either half may carry it: `curl -u priceflag:SECRET` and `curl -u SECRET:`
-    // are both things a person will reasonably try.
-    const user = decoded.slice(0, separator);
-    const password = decoded.slice(separator + 1);
-    return password === '' ? user : password;
-  } catch {
-    return null;
-  }
-}
-
-/** The `user:password` pair from a Basic header, unparsed. */
-function basicPair(header: string | null): { user: string; password: string } | null {
-  if (header === null) return null;
-  const match = /^Basic\s+(.+)$/i.exec(header.trim());
-  if (!match) return null;
-  try {
-    const decoded = atob(match[1] as string);
-    const separator = decoded.indexOf(':');
-    if (separator === -1) return null;
-    return { user: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
-  } catch {
-    return null;
-  }
-}
-
-/** Both fields compared in constant time — a username is a secret here too. */
-function isDemoLogin(header: string | null): boolean {
-  const user = process.env.DEMO_USERNAME;
-  const password = process.env.DEMO_PASSWORD;
-  if (!user || !password) return false;
-
-  const pair = basicPair(header);
-  if (pair === null) return false;
-
-  // Deliberately not short-circuiting: `&&` on the first comparison would leak
-  // whether the username was right via timing.
-  const userOk = safeEqual(pair.user, user);
-  const passwordOk = safeEqual(pair.password, password);
-  return userOk && passwordOk;
-}
-
-// --- Shopify credential verification (edge runtime, crypto.subtle only) -----
-
 /** Cookie minted by `POST /api/auth/session`: `{shop_domain}.{expiry}.{sig}`. */
 const SHOP_COOKIE = 'pf_shop';
 
-/** Cookie minted by `/auth/callback` after a magic link. See `lib/auth/account.ts`. */
+/** Cookie minted by `/api/auth/callback` when an install completes. See `lib/auth/account.ts`. */
 const USER_COOKIE = 'pf_user';
 
 /** Optional override so the static marketing sign-in page still works if set. */
@@ -415,30 +310,6 @@ async function isShopifyAuthenticated(request: NextRequest): Promise<boolean> {
   return false;
 }
 
-function unauthorized(): NextResponse {
-  const response = new NextResponse(
-    JSON.stringify({
-      error: {
-        code: 'unauthorized',
-        message: 'Priceflag is not publicly accessible. An access key is required.',
-        retryable: false,
-        details: null,
-      },
-    }),
-    { status: 401, headers: { 'content-type': 'application/json' } },
-  );
-  // Never send this on an HTML navigation — the browser shows a password dialog
-  // (realm "Priceflag demo") and that is how magic-link landings used to fail.
-  // Reviewer Basic login still works when they send the header; we only *prompt*
-  // for it on API calls when demo credentials are actually configured.
-  if (process.env.DEMO_USERNAME) {
-    response.headers.set('www-authenticate', 'Basic realm="Priceflag demo", charset="UTF-8"');
-  }
-  // A 401 must never be cached and served to somebody who *is* authorised.
-  response.headers.set('cache-control', 'no-store');
-  return response;
-}
-
 /** In-app `/signin`. Ignore SIGNIN_URL when it points at a marketing/alias host. */
 function signInScreenTarget(request: NextRequest): URL {
   if (SIGNIN_URL !== undefined && SIGNIN_URL !== '') {
@@ -484,27 +355,23 @@ function signInRequired(request: NextRequest): NextResponse {
   // The screen distinguishes "arrived cold" from "was bounced here"; this code
   // is what lets it say why the app sent the visitor back.
   target.searchParams.set('error', 'sign_in_required');
-  // Only the path, never the full URL: this value is echoed back into a redirect
-  // after sign-in, and `?next=` is exactly where open redirects come from.
-  if (pathname !== '/') target.searchParams.set('next', `${pathname}${search}`);
+  // No `?next=`. Sign-in now leaves through Shopify's authorize screen and comes
+  // back to a redirect_uri Shopify has allow-listed, so a destination carried
+  // from here could not survive the round trip anyway — and a `next` parameter
+  // that goes nowhere is just an open-redirect sink waiting to be found.
 
   const response = NextResponse.redirect(target, { status: 303 });
   response.headers.set('cache-control', 'no-store');
   return response;
 }
 
-/**
- * Preview-gate failure. JSON 401 for APIs; HTML navigations go to `/signin`
- * instead of `WWW-Authenticate: Basic`, which is the bogus password dialog.
- */
-function previewDenied(request: NextRequest): NextResponse {
-  if (request.nextUrl.pathname.startsWith('/api/')) return unauthorized();
-  return signInRequired(request);
-}
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
-  const { pathname, searchParams } = request.nextUrl;
+  const { pathname } = request.nextUrl;
 
+  // Alias hosts (signin./product.) are not session hosts: cookies are host-only,
+  // so anything minted there would be invisible to the dashboard. Move first,
+  // before any cookie is read, and keep OAuth callbacks' query intact.
   const sessionUrl = canonicalSessionUrl(request.nextUrl.hostname, pathname, request.nextUrl.search);
   if (sessionUrl !== null) {
     return NextResponse.redirect(sessionUrl, 308);
@@ -512,105 +379,18 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   if (isExempt(pathname)) return NextResponse.next();
 
-  // Shopify-signed credentials are stronger than the shared secret, and the
-  // embedded admin can never present the SameSite=Lax gate cookie. No pf_access
-  // is minted here — see the header comment. An embedded merchant is already
-  // identified by Shopify and never needs a Priceflag account session.
+  // A Shopify signature beats a cookie, and a merchant in the admin iframe has
+  // no cookie of ours to present.
   if (await isShopifyAuthenticated(request)) return NextResponse.next();
 
-  // Completing a magic link mints pf_user. That is enough to view the app —
-  // same admission as Shopify-signed traffic. Writes still need App Bridge
-  // tokens in the route handler.
   if (await hasAccountSession(request)) return NextResponse.next();
 
-  /**
-   * Past the preview gate. The second question is who this is: the gate secret
-   * is shared by every pilot merchant, so on its own it says "allowed in the
-   * building", not "is a particular person". `carry` preserves any cookie the
-   * gate minted on the way through, so a first visit on an `?access=` link does
-   * not have to be repeated after signing in.
-   */
-  async function admit(carry?: NextResponse): Promise<NextResponse> {
-    if (!needsAccount(pathname) || (await hasAccountSession(request))) {
-      return carry ?? NextResponse.next();
-    }
-    const response = signInRequired(request);
-    const minted = carry?.headers.get('set-cookie');
-    if (minted !== null && minted !== undefined) response.headers.append('set-cookie', minted);
-    return response;
-  }
+  // Sign-out and anything else under `/auth/` has to run without a session.
+  if (!needsAccount(pathname)) return NextResponse.next();
 
-  const secret = process.env.APP_ACCESS_SECRET;
-
-  if (secret === undefined || secret === '') {
-    // Fail CLOSED in production. A misconfigured deploy taking the app offline is
-    // recoverable; a misconfigured deploy silently serving a price-writing tool to
-    // the internet is what got us here.
-    const isProduction = process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
-    if (isProduction) return previewDenied(request);
-    // Locally, an unset secret means "developer has not configured it", and
-    // blocking would just make people disable the middleware. Shopify and
-    // account checks already ran; admit() still requires pf_user on merchant
-    // pages so local development exercises the real sign-in path.
-    return admit();
-  }
-
-  // 1. The cookie, which is how every request after the first one arrives. It
-  //    carries either the access secret or the demo password; the latter stops
-  //    working the moment DEMO_PASSWORD is cleared.
-  const cookie = request.cookies.get(COOKIE)?.value;
-  if (cookie !== undefined) {
-    if (safeEqual(cookie, secret)) return admit();
-    const demoPassword = process.env.DEMO_PASSWORD;
-    if (demoPassword && safeEqual(cookie, demoPassword)) return admit();
-  }
-
-  // 2. Demo credentials over Basic — what a reviewer types into the browser
-  //    dialog. Mint the cookie so they authenticate once and then browse.
-  if (isDemoLogin(request.headers.get('authorization'))) {
-    const response = NextResponse.next();
-    response.cookies.set(COOKIE, process.env.DEMO_PASSWORD as string, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: request.nextUrl.protocol === 'https:',
-      path: '/',
-      maxAge: 60 * 60 * 24 * DEMO_COOKIE_DAYS,
-    });
-    return admit(response);
-  }
-
-  // 3. The access secret over Basic, for curl and for scripts.
-  const basic = secretFromBasicAuth(request.headers.get('authorization'));
-  if (basic !== null && safeEqual(basic, secret)) return admit();
-
-  // 4. `?access=…` — the way a person gets in the first time. Mint the cookie and
-  //    redirect to the same URL without the parameter, so the secret does not sit
-  //    in the address bar, the browser history, or a `Referer` header on the next
-  //    outbound link.
-  const provided = searchParams.get(QUERY_PARAM);
-  if (provided !== null && safeEqual(provided, secret)) {
-    const target = request.nextUrl.clone();
-    target.searchParams.delete(QUERY_PARAM);
-
-    const response = NextResponse.redirect(target);
-    response.cookies.set(COOKIE, secret, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: request.nextUrl.protocol === 'https:',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    return response;
-  }
-
-  return previewDenied(request);
+  return signInRequired(request);
 }
 
 export const config = {
-  /**
-   * Everything except Next's own static output. Pages *and* API routes — the hole
-   * was that `/api/journal` served real data, so an app-shell-only gate would have
-   * missed the part that mattered.
-   */
   matcher: ['/((?!_next/static|_next/image|favicon.ico|robots.txt).*)'],
 };

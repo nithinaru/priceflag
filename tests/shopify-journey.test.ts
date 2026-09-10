@@ -12,6 +12,7 @@ import { POST as confirmRollout } from '../app/api/rollouts/[id]/confirm/route';
 import { POST as rollbackRollout } from '../app/api/rollouts/[id]/rollback/route';
 import { POST as receiveWebhook } from '../app/api/webhooks/[topic]/route';
 import { DemoAdapter, setAdapter } from '../lib/adapters';
+import { verifyUserCookie } from '../lib/auth/account';
 import { CONTRACT_VERSION, type Guardrails } from '../lib/contracts';
 import { signOAuthParams, signWebhookBody } from '../lib/shopify/hmac';
 import { OAUTH_STATE_COOKIE } from '../lib/shopify/oauth';
@@ -113,6 +114,16 @@ function installShopifyBoundary(accessToken: string): ShopifyBoundary {
           webhookSubscriptionCreate: {
             webhookSubscription: { id: `gid://shopify/WebhookSubscription/${webhookRegistrations.writes}` },
             userErrors: [],
+          },
+        },
+      });
+    }
+    if (query.includes('PriceflagShopOwner')) {
+      return Response.json({
+        data: {
+          shop: {
+            name: 'Priceflag Synthetic Development Store',
+            email: 'owner@priceflag-journey-dev.example',
           },
         },
       });
@@ -359,6 +370,11 @@ async function main(): Promise<void> {
     SHOPIFY_API_VERSION: '2026-07',
     APP_URL: APP_ORIGIN,
     ENCRYPTION_KEY: encryptionKey,
+    // The OAuth callback is the sign-up: it mints the `pf_user` session, and
+    // signing needs this. Without it the install still completes, but the
+    // journey below would be checking the degraded path rather than the one a
+    // configured deployment takes.
+    AUTH_SESSION_SECRET: randomBytes(32).toString('base64url'),
   });
 
   try {
@@ -399,7 +415,24 @@ async function main(): Promise<void> {
         headers: { cookie: `${OAUTH_STATE_COOKIE}=${state}` },
       }),
     );
-    assert.equal(callback.status, 307);
+    // 303, and onto Priceflag itself: finishing the install *is* the sign-up,
+    // so the callback hands back a working session instead of bouncing the
+    // merchant into the Shopify admin to find their way back.
+    assert.equal(callback.status, 303);
+    assert.equal(
+      new URL(callback.headers.get('location') as string).pathname,
+      '/',
+      'a completed install must land on the dashboard, not the sign-in screen',
+    );
+    const sessionCookie = callback.cookies.get('pf_user')?.value;
+    assert(sessionCookie, 'OAuth callback did not mint an account session');
+    const account = verifyUserCookie(sessionCookie);
+    assert(account, 'the minted session cookie does not verify');
+    assert.equal(
+      account.email,
+      'owner@priceflag-journey-dev.example',
+      'the account email must come from the Shopify shop owner',
+    );
     assert.equal(scheduled.length, 1, 'OAuth callback did not schedule post-install work');
     await Promise.all(scheduled);
     console.log('[journey] background sync complete');

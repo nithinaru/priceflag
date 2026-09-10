@@ -16,14 +16,27 @@ export const DEFAULT_SHOPIFY_API_VERSION = '2026-07';
 /**
  * Scopes requested during OAuth.
  *
+ * One consent screen is the whole sign-up (`app/api/auth/callback`), so this
+ * list is the entire permission conversation Priceflag ever has with a
+ * merchant. It is scoped to what the product actually writes — a price, and the
+ * inventory and price-rule objects a staged price change has to move with it —
+ * rather than to what might be useful later. Every extra scope is another line
+ * the merchant reads before deciding, and a scope with no code path behind it
+ * buys nothing but hesitation.
+ *
  * The invite-only beta uses Partner custom distribution, so `read_all_orders`
  * is mandatory. Shopify must approve that scope before a beta store is invited;
  * without it the Admin API silently caps history at 60 days and a 180-day
  * forecast would be misleading. Admin-created static-token apps remain a local
  * development path only and do not use this OAuth scope list.
+ *
+ * Scope spellings verified against shopify.dev access-scopes docs, 2026-09.
  */
 export const DEFAULT_SHOPIFY_SCOPES =
-  'read_products,write_products,read_orders,read_all_orders';
+  'read_products,write_products,' +
+  'read_orders,read_all_orders,' +
+  'read_inventory,write_inventory,' +
+  'read_price_rules,write_price_rules';
 
 export function env(name: string): string | undefined {
   const value = process.env[name];
@@ -94,7 +107,7 @@ export function getShopifyScopes(): string[] {
 
 /**
  * Hostnames that must never be the public app origin. OAuth `redirect_uri`,
- * magic-link callbacks, and webhook URLs bind to `getAppUrl()`; using the
+ * OAuth callbacks and webhook URLs bind to `getAppUrl()`; using the
  * Vercel project host (or the retired company-homepage host) sends Shopify
  * back to a different site than the cookie was set on.
  */

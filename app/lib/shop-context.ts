@@ -13,10 +13,10 @@
  *      after a prior token verification and refreshed by App Bridge on each
  *      embedded page load. This is page-render identity only; API writes still
  *      require a fresh bearer token.
- *   4. The `pf_user` account session — a person who signed in with a magic link
- *      at signin.priceflag.org, resolved to whichever store they connected. Last
- *      because it is the weakest of the four: the other three are Shopify
- *      asserting the shop, whereas this is us remembering an earlier install.
+ *   4. The `pf_user` account session — the cookie minted when this store's
+ *      install completed, resolved back to that store. Last because it is the
+ *      weakest of the four: the other three are Shopify asserting the shop,
+ *      whereas this is us remembering an earlier install.
  *      Good enough to decide which store to *render*, never enough to write a
  *      price — those go through `resolveShopFromRequest` and a session token.
  *   5. Non-production only: `?shop=` or `SHOPIFY_SHOP_DOMAIN`, so local dev

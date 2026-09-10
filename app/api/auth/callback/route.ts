@@ -1,5 +1,11 @@
 /**
- * `GET /api/auth/callback` — finish the OAuth install.
+ * `GET /api/auth/callback` — finish the install, and with it the sign-up.
+ *
+ * This route is the entire account creation. There is no email step before it
+ * and no connect step after it: a merchant who reaches the bottom of this
+ * function has a store, an offline token, an account, and a session cookie, and
+ * lands on their own dashboard. See `lib/auth/store-account.ts` for why the
+ * account id is the shop's own uuid.
  *
  * Order of operations matters, and it is: verify the HMAC, verify the nonce, only
  * then talk to Shopify. Exchanging a code we have not authenticated would let an
@@ -12,9 +18,10 @@
 import { after, NextResponse, type NextRequest } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { linkAccountToShop } from '@/lib/auth/account-shops';
-import { INSTALL_INITIATOR_COOKIE, installInitiatorCookieOptions } from '@/lib/auth/link-binding';
+import { signUserCookie, USER_COOKIE, userCookieOptions } from '@/lib/auth/account';
+import { establishStoreAccount, fetchStoreIdentity } from '@/lib/auth/store-account';
 import { sessionOrigin } from '@/lib/auth/session-host';
+import { signInScreenUrl } from '@/lib/auth/signin-origin';
 import { getShopifyApiVersion, hasShopifyConfig, requireEnv } from '@/lib/config';
 import { encryptSecret } from '@/lib/crypto';
 import { credentialsFromShop } from '@/lib/shopify/credentials';
@@ -29,7 +36,6 @@ import {
   missingScopes,
   normalizeShopDomain,
   OAUTH_STATE_COOKIE,
-  postInstallUrl,
   verifyOAuthState,
 } from '@/lib/shopify/oauth';
 
@@ -157,32 +163,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     ...(existing === null ? {} : { name: existing.name ?? undefined }),
   });
 
-  // If a signed-in account *started* this install, remember that this is their
-  // store, so a later visit from signin.priceflag.org lands on their data
-  // instead of asking them to connect a store they have already connected.
+  // The install is the sign-up. Read who owns the store, create the account, and
+  // mint the session below — all of it derived from the shop row that Shopify
+  // has just confirmed, so there is no second identity to reconcile and no
+  // window in which somebody is signed in without a store.
   //
-  // The account id comes from the initiator cookie set by `GET /api/auth`, not
-  // from the `pf_user` session on this request. That distinction is the point:
-  // the end of an OAuth round-trip is reachable by sending somebody a link, so a
-  // cookie read here would record "whoever was signed in when the redirect
-  // landed" rather than "whoever asked to connect this store".
-  //
-  // Before `after()` rather than inside it: it is one cheap insert, and a
-  // merchant who installs and is immediately redirected should find the link
-  // already there. Non-fatal all the same — a missing link costs one extra trip
-  // through the connect screen, whereas throwing here would lose an install that
-  // Shopify already considers complete.
-  const initiator = request.cookies.get(INSTALL_INITIATOR_COOKIE)?.value;
-  if (initiator !== undefined && initiator !== '') {
-    try {
-      await linkAccountToShop(initiator, installedShop.id);
-    } catch (cause) {
-      console.error(
-        `[install] account link failed for ${shop}: ` +
-          (cause instanceof Error ? cause.message : String(cause)),
-      );
-    }
+  // Before `after()` rather than inside it: the redirect at the bottom carries
+  // the session cookie, so this has to have happened by then. It is one small
+  // Admin query and two upserts, and every one of them degrades to a
+  // placeholder rather than failing an install Shopify already considers done.
+  const identity = await fetchStoreIdentity(installedShop);
+  if (identity?.name !== undefined && identity.name !== null && identity.name !== '') {
+    await adapter.updateShop(installedShop.id, { name: identity.name }).catch(() => undefined);
   }
+  const session = await establishStoreAccount(installedShop, identity);
 
   // Post-install work runs via `after()` — once the redirect below has been
   // sent — so a slow or failing Shopify call can never strand the merchant on
@@ -234,12 +228,41 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
   }, after);
 
-  const response = NextResponse.redirect(postInstallUrl(shop));
-  // Both are single-use: the state nonce, and the record of who started this.
+  // Land on Priceflag, not back in the Shopify admin.
+  //
+  // The old flow sent every install to the app's admin home because the
+  // merchant had no session with us and our own pages would only have bounced
+  // them to a sign-in screen. That is no longer true: the cookie set below is a
+  // working session, so the honest destination is the thing they just installed.
+  // A merchant who prefers the embedded admin still gets there — launching from
+  // Shopify carries a session token, which `middleware.ts` accepts on its own.
+  const origin = sessionOrigin();
+
+  // Signing needs `AUTH_SESSION_SECRET`, and a deployment can be missing it.
+  // That is a misconfiguration, but it is *our* misconfiguration, and by this
+  // point Shopify considers the app installed and the token is already stored —
+  // so throwing here would leave a store connected to an app its owner cannot
+  // reach, with no way to retry but uninstalling. Complete the install, say what
+  // went wrong on the screen that can explain it, and let a fixed env var turn
+  // the next visit into a working sign-in.
+  let cookie: string | null = null;
+  try {
+    cookie = signUserCookie(session);
+  } catch (cause) {
+    console.error(
+      `[install] could not mint a session for ${shop}: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+  }
+
+  const response =
+    cookie === null
+      ? NextResponse.redirect(signInScreenUrl({ error: 'session_not_configured' }), { status: 303 })
+      : NextResponse.redirect(new URL('/', origin), { status: 303 });
+  if (cookie !== null) {
+    response.cookies.set(USER_COOKIE, cookie, userCookieOptions(new URL(origin).protocol === 'https:'));
+  }
+  // Single-use: the nonce has done its job.
   response.cookies.delete(OAUTH_STATE_COOKIE);
-  response.cookies.set(INSTALL_INITIATOR_COOKIE, '', {
-    ...installInitiatorCookieOptions(new URL(sessionOrigin()).protocol === 'https:'),
-    maxAge: 0,
-  });
   return response;
 }

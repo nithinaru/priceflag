@@ -9,130 +9,102 @@ import {
   PageHeader,
   PageSection,
 } from "@/components/ui";
-import { IconArrowRight, IconChevronRight, IconIbis } from "@/components/ui/icons";
+import { IconArrowRight, IconIbis } from "@/components/ui/icons";
+import { normalizeStoreAddress } from "@/lib/shopify/store-address";
+
+/**
+ * One field, one button.
+ *
+ * Everything else that used to be on this screen — the emailed link, the
+ * "already connected?" disclosure, the six link-failure states — existed to
+ * paper over a sign-up that had two halves. It has one now: entering a store
+ * address starts a Shopify install, and finishing that install is the account.
+ * There is nothing to remember and nothing to check an inbox for.
+ */
 
 const ERROR_COPY: Record<string, { title: string; body: string }> = {
   sign_in_required: {
     title: "Connect your store to continue",
-    body: "Enter your store address, or email yourself a link if it is already connected.",
-  },
-  link_expired: {
-    title: "That sign-in link has expired",
-    body: "Ask for a new one below, then open it in this same browser.",
-  },
-  otp_expired: {
-    title: "That sign-in link has expired",
-    body: "Ask for a new one below, then open it in this same browser.",
-  },
-  link_invalid: {
-    title: "That sign-in link did not work",
-    body: "Ask for a new one below — links can only be used once.",
-  },
-  link_unbound: {
-    title: "Open the link in this browser",
-    body: "Ask for a new link here, then open it in this same browser.",
-  },
-  link_missing: {
-    title: "That sign-in link did not work",
-    body: "Ask for a new one below.",
+    body: "Enter your store address below. Shopify will ask you to approve Priceflag once.",
   },
   signed_out: {
-    title: "You have been signed out",
-    body: "Connect the store again, or email yourself a link if you already have.",
+    title: "You are signed out",
+    body: "Enter your store address to come back in. Shopify will not ask you to approve anything twice.",
+  },
+  state_mismatch: {
+    title: "That install link expired",
+    body: "Installs have to finish within ten minutes. Start again below.",
+  },
+  invalid_hmac: {
+    title: "That install link could not be verified",
+    body: "Start the install again from here rather than from an old link.",
+  },
+  scope_mismatch: {
+    title: "Shopify withheld a permission Priceflag needs",
+    body: "Approve every permission on the Shopify screen, then try again. Priceflag cannot forecast on partial order history.",
+  },
+  session_not_configured: {
+    title: "Your store is connected, but Priceflag could not sign you in",
+    body: "The deployment is missing AUTH_SESSION_SECRET. Set it and open Priceflag again — you will not need to reinstall.",
+  },
+  shopify_not_configured: {
+    title: "This deployment has no Shopify credentials",
+    body: "Set SHOPIFY_API_KEY and SHOPIFY_API_SECRET, or run in demo mode.",
   },
 };
 
-const EMAIL_ERRORS = new Set([
-  "link_expired",
-  "otp_expired",
-  "link_invalid",
-  "link_unbound",
-  "link_missing",
-]);
-
-/** Accepts what merchants actually paste: a bare handle, or a full admin URL. */
-function normalizeDomain(input: string): string | null {
-  const trimmed = input.trim().toLowerCase();
-  if (trimmed === "") return null;
-
-  const withoutScheme = trimmed.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  const handle = withoutScheme.replace(/\.myshopify\.com$/, "");
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(handle)) return null;
-  return `${handle}.myshopify.com`;
-}
-
-function nextPath(raw: string | undefined): string | undefined {
-  if (raw === undefined || raw === "" || raw === "/") return undefined;
-  if (!raw.startsWith("/") || raw.startsWith("//")) return undefined;
-  return raw;
-}
-
 export function SignInForm({
   appUrl,
+  demoMode = false,
   error,
-  next,
+  shop,
 }: {
   appUrl: string;
+  demoMode?: boolean;
   error?: string;
-  next?: string;
+  shop?: string;
 }) {
-  const [domain, setDomain] = useState("");
+  const [domain, setDomain] = useState(shop ?? "");
   const [shopError, setShopError] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [emailError, setEmailError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   const bounce =
     error === undefined
       ? undefined
       : (ERROR_COPY[error] ?? {
-          title: "Could not sign in",
-          body: "Connect with Shopify, or ask for a new email link if you already have.",
+          title: "Could not connect that store",
+          body: "Enter your store address and try again.",
         });
-  const destination = nextPath(next);
-  const emailOpen = sent || (error !== undefined && EMAIL_ERRORS.has(error));
 
   function connectShopify() {
-    const normalized = normalizeDomain(domain);
-    if (!normalized) {
+    const normalized = normalizeStoreAddress(domain);
+    if (normalized === null) {
       setShopError("Enter your store's address, like my-store.myshopify.com.");
       return;
     }
     setShopError(null);
+    setStarting(true);
+    // `_top`, not the current frame: Shopify's authorize screen refuses to be
+    // framed, so an install started inside an iframe would render nothing.
     window.open(`${appUrl}/api/auth?shop=${encodeURIComponent(normalized)}`, "_top");
   }
 
-  async function sendMagicLink() {
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed.includes("@")) {
-      setEmailError("That does not look like an email address.");
-      return;
-    }
-    setEmailError(null);
-    setSending(true);
+  async function openDemo() {
+    setStarting(true);
     try {
-      const response = await fetch(`${appUrl}/api/auth/magic-link`, {
+      const response = await fetch(`${appUrl}/api/auth/demo`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          email: trimmed,
-          ...(destination !== undefined ? { next: destination } : {}),
-        }),
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: { message?: string } }
-          | null;
-        setEmailError(payload?.error?.message ?? "We could not send that link. Try again in a moment.");
+        setShopError("The demo store is not available on this deployment.");
+        setStarting(false);
         return;
       }
-      setSent(true);
+      window.location.assign(`${appUrl}/`);
     } catch {
-      setEmailError("We could not send that link. Try again in a moment.");
-    } finally {
-      setSending(false);
+      setShopError("The demo store is not available right now.");
+      setStarting(false);
     }
   }
 
@@ -145,7 +117,7 @@ export function SignInForm({
 
       <PageHeader
         title="Connect your store"
-        description="Email cannot write prices."
+        description="One approval on Shopify. No password, no email to check."
       />
 
       {bounce !== undefined ? (
@@ -165,7 +137,7 @@ export function SignInForm({
           <Field
             label="Store address"
             htmlFor="shop-domain"
-            hint="From your Shopify admin URL. It ends in .myshopify.com."
+            hint="From your Shopify admin URL — my-store, or my-store.myshopify.com."
             error={shopError ?? undefined}
           >
             <Input
@@ -177,6 +149,7 @@ export function SignInForm({
               spellCheck={false}
               autoCapitalize="none"
               autoCorrect="off"
+              autoFocus
               invalid={shopError !== null}
               onChange={(event) => {
                 setDomain(event.target.value);
@@ -184,62 +157,41 @@ export function SignInForm({
               }}
             />
           </Field>
-          <Button type="submit" variant="neon" size="lg" fullWidth iconRight={<IconArrowRight />}>
+          <Button
+            type="submit"
+            variant="neon"
+            size="lg"
+            fullWidth
+            loading={starting}
+            loadingLabel="Opening Shopify"
+            iconRight={<IconArrowRight />}
+          >
             Continue with Shopify
           </Button>
         </form>
+
+        {/* Said before the approval screen, not on it. A merchant deciding
+            whether to grant write access to their prices deserves to read what
+            it is for somewhere that is not a permissions dialog. */}
+        <p className="max-w-prose pt-4 text-base text-ink-muted">
+          Shopify will ask you to approve Priceflag reading your products and
+          order history, and writing prices. Priceflag stages every price change
+          by SKU and time — never per visitor — and keeps a journal that can put
+          any price back the way it was.
+        </p>
       </PageSection>
 
-      <details className="group" open={emailOpen || undefined}>
-        <summary className="cursor-pointer list-none py-1 text-base font-medium text-ink marker:hidden [&::-webkit-details-marker]:hidden">
-          <span className="flex items-center justify-between gap-3">
-            Already connected? Open from email
-            <IconChevronRight
-              size={16}
-              className="shrink-0 text-ink-subtle transition-transform duration-150 group-open:rotate-90"
-            />
-          </span>
-        </summary>
-        <div className="space-y-4 pt-4">
-          <p className="max-w-prose text-base text-ink-muted">
-            We send a one-time link — open it in this same browser.
+      {demoMode ? (
+        <PageSection>
+          <p className="max-w-prose pb-4 text-base text-ink-muted">
+            This deployment runs against a simulated store, so there is nothing
+            to install.
           </p>
-          {sent ? (
-            <Notice tone="info" title="Check your email">
-              Open the link in this same browser.
-            </Notice>
-          ) : (
-            <form
-              noValidate
-              onSubmit={(event) => {
-                event.preventDefault();
-                void sendMagicLink();
-              }}
-              className="space-y-4"
-            >
-              <Field label="Email" htmlFor="sign-in-email" error={emailError ?? undefined}>
-                <Input
-                  id="sign-in-email"
-                  name="email"
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  value={email}
-                  placeholder="you@store.com"
-                  invalid={emailError !== null}
-                  onChange={(event) => {
-                    setEmail(event.target.value);
-                    if (emailError) setEmailError(null);
-                  }}
-                />
-              </Field>
-              <Button type="submit" variant="secondary" loading={sending} loadingLabel="Sending">
-                Email me a link
-              </Button>
-            </form>
-          )}
-        </div>
-      </details>
+          <Button variant="secondary" loading={starting} onClick={() => void openDemo()}>
+            Open the demo store
+          </Button>
+        </PageSection>
+      ) : null}
     </div>
   );
 }

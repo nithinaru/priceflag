@@ -2,25 +2,25 @@
  * Account sessions — the `pf_user` cookie.
  *
  * Priceflag has two independent notions of "who is this": the shop (asserted by
- * Shopify, via a session token or the `pf_shop` cookie) and the *account* (a
- * person with an email address, asserted by Supabase after a magic link). They
- * answer different questions and must never be conflated:
+ * Shopify, via a session token or the `pf_shop` cookie) and the *account* (the
+ * owner of a store that has completed an install). They answer different
+ * questions and must never be conflated:
  *
  *   - `pf_shop` says "Shopify vouches that this browser is acting for store X".
  *     It is the authority for reading and writing that store's prices.
- *   - `pf_user` says "this browser proved control of email address E". It is the
- *     authority for *reaching* the app from signin.priceflag.org, and for
- *     looking up which store that person has already connected.
+ *   - `pf_user` says "this browser finished an install for store X". It is the
+ *     authority for *reaching* the app outside the Shopify admin, and nothing
+ *     more. Its `userId` is the `shops.id` uuid (see `store-account.ts`), so it
+ *     resolves to a store by construction rather than by lookup.
  *
  * A merchant entering from the Shopify admin has the first and not the second; a
- * merchant arriving from the sign-in screen has the second and not yet the
+ * merchant opening dashboard.priceflag.org directly has the second and not the
  * first. Both are legitimate ways in, so `middleware.ts` accepts either.
  *
- * Why a self-signed cookie rather than storing Supabase's own JWT: `middleware`
+ * Why a self-signed cookie rather than an opaque session row: `middleware`
  * runs on the edge runtime, and this format can be verified there with Web
- * Crypto and no network call, exactly as `verifyShopCookie` already is. It also
- * means the app never has to care whether Supabase is signing with a shared
- * secret or a rotating key pair.
+ * Crypto and no network call, exactly as `verifyShopCookie` already is. A
+ * session table would put a database round-trip in front of every page.
  *
  * Format: `{userId}.{emailBase64Url}.{expiry}.{sig}` — the email is encoded so
  * that every segment is dot-free and the value parses by splitting on '.'.
@@ -47,10 +47,9 @@ export interface AccountSession {
 }
 
 /**
- * The signing key. Deliberately its own secret rather than reusing
- * `APP_ACCESS_SECRET`: that one is a *shared* invite password handed to pilot
- * merchants, so anybody holding a preview link would otherwise be able to forge
- * a session for any email address they liked.
+ * The signing key. Its own secret, and never shared with anything else: forging
+ * this cookie is forging an identity, so it must not be possible for anyone
+ * holding some other Priceflag credential to mint one.
  */
 function signingSecret(): string {
   return requireEnv(

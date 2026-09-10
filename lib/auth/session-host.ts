@@ -1,7 +1,7 @@
 /**
  * Where the session cookie may be minted, and which hosts are only a door.
  *
- * Shopify OAuth and the magic-link bind cookie are host-only. If the form lives
+ * The Shopify OAuth nonce cookie is host-only. If the sign-in screen lives
  * on signin.priceflag.org while APP_URL (and the emailed token URL) is
  * dashboard.priceflag.org, the click lands on a host that never received
  * `pf_link` / `priceflag_oauth_state` and the round-trip fails. One session
@@ -85,7 +85,7 @@ export function isBrandedEntryHost(hostname: string): boolean {
 
 /**
  * Origin that owns the session cookie. Production never returns a marketing
- * host, localhost, or a vercel.app project URL — those are how magic-link
+ * host, localhost, or a vercel.app project URL — those are how OAuth
  * emails silently point at a place that cannot complete sign-in.
  */
 export function sessionOrigin(appUrl: string = getAppUrl()): string {
@@ -102,23 +102,12 @@ export function sessionOrigin(appUrl: string = getAppUrl()): string {
   return url.origin;
 }
 
-/** Absolute magic-link landing URL. Always the session host, never the request host. */
-export function magicLinkCallbackUrl(appUrl: string = getAppUrl()): string {
-  return `${sessionOrigin(appUrl)}/auth/callback`;
-}
-
-/** Absolute Shopify OAuth redirect_uri. Same host as the authorize-start cookie. */
 export function oauthCallbackUrl(appUrl: string = getAppUrl()): string {
   return `${sessionOrigin(appUrl)}/api/auth/callback`;
 }
 
 function isPreservedCallbackPath(pathname: string): boolean {
-  return (
-    pathname === '/auth/callback' ||
-    pathname.startsWith('/auth/callback/') ||
-    pathname === '/api/auth/callback' ||
-    pathname.startsWith('/api/auth/callback/')
-  );
+  return pathname === '/api/auth/callback' || pathname.startsWith('/api/auth/callback/');
 }
 
 /**
@@ -135,7 +124,7 @@ export function canonicalSessionUrl(
 ): string | null {
   if (!isAliasEntryHost(hostname)) return null;
   const path = pathname.startsWith('/') ? pathname : `/${pathname}`;
-  // Leftover magic-link / OAuth emails must keep their query on the session host.
+  // A leftover OAuth callback must keep its query on the session host.
   if (isPreservedCallbackPath(path)) {
     return `${SESSION_ORIGIN}${path}${search}`;
   }

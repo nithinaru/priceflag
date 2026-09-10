@@ -1,20 +1,20 @@
 /**
- * `GET /api/auth?shop=<domain>` — start the OAuth install.
+ * `GET /api/auth?shop=<domain>` — start the OAuth install, which is also the
+ * entire sign-up.
  *
  * Validates the shop domain, mints a single-use nonce into an HttpOnly cookie, and
  * redirects to Shopify's authorize screen. The nonce is what makes the callback
  * unforgeable: without it, anyone could replay a callback URL at us.
+ *
+ * Nothing here needs the visitor to already be somebody. A stranger typing their
+ * store address is the expected caller — `/api/auth/callback` is what creates the
+ * account, from the install itself.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { sessionOrigin } from '@/lib/auth/session-host';
 import { getMode, hasShopifyConfig } from '@/lib/config';
-import { USER_COOKIE, verifyUserCookie } from '@/lib/auth/account';
-import {
-  INSTALL_INITIATOR_COOKIE,
-  installInitiatorCookieOptions,
-} from '@/lib/auth/link-binding';
 import {
   buildAuthorizeUrl,
   canonicalOAuthStartUrl,
@@ -104,21 +104,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const response = NextResponse.redirect(buildAuthorizeUrl({ shop, state }));
 
   response.cookies.set(OAUTH_STATE_COOKIE, state, oauthStateCookieOptions(secure));
-
-  // If a signed-in account is starting this install, record it here — at the
-  // start, where the intent is. The callback links the store to this value
-  // rather than to whatever session cookie happens to be present when Shopify
-  // redirects back, so the ownership row reflects somebody having *asked* to
-  // connect a store rather than merely having been signed in at the time.
-  const accountCookie = request.cookies.get(USER_COOKIE)?.value;
-  const account = accountCookie === undefined ? null : verifyUserCookie(accountCookie);
-  if (account !== null) {
-    response.cookies.set(
-      INSTALL_INITIATOR_COOKIE,
-      account.userId,
-      installInitiatorCookieOptions(secure),
-    );
-  }
 
   return response;
 }
