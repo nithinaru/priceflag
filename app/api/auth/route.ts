@@ -14,7 +14,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { sessionOrigin } from '@/lib/auth/session-host';
-import { getMode, hasShopifyConfig } from '@/lib/config';
+import { getMode, hasShopifyConfig, missingRequiredScopes } from '@/lib/config';
 import {
   buildAuthorizeUrl,
   canonicalOAuthStartUrl,
@@ -37,6 +37,32 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           code: 'shopify_not_configured',
           message:
             'This deployment has no Shopify credentials. Set SHOPIFY_API_KEY and SHOPIFY_API_SECRET, or use demo mode.',
+          retryable: false,
+          details: null,
+        },
+      },
+      { status: 503 },
+    );
+  }
+
+  // Refuse to start an install this deployment could not honour.
+  //
+  // Checked here, at the door, rather than at the callback: by the callback the
+  // merchant has already read and approved a consent screen, and the scope they
+  // approved would be the wrong one. Better to never show it.
+  const missingRequired = missingRequiredScopes();
+  if (missingRequired.length > 0) {
+    console.error(
+      `[install] refused: SHOPIFY_SCOPES omits ${missingRequired.join(', ')}. ` +
+        'Fix the environment variable before inviting a store.',
+    );
+    return NextResponse.json(
+      {
+        error: {
+          code: 'scopes_misconfigured',
+          message:
+            'This deployment is not configured to request every permission Priceflag needs, ' +
+            `so it will not start an install. Missing: ${missingRequired.join(', ')}.`,
           retryable: false,
           details: null,
         },

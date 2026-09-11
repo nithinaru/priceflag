@@ -90,7 +90,7 @@ one has to go through `/signin` again.
 | --- | --- | --- |
 | `APP_URL` | yes | `https://dashboard.priceflag.org` in production. Never a `vercel.app` host, never `signin.` or `product.`. The OAuth `redirect_uri` is derived from it and must match what is allow-listed on the Shopify app. |
 | `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | yes | From the app's API credentials. |
-| `SHOPIFY_SCOPES` | no | Defaults to the list above. |
+| `SHOPIFY_SCOPES` | no | Defaults to the list above, and **overrides it silently** when set. Narrowing it below `read_products, write_products, read_orders, read_all_orders` makes `/api/auth` refuse to start an install (`scopes_misconfigured`); check `shopify_scopes_missing` on `/api/health`, because Vercel will not show you the value once it is set. |
 | `AUTH_SESSION_SECRET` | yes | Signs `pf_user`. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. If it is missing, an install still completes and stores its token, but lands on `/signin?error=session_not_configured` — set the variable and the next visit works, with no reinstall. |
 | `ENCRYPTION_KEY` | yes | Encrypts the offline token at rest. |
 | `SIGNIN_URL` | no | Overrides where bounces land. Ignored when it points at a branded or alias host, which would put the sign-in screen on a host that cannot hold the cookie. |
@@ -106,8 +106,12 @@ would arrive without its nonce cookie and fail as `state_mismatch`.
 ## Verifying a deployment
 
 ```bash
-curl -s "$APP_URL/api/health" | jq '.checks'
+curl -s "$APP_URL/api/health" | jq '{adapter, shopify_scopes, shopify_scopes_missing}'
 ```
+
+`shopify_scopes_missing` must be `[]`, and `shopify_scopes` is the list the
+merchant will actually be asked to approve — not what the code says, which a
+`SHOPIFY_SCOPES` override can silently replace.
 
 Then, in a browser:
 

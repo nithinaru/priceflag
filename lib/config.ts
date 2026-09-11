@@ -38,6 +38,38 @@ export const DEFAULT_SHOPIFY_SCOPES =
   'read_inventory,write_inventory,' +
   'read_price_rules,write_price_rules';
 
+/**
+ * The scopes without which Priceflag cannot honestly do its job.
+ *
+ * `SHOPIFY_SCOPES` exists so a deployment can widen or narrow the request, and
+ * that flexibility has one edge that must not be flexible. Narrowing below this
+ * floor does not produce an error anywhere: OAuth succeeds, the merchant
+ * approves, `missingScopes` compares the grant against the same shortened list
+ * and finds nothing missing, and the app runs. What changes is invisible —
+ * without `read_all_orders` the Admin API silently returns 60 days of order
+ * history instead of 180, so every elasticity fit and every forecast is built
+ * on a third of the data while the UI goes on claiming the full window.
+ *
+ * A forecast that is quietly wrong is the one failure this product cannot have,
+ * so a deployment configured that way refuses to start an install at all
+ * (`app/api/auth`) and says so on `/api/health`. Found in production on
+ * 2026-09-10, where `SHOPIFY_SCOPES` had been set to a list that omitted it.
+ */
+export const REQUIRED_SHOPIFY_SCOPES = [
+  'read_products',
+  'write_products',
+  'read_orders',
+  'read_all_orders',
+] as const;
+
+/**
+ * Which required scopes this deployment would fail to ask for. Empty is healthy.
+ */
+export function missingRequiredScopes(): string[] {
+  const requested = new Set(getShopifyScopes());
+  return REQUIRED_SHOPIFY_SCOPES.filter((scope) => !requested.has(scope));
+}
+
 export function env(name: string): string | undefined {
   const value = process.env[name];
   return value === undefined || value === '' ? undefined : value;

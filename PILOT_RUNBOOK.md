@@ -217,6 +217,26 @@ a store can install. Without it the Admin API silently caps history at 60 days,
 so `/api/auth/callback` **fails the install** rather than forecasting on two
 months of data while the UI claims 180.
 
+**Check what this deployment will actually ask for before inviting anyone:**
+
+```bash
+curl -s "$APP_URL/api/health" | jq '{shopify_scopes, shopify_scopes_missing}'
+```
+
+`shopify_scopes_missing` must be `[]`. If it is not, `/api/auth` refuses to
+start an install at all and returns `scopes_misconfigured` — deliberately, at
+the door rather than at the callback, because by the callback the merchant has
+already approved a consent screen showing the wrong permissions.
+
+This is not hypothetical. On 2026-09-10 production's `SHOPIFY_SCOPES` was
+`read_products,write_products,read_orders,write_orders,write_draft_orders` — no
+`read_all_orders`, plus two write scopes the app has no code path for. Nothing
+surfaced it: OAuth succeeded, `missingScopes` compared the grant against the
+same shortened list and found nothing missing, and every forecast would have
+been built on 60 days while the UI claimed 180. `SHOPIFY_SCOPES` overrides the
+code default and Vercel will not show an environment variable's value once it is
+set, so the health field above is the only way to see it from outside.
+
 Changing `SHOPIFY_SCOPES` does not re-prompt an already-installed store. Every
 existing store must go through `/signin` again — the callback rejects a token
 whose granted scopes are narrower than the list.

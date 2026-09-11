@@ -20,6 +20,7 @@ import {
   sessionOrigin,
 } from '../lib/auth/session-host';
 import { allowedOrigin, signInScreenUrl } from '../lib/auth/signin-origin';
+import { missingRequiredScopes } from '../lib/config';
 import { defaultRedirectUri } from '../lib/shopify/oauth';
 import { normalizeStoreAddress } from '../lib/shopify/store-address';
 
@@ -352,6 +353,25 @@ test('OAuth asks for read and write on prices, and nothing it cannot use', () =>
   for (const scope of ['read_customers', 'write_customers', 'read_users']) {
     assert(!block.includes(scope), `${scope} is requested but nothing in the app reads it`);
   }
+});
+
+test('a deployment missing read_all_orders refuses to start an install', () => {
+  withEnv({ SHOPIFY_SCOPES: 'read_products,write_products,read_orders,write_orders' }, () => {
+    const missing = missingRequiredScopes();
+    assert(missing.includes('read_all_orders'), `expected read_all_orders to be flagged, got ${missing}`);
+  });
+  withEnv({ SHOPIFY_SCOPES: undefined }, () => {
+    assert(missingRequiredScopes().length === 0, 'the code default must satisfy its own floor');
+  });
+  // The door, not the callback: by the callback the merchant has already
+  // approved a consent screen showing the wrong permissions.
+  const start = read('app/api/auth/route.ts');
+  assert(start.includes('missingRequiredScopes()'), '/api/auth must check the scope floor');
+  assert(start.includes('scopes_misconfigured'), 'the refusal must name itself');
+  const check = start.indexOf('missingRequiredScopes()');
+  // The call site, not the import line at the top of the file.
+  const authorize = start.indexOf('buildAuthorizeUrl({');
+  assert(check !== -1 && authorize !== -1 && check < authorize, 'refuse before redirecting to Shopify');
 });
 
 test('health reports the scopes the deployment would actually request', () => {
