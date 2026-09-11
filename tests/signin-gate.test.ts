@@ -354,4 +354,22 @@ test('OAuth asks for read and write on prices, and nothing it cannot use', () =>
   }
 });
 
+test('health reports the scopes the deployment would actually request', () => {
+  const health = read('app/api/health/route.ts');
+  assert(health.includes('shopify_scopes: getShopifyScopes()'), 'health must report resolved scopes');
+  // A stale SHOPIFY_SCOPES override silently wins over the code default and
+  // cannot be read back from Vercel, so this field is the only way to see it.
+  assert(!/SHOPIFY_API_SECRET|SERVICE_ROLE|ENCRYPTION_KEY/.test(health), 'health must not echo secrets');
+});
+
+test('an account resolves to its store without depending on the link row', () => {
+  const source = read('lib/auth/account-shops.ts');
+  const fn = source.slice(source.indexOf('export async function getShopDomainForAccount'));
+  const direct = fn.indexOf('SHOPS_TABLE');
+  const link = fn.indexOf('LINKS_TABLE');
+  assert(direct !== -1, 'the shop row must be consulted directly');
+  assert(link !== -1, 'the legacy link fallback must remain for pre-store-keyed accounts');
+  assert(direct < link, 'the authoritative shop row must be read before the link record');
+});
+
 process.stdout.write(`${passed}/${passed} sign-in gate tests passed\n`);

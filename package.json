@@ -25,6 +25,7 @@
     "test:shopify-journey": "tsx tests/shopify-journey.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
+    "db:apply": "tsx scripts/apply-migration.ts",
     "db:reset": "supabase db reset",
     "smoke:browser": "tsx scripts/smoke-browser.ts"
   },
