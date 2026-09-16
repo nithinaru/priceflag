@@ -40,6 +40,12 @@ async function main(): Promise<void> {
     'rollouts:id,creation_sequence',
     'model_runs:id,recommendations_written',
     'recommendations:id',
+    // Added after production ran for twelve nights with neither of these
+    // present: the ML export's price_history surface failed nightly on the
+    // missing journal column, and `shop/redact` had no compliance table to
+    // purge into, while this probe reported the database healthy.
+    'journal_entries:id,creation_sequence',
+    'compliance_audit:id',
   ]);
 
   const staleDb = fakeClient({

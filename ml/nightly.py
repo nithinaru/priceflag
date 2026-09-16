@@ -153,6 +153,12 @@ def _new_real_ingest_evidence(require_ingest: bool, generated_at: str | None = N
 def _operational_failure_code(error: Exception) -> str:
     """Classify an external failure without copying its potentially sensitive text."""
     message = str(error)
+    # Checked before "backend_unavailable" because it is the more specific
+    # substring of the two, and because the distinction is the whole point: a
+    # schema gap is permanent, and a nightly that calls it an outage will keep
+    # retrying a thing that cannot recover on its own.
+    if "backend_schema_outdated" in message:
+        return "source_schema_outdated"
     if "backend_unavailable" in message:
         return "source_backend_unavailable"
     if "attest" in message.lower():
