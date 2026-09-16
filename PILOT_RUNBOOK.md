@@ -253,6 +253,51 @@ curl -s "$APP_URL/api/health" | jq
 | `configured.shopify: false` | No app credentials | Set `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET`, redeploy |
 | `configured.cron_secret: false` | **The evaluator is not running** | Set `CRON_SECRET`, redeploy. Rollouts are frozen until then — nothing will advance *or* roll back |
 | `mode: demo` in production | Serving the simulated store | Set `PRICEFLAG_MODE=real` |
+| `shopify_scopes_missing` non-empty | `SHOPIFY_SCOPES` is narrower than the floor | `/api/auth` refuses installs until it is fixed — see "Scopes" above |
+
+### Migrations missing in production (open, as of 2026-09-16)
+
+Seven migrations in `supabase/migrations/` have never been applied to
+`vnyqevrdvfjsfhdnbfsz`, and one more was added on 2026-09-10:
+
+```
+20260804043733_atomic_order_webhook_and_compliance
+20260804093121_protect_compliance_audit
+20260804112000_atomic_refund_webhook
+20260804180000_normalize_ml_readonly_privileges
+20260804193400_commit_ml_role_login_lockout
+20260804193500_verify_ml_role_memberships
+20260804193600_drain_and_attest_ml_role
+20260910120000_store_identity_accounts
+```
+
+None of the objects they create exist yet, so a replay is clean rather than a
+reconciliation. What is broken while they are absent:
+
+- **`ml-nightly` fails every night.** `journal_entries.creation_sequence` is
+  missing, every journal read orders by it, so the ML export's `price_history`
+  surface throws and the run goes red after all its gates pass.
+- **`orders/create` and `refunds/create` webhooks cannot be recorded.**
+  `pf_ingest_order_webhook` and `pf_ingest_refund_webhook` do not exist.
+- **Order-day sync cannot commit** — `pf_commit_order_day_sync_snapshot` does
+  not exist.
+- **`shop/redact` cannot be honoured.** No `compliance_audit` table and no
+  `pf_purge_shop_for_compliance`. This one is a compliance obligation, not a
+  degradation.
+- **The retired ML database role can still log in** — the lockout and its
+  attestation never ran. This is the `smoke` failure that has been dismissed as
+  pre-existing.
+
+Apply them in filename order. `supabase db push` cannot reach this project's
+direct host from every machine (`LegacyDbConnectError`); the fallback is:
+
+```bash
+set -a && . ./.env.local && set +a && for f in supabase/migrations/*.sql; do npm run db:apply -- "$f"; done
+```
+
+`db:apply` skips anything already recorded, so the loop is safe to re-run.
+Afterwards `/api/health` must report `adapter.ok: true`, and the next nightly
+should go green.
 
 Then the rollout itself:
 
