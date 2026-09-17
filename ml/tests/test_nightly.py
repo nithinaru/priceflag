@@ -347,6 +347,82 @@ def test_operational_failure_stays_red_and_preserves_redacted_evidence(monkeypat
     assert "private-merchant.myshopify.com" not in json.dumps(evidence)
 
 
+def test_follow_on_export_failure_keeps_attested_shop_counts(monkeypatch, tmp_path):
+    import pandas as pd
+
+    import priceflag_ml.data as data_module
+    import priceflag_ml.elasticity as elasticity_module
+    import priceflag_ml.forecaster as forecaster_module
+    import priceflag_ml.ingest as ingest_module
+    import priceflag_ml.reports as reports_module
+
+    class Source:
+        def attest(self, *_args):
+            return _identity()
+
+        def list_shops(self):
+            return ["private-merchant.myshopify.com"]
+
+        def order_days(self, _shop):
+            return pd.DataFrame(
+                {
+                    "shop_id": ["private-merchant.myshopify.com"],
+                    "sku": ["gid://shopify/ProductVariant/1"],
+                    "date": pd.to_datetime(["2026-08-01"]),
+                    "units": [2],
+                    "price_cents": [1500],
+                    "revenue_cents": [3000],
+                    "promo": [False],
+                    "stockout": [False],
+                }
+            )
+
+        def close(self):
+            return None
+
+    class Result:
+        accepted = True
+        rows_written = 1
+        is_error = False
+        reason = None
+        model_run_id = "00000000-0000-4000-8000-000000000001"
+
+        def describe(self):
+            return "accepted"
+
+    class Ingest:
+        def post_run(self, **_kwargs):
+            return Result()
+
+    monkeypatch.setattr(data_module.PriceflagApiSource, "from_env", classmethod(lambda cls: Source()))
+    monkeypatch.setattr(
+        ingest_module.IngestClient,
+        "from_env_or_none",
+        classmethod(lambda cls, client=None: Ingest()),
+    )
+    monkeypatch.setattr(elasticity_module, "fit_store", lambda _orders: [object()])
+    monkeypatch.setattr(elasticity_module, "fits_contract_rows", lambda *_args, **_kwargs: [{"fit": 1}])
+    monkeypatch.setattr(nightly, "_forecast_one", lambda *_args: object())
+    monkeypatch.setattr(forecaster_module, "bands_contract_rows", lambda *_args, **_kwargs: [{"band": 1}])
+    monkeypatch.setattr(
+        nightly,
+        "_recommendations_for_shop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("HTTP 503 (backend_unavailable)")
+        ),
+    )
+    monkeypatch.setattr(reports_module, "calibration_summary", lambda _reports: {"n": 0})
+    _set_real_attestation_env(monkeypatch)
+
+    assert nightly.refit_real_stores(tmp_path, True, {}, require_ingest=True) is False
+    evidence = json.loads((tmp_path / nightly.REAL_INGEST_EVIDENCE_FILE).read_text())
+    assert evidence["success"] is False
+    assert evidence["failure_code"] == "source_backend_unavailable"
+    assert evidence["shops_visible"] == 1
+    assert evidence["fits_generated"] == 1
+    assert "private-merchant.myshopify.com" not in json.dumps(evidence)
+
+
 # --- C5 counterfactual monitoring of active rollouts -------------------------
 
 

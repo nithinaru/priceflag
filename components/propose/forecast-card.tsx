@@ -7,7 +7,6 @@ import {
   CellNote,
   Notice,
   Stat,
-  StatGroup,
   TBody,
   TD,
   TH,
@@ -17,6 +16,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { RangeBar } from "@/components/propose/range-bar";
+import { ScenarioFan } from "@/components/charts/scenario-fan";
 import {
   ConfidenceBadge,
   ConfidenceNote,
@@ -63,7 +63,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
       <Card tone="accent" edge>
         <CardHeader
           title="What this change would do"
-          description={`Over the next ${forecast.horizon_days} days, compared with leaving prices alone.`}
+          description={`${forecast.horizon_days} days`}
         />
 
         <CardBody className="space-y-6">
@@ -274,6 +274,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
           </summary>
 
           <div className="border-t border-border">
+            <ScenarioFan forecast={forecast} />
             <Table
               layout="intrinsic"
               caption="What happens to revenue and profit at each level of unit-sales change"
@@ -291,7 +292,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
                 {forecast.scenarios.map((scenario) => (
                   <TR
                     key={scenario.label}
-                    className={cn(scenario.is_breakeven && "bg-accent-tint/50")}
+                    className={cn(scenario.is_breakeven && "bg-surface")}
                   >
                     <TD>
                       <span className="font-medium">{scenario.label}</span>
@@ -347,10 +348,7 @@ export function ForecastCard({ forecast }: { forecast: ForecastResult }) {
 
       {/* Per-product breakdown. */}
       <Card>
-        <CardHeader
-          title="Product by product"
-          description="What each price becomes, and what you would make on it."
-        />
+        <CardHeader title="Product by product" />
         <CardBody flush>
           <Table
             layout="intrinsic"

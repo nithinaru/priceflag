@@ -1,11 +1,12 @@
 import type { SVGProps } from "react";
+import { cn } from "@/components/cn";
+import { FREEHAND_GLYPHS } from "@/components/ui/freehand-glyphs";
 
 /**
- * Inline icons, so Lane A ships no icon dependency (REQ-A-001).
+ * Chrome icons are Streamline Freehand (CC BY 4.0). Attribution lives in the
+ * app footer. Ibis stays the logo only — never a nav glyph.
  *
- * All are 24×24, 1.75 stroke, `currentColor`, and inherit size from the `size`
- * prop (default 16). Decorative by default: `aria-hidden` unless a `title` is
- * passed, in which case the icon becomes an image with an accessible name.
+ * Decorative by default: `aria-hidden` unless a `title` is passed.
  */
 
 type IconProps = Omit<SVGProps<SVGSVGElement>, "children"> & {
@@ -13,245 +14,158 @@ type IconProps = Omit<SVGProps<SVGSVGElement>, "children"> & {
   title?: string;
 };
 
-function Icon({ size = 16, title, children, ...props }: IconProps & { children: React.ReactNode }) {
+function FreehandIcon({
+  glyph,
+  size = 16,
+  title,
+  ...props
+}: IconProps & { glyph: keyof typeof FREEHAND_GLYPHS }) {
   return (
     <svg
       viewBox="0 0 24 24"
       width={size}
       height={size}
       fill="none"
-      stroke="currentColor"
-      strokeWidth={1.75}
-      strokeLinecap="round"
-      strokeLinejoin="round"
       role={title ? "img" : undefined}
       aria-hidden={title ? undefined : true}
       focusable="false"
       {...props}
     >
       {title ? <title>{title}</title> : null}
-      {children}
+      <g dangerouslySetInnerHTML={{ __html: FREEHAND_GLYPHS[glyph].body }} />
     </svg>
   );
 }
 
-export function IconFlag(props: IconProps) {
+/**
+ * The Priceflag ibis, from priceflag.org/ibis.svg. Logo only — nav tools stay
+ * Freehand. `currentColor` so white chrome is navy and the lime footer is ink.
+ */
+export function IconIbis({
+  size = 22,
+  title,
+  className,
+}: {
+  size?: number;
+  title?: string;
+  className?: string;
+}) {
+  const height = size;
+  const width = Math.round((size * 621) / 402);
   return (
-    <Icon {...props}>
-      <path d="M5 21V4.5" />
-      <path d="M5 4.5h9.5l-1 3 1 3H5" />
-    </Icon>
+    <span
+      role={title ? "img" : undefined}
+      aria-label={title}
+      aria-hidden={title ? undefined : true}
+      className={cn("inline-block shrink-0 bg-current", className)}
+      style={{
+        width,
+        height,
+        WebkitMaskImage: "url(/ibis.svg)",
+        maskImage: "url(/ibis.svg)",
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+      }}
+    />
   );
+}
+
+export function IconFlag(props: IconProps) {
+  return <FreehandIcon glyph="flag" {...props} />;
 }
 
 export function IconDownload(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 3.5v11" />
-      <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
-      <path d="M4.5 18.5v1a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-1" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="download" {...props} />;
 }
 
 export function IconSettings(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6M18.7 18.7l-1.6-1.6M6.9 6.9 5.3 5.3" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="settings" {...props} />;
 }
 
 export function IconGauge(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 14.5 16 9" />
-      <path d="M3.5 18a9.5 9.5 0 1 1 17 0" />
-      <circle cx="12" cy="15" r="1.6" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="gauge" {...props} />;
 }
 
 export function IconTag(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12.6 3.5H20v7.4l-8.7 8.7a2 2 0 0 1-2.8 0L4 14.9a2 2 0 0 1 0-2.8Z" />
-      <circle cx="16.3" cy="7.7" r="1.3" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="tag" {...props} />;
 }
 
 export function IconLayers(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="m12 3 8.5 4.5L12 12 3.5 7.5Z" />
-      <path d="m3.5 12.5 8.5 4.5 8.5-4.5" />
-      <path d="m3.5 17 8.5 4.5 8.5-4.5" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="layers" {...props} />;
 }
 
 export function IconBook(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H19v18H5.5A1.5 1.5 0 0 1 4 19.5Z" />
-      <path d="M8 3v18" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="book" {...props} />;
 }
 
 export function IconBeaker(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M9 3.5h6" />
-      <path d="M10 3.5v5.2l-5.2 8.5A2.2 2.2 0 0 0 6.7 20.5h10.6a2.2 2.2 0 0 0 1.9-3.3L14 8.7V3.5" />
-      <path d="M7.2 15h9.6" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="beaker" {...props} />;
 }
 
 export function IconCheck(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="m4.5 12.5 5 5 10-11" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="check" {...props} />;
 }
 
 export function IconCheckCircle(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8 12.5 2.5 2.5L16 9.5" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="checkCircle" {...props} />;
 }
 
 export function IconAlert(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7.5v5.5" />
-      <path d="M12 16.4h.01" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="alert" {...props} />;
 }
 
 export function IconInfo(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 11v5.5" />
-      <path d="M12 7.6h.01" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="info" {...props} />;
 }
 
 export function IconUndo(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 9h9.5a5.5 5.5 0 1 1 0 11H8" />
-      <path d="m7.5 4.5-3.6 4.5 3.6 4.5" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="undo" {...props} />;
 }
 
 export function IconPause(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M9.5 5.5v13" />
-      <path d="M14.5 5.5v13" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="pause" {...props} />;
 }
 
 export function IconClock(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7.5V12l3.2 2" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="clock" {...props} />;
 }
 
 export function IconSearch(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="m16 16 4 4" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="search" {...props} />;
 }
 
 export function IconClose(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="m6 6 12 12" />
-      <path d="m18 6-12 12" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="close" {...props} />;
 }
 
 export function IconChevronRight(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="m9.5 5.5 7 6.5-7 6.5" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="chevronRight" {...props} />;
 }
 
 export function IconArrowRight(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4.5 12h15" />
-      <path d="m13.5 6 6 6-6 6" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="arrowRight" {...props} />;
 }
 
 export function IconArrowUp(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 19.5v-15" />
-      <path d="m6 10.5 6-6 6 6" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="arrowUp" {...props} />;
 }
 
 export function IconArrowDown(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 4.5v15" />
-      <path d="m6 13.5 6 6 6-6" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="arrowDown" {...props} />;
 }
 
 export function IconMenu(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 7h16" />
-      <path d="M4 12h16" />
-      <path d="M4 17h16" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="menu" {...props} />;
 }
 
 export function IconPlus(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="plus" {...props} />;
 }
 
 export function IconInbox(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M3.5 13.5 6 5h12l2.5 8.5v5H3.5Z" />
-      <path d="M3.5 13.5h4l1 2.5h7l1-2.5h4" />
-    </Icon>
-  );
+  return <FreehandIcon glyph="inbox" {...props} />;
 }

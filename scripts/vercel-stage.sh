@@ -40,27 +40,19 @@ fi
 REQUIRED_VARS=(
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  SUPABASE_PUBLISHABLE_KEY
   SHOPIFY_API_KEY
   SHOPIFY_API_SECRET
-  SHOPIFY_APP_HANDLE
   SHOPIFY_API_VERSION
   SHOPIFY_SCOPES
   APP_URL
   ENCRYPTION_KEY
   CRON_SECRET
-  APP_ACCESS_SECRET
   AUTH_SESSION_SECRET
   ML_INGEST_SECRET
   RESEND_API_KEY
   RESEND_FROM
   PRICEFLAG_SHOP_ALLOWLIST
 )
-
-# Accept the pre-rename Supabase key name if the publishable key is unset.
-if [[ -z "${SUPABASE_PUBLISHABLE_KEY:-}" && -n "${SUPABASE_ANON_KEY:-}" ]]; then
-  SUPABASE_PUBLISHABLE_KEY="$SUPABASE_ANON_KEY"
-fi
 
 for name in "${REQUIRED_VARS[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -70,11 +62,12 @@ for name in "${REQUIRED_VARS[@]}"; do
 done
 
 case "$APP_URL" in
-  https://dashboard.priceflag.org|https://product.priceflag.org)
+  https://dashboard.priceflag.org)
     ;;
   *)
-    echo "error: production APP_URL must be https://dashboard.priceflag.org or https://product.priceflag.org." >&2
+    echo "error: production APP_URL must be https://dashboard.priceflag.org." >&2
     echo "       Never use a vercel.app hostname — priceflag-app.vercel.app is the project host, not the merchant-facing origin." >&2
+    echo "       product.priceflag.org and signin.priceflag.org 308 onto the dashboard; they are not APP_URL." >&2
     exit 1
     ;;
 esac

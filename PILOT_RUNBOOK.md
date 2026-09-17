@@ -29,9 +29,24 @@ same answer.
 | **Production app URL** | https://dashboard.priceflag.org |
 | **Vercel deployment** | https://priceflag-app.vercel.app (project `priceflag-app`) |
 
-`APP_URL` in production env must be the public dashboard or product host
-(`https://dashboard.priceflag.org` or `https://product.priceflag.org`), never
-the `vercel.app` project hostname. OAuth and magic links bind to that origin.
+`APP_URL` in production env must be `https://dashboard.priceflag.org`, never a
+`vercel.app` project hostname and never `product.priceflag.org` or
+`signin.priceflag.org`. The Shopify OAuth round-trip and the `pf_user` cookie
+bind to that origin only.
+
+### Launch domains (Vercel dashboard — DNS cannot be changed from this repo)
+
+Do **not** add these hosts to `priceflagv1`, and never deploy this repo there.
+`priceflag.org` / `www.priceflag.org` stay on the homepage project.
+
+| Host | Observed now | Required action on Vercel |
+|---|---|---|
+| `dashboard.priceflag.org` | Bound to `priceflag-app`. Signed-out `/` currently 303s to `https://signin.priceflag.org/` because Production `SIGNIN_URL` points at the marketing door. | On **priceflag-app → Settings → Environment Variables → Production**: set `APP_URL=https://dashboard.priceflag.org` and `SIGNIN_URL=https://dashboard.priceflag.org/signin` (or delete `SIGNIN_URL`). Leave `AUTH_COOKIE_DOMAIN` unset. |
+| `signin.priceflag.org` | CNAME to Vercel; **priceflagv1** serves `307 → /signin.html`. That static page must not try to mint a session — the sign-in screen is one field that starts `/api/auth?shop=`. | **priceflagv1 → Settings → Domains** → remove `signin.priceflag.org` only. **priceflag-app → Settings → Domains** → Add `signin.priceflag.org` (accept “move from another project” if offered). After the next *app* deploy, this repo 308s the host to `https://dashboard.priceflag.org/signin` (OAuth callbacks keep `/api/auth/callback`). |
+| `product.priceflag.org` | NXDOMAIN — no records. | **priceflag-app → Settings → Domains** → Add `product.priceflag.org`. Vercel will ask for a CNAME to `cname.vercel-dns.com` (or an A/ALIAS it prints). Same 308 to dashboard `/signin`. |
+| `priceflag.org` | Homepage on `priceflagv1`. | Leave it. |
+
+Redirects in `next.config.ts` / `middleware.ts` do nothing until the alias hosts resolve to `priceflag-app`. This repo does not deploy itself.
 
 ## Product invariants
 
@@ -145,17 +160,23 @@ price. A non-2xx release response means price writes remain disabled.
 
 ## "I get a 401 on every page"
 
-For a page request, that is usually the access gate (`middleware.ts`). Reach the
-app once with `?access=<APP_ACCESS_SECRET>` and it sets a 30-day HttpOnly cookie.
-For a merchant API request, a 401 after passing that gate means the short-lived
-Shopify session token is missing, forged, or expired; refresh it as described
-above.
+There is no shared access key any more. A page request that redirects to
+`/signin` means the browser has neither a Shopify signature nor a valid
+`pf_user` cookie — connect the store (one field, one Shopify approval) and the
+cookie is minted by `/api/auth/callback`.
 
-The access gate is an **interim** preview boundary, not tenant authorization. The
-merchant APIs independently require Shopify session tokens. Machine endpoints
-are exempt because they authenticate themselves, and health is deliberately
-non-sensitive: `/api/cron/evaluate`, `/api/ml/ingest`, `/api/ml/export`, `/api/webhooks/*`,
-`/api/health`.
+A 401 on a **merchant API** request means the short-lived Shopify session token
+is missing, forged, or expired; refresh it as described above. That token, not
+any cookie, is what authorizes a price write.
+
+If a completed install lands on `/signin?error=session_not_configured`, the
+store is connected and the token is stored — the deployment is missing
+`AUTH_SESSION_SECRET`. Set it in Vercel and redeploy; the merchant does **not**
+need to reinstall.
+
+Machine endpoints are reachable without a session because they authenticate
+themselves, and health is deliberately non-sensitive: `/api/cron/evaluate`,
+`/api/ml/ingest`, `/api/ml/export`, `/api/webhooks/*`, `/api/health`.
 
 Operational Shopify webhook callback URLs are capabilities, not public paths:
 subscription reconciliation generates a token bound to both the topic and the
@@ -168,50 +189,57 @@ destructive `shop/redact` requests to the signed `shop_domain` in the payload.
 After changing `APP_URL` or the Shopify API secret, reconcile every invited
 shop's subscriptions before reopening access.
 
-If `APP_ACCESS_SECRET` is unset in production the gate **fails closed** and
-everything returns 401. Set it in Vercel and redeploy.
+### Reviewers and demo access
 
-### Demo credentials (reviewers)
+There is no reviewer password and no `?access=` link. A reviewer either
+connects a development store (the same one-approval flow a merchant uses), or
+opens a deployment running `PRICEFLAG_MODE=demo`, where `/signin` offers "Open
+the demo store" and `POST /api/auth/demo` mints a session against the seeded
+simulated catalog. That route 404s on a real deployment.
 
-There is a second, separate way in, for people who cannot be handed a secret URL:
-`DEMO_USERNAME` / `DEMO_PASSWORD`, typed into the browser's credential dialog
-(realm: **"Priceflag demo"**). A successful login mints the same HttpOnly cookie
-for **7 days**, so a reviewer authenticates once and then browses normally.
+To close off a demo deployment, unset `PRICEFLAG_MODE=demo` and redeploy: the
+route disappears and outstanding demo cookies resolve to a store that no longer
+has data.
 
-They are deliberately separate from `APP_ACCESS_SECRET` so a review ending does
-not break `smoke-browser.ts` or any `?access=` link.
+### Scopes, and what a merchant approves
 
-**To revoke, the moment a review is over:**
+One consent screen is the entire permission conversation:
 
-```bash
-export PRICEFLAG_DEMO_ACCESS_CONFIRM="REVOKE_DEMO_ACCESS:$(git rev-parse HEAD)"
-bash scripts/vercel-demo-access.sh revoke
+```
+read_products, write_products,
+read_orders, read_all_orders,
+read_inventory, write_inventory,
+read_price_rules, write_price_rules
 ```
 
-The running deployment retains its environment snapshot, so removal alone does
-not revoke the credential. From a clean checkout of the currently approved
-commit, remove `DEMO_PASSWORD` from the ignored `.env.production.local`, run the
-acknowledged `scripts/vercel-stage.sh` flow below, verify the exact staged URL,
-and promote only that artifact. Do not use `vercel deploy --prod`: it can assign
-production traffic from an unverified local tree.
+`read_all_orders` needs Shopify's approval on the custom-distribution app before
+a store can install. Without it the Admin API silently caps history at 60 days,
+so `/api/auth/callback` **fails the install** rather than forecasting on two
+months of data while the UI claims 180.
 
-Once the staged artifact is promoted, revocation is immediate and complete: the
-cookie a demo login mints holds the **password**, not the access secret, so the
-deployment without `DEMO_PASSWORD` invalidates every outstanding reviewer
-session on its next request. Had the cookie carried the access secret, those
-sessions would have kept working for their full lifetime.
-
-**To rotate instead of revoking**, use the same pinned wrapper; it prompts
-without echoing the new password. Existing cookies stop working after the newly
-staged artifact is promoted.
+**Check what this deployment will actually ask for before inviting anyone:**
 
 ```bash
-export PRICEFLAG_DEMO_ACCESS_CONFIRM="ROTATE_DEMO_ACCESS:$(git rev-parse HEAD)"
-bash scripts/vercel-demo-access.sh rotate
+curl -s "$APP_URL/api/health" | jq '{shopify_scopes, shopify_scopes_missing}'
 ```
 
-Removing only `DEMO_USERNAME` also disables the path (both must be set), but the
-wrapper clears both values from the pinned Preview and Production environments.
+`shopify_scopes_missing` must be `[]`. If it is not, `/api/auth` refuses to
+start an install at all and returns `scopes_misconfigured` — deliberately, at
+the door rather than at the callback, because by the callback the merchant has
+already approved a consent screen showing the wrong permissions.
+
+This is not hypothetical. On 2026-09-10 production's `SHOPIFY_SCOPES` was
+`read_products,write_products,read_orders,write_orders,write_draft_orders` — no
+`read_all_orders`, plus two write scopes the app has no code path for. Nothing
+surfaced it: OAuth succeeded, `missingScopes` compared the grant against the
+same shortened list and found nothing missing, and every forecast would have
+been built on 60 days while the UI claimed 180. `SHOPIFY_SCOPES` overrides the
+code default and Vercel will not show an environment variable's value once it is
+set, so the health field above is the only way to see it from outside.
+
+Changing `SHOPIFY_SCOPES` does not re-prompt an already-installed store. Every
+existing store must go through `/signin` again — the callback rejects a token
+whose granted scopes are narrower than the list.
 
 ## Triage
 
@@ -225,6 +253,51 @@ curl -s "$APP_URL/api/health" | jq
 | `configured.shopify: false` | No app credentials | Set `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET`, redeploy |
 | `configured.cron_secret: false` | **The evaluator is not running** | Set `CRON_SECRET`, redeploy. Rollouts are frozen until then — nothing will advance *or* roll back |
 | `mode: demo` in production | Serving the simulated store | Set `PRICEFLAG_MODE=real` |
+| `shopify_scopes_missing` non-empty | `SHOPIFY_SCOPES` is narrower than the floor | `/api/auth` refuses installs until it is fixed — see "Scopes" above |
+
+### Migrations missing in production (open, as of 2026-09-16)
+
+Seven migrations in `supabase/migrations/` have never been applied to
+`vnyqevrdvfjsfhdnbfsz`, and one more was added on 2026-09-10:
+
+```
+20260804043733_atomic_order_webhook_and_compliance
+20260804093121_protect_compliance_audit
+20260804112000_atomic_refund_webhook
+20260804180000_normalize_ml_readonly_privileges
+20260804193400_commit_ml_role_login_lockout
+20260804193500_verify_ml_role_memberships
+20260804193600_drain_and_attest_ml_role
+20260910120000_store_identity_accounts
+```
+
+None of the objects they create exist yet, so a replay is clean rather than a
+reconciliation. What is broken while they are absent:
+
+- **`ml-nightly` fails every night.** `journal_entries.creation_sequence` is
+  missing, every journal read orders by it, so the ML export's `price_history`
+  surface throws and the run goes red after all its gates pass.
+- **`orders/create` and `refunds/create` webhooks cannot be recorded.**
+  `pf_ingest_order_webhook` and `pf_ingest_refund_webhook` do not exist.
+- **Order-day sync cannot commit** — `pf_commit_order_day_sync_snapshot` does
+  not exist.
+- **`shop/redact` cannot be honoured.** No `compliance_audit` table and no
+  `pf_purge_shop_for_compliance`. This one is a compliance obligation, not a
+  degradation.
+- **The retired ML database role can still log in** — the lockout and its
+  attestation never ran. This is the `smoke` failure that has been dismissed as
+  pre-existing.
+
+Apply them in filename order. `supabase db push` cannot reach this project's
+direct host from every machine (`LegacyDbConnectError`); the fallback is:
+
+```bash
+set -a && . ./.env.local && set +a && for f in supabase/migrations/*.sql; do npm run db:apply -- "$f"; done
+```
+
+`db:apply` skips anything already recorded, so the loop is safe to re-run.
+Afterwards `/api/health` must report `adapter.ok: true`, and the next nightly
+should go green.
 
 Then the rollout itself:
 

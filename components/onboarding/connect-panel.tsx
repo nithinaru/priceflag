@@ -92,11 +92,7 @@ export function ConnectPanel({
   if (progress) {
     return (
       <Card tone="accent" edge>
-        <CardHeader
-          eyebrow="Scripted, not connected"
-          title={`Loading ${normalized}`}
-          description="This is what the real thing looks like. No Shopify store was contacted, and no credentials were used."
-        />
+        <CardHeader title="Loading" />
         <CardBody>
           <SyncProgressPanel initial={progress} poll={false} />
         </CardBody>
@@ -106,15 +102,11 @@ export function ConnectPanel({
 
   return (
     <Card>
-      <CardHeader
-        title="Connect your Shopify store"
-        description="Priceflag reads your products, their costs, and your order history. It changes a price only when you tell it to."
-      />
+      <CardHeader title="Connect your Shopify store" />
       <CardBody className="space-y-5">
         {installedNow ? (
-          <Notice tone="info" title="The install finished, but this page cannot tell which store it was">
-            Open Priceflag from the Apps section of your Shopify admin and the sync will pick up
-            from there. Nothing was lost.
+          <Notice tone="info" title="Install finished">
+            Open Priceflag from Apps in Shopify admin to continue the sync.
           </Notice>
         ) : null}
         <Field
@@ -141,19 +133,19 @@ export function ConnectPanel({
         </Field>
 
         <div className="rounded-lg border border-border bg-surface-muted px-4 py-3.5">
-          <h3 className="text-base font-semibold text-ink">What Priceflag will do</h3>
+          <h3 className="text-base font-semibold text-ink">Permissions</h3>
           <ul className="mt-2 space-y-1.5">
             {[
-              "Read your products, their prices, and the unit costs you have saved in Shopify.",
-              "Read your order history, as daily totals only. We never store anything about a customer.",
-              "Change a price only as part of a change you set up and started yourself.",
-              "Record every price change, including ones you make in Shopify without us.",
+              "Products, prices, and costs",
+              "Daily order totals, not customers",
+              "Price changes you start",
+              "A journal of every price change",
             ].map((line) => (
               <li key={line} className="flex gap-2 text-base text-ink-muted">
                 <span className="mt-0.5 shrink-0 text-live" aria-hidden="true">
                   <IconCheck size={14} />
                 </span>
-                <span className="max-w-prose">{line}</span>
+                <span>{line}</span>
               </li>
             ))}
           </ul>
@@ -173,15 +165,13 @@ export function ConnectPanel({
         </div>
 
         {!shopifyConfigured && demoMode ? (
-          <Notice tone="hold" title="Scripted walkthrough — not a real install">
-            The next button plays a scripted version of first-run against the demo store. No
-            Shopify store is contacted.
+          <Notice tone="hold" title="Scripted walkthrough">
+            No Shopify store is contacted.
           </Notice>
         ) : null}
         {!shopifyConfigured && !demoMode ? (
           <Notice tone="hold" title="Connecting is unavailable">
-            Shopify is not set up on this copy of Priceflag, so a store cannot be connected from
-            here.
+            Shopify is not set up on this deployment.
           </Notice>
         ) : null}
       </CardBody>
@@ -194,7 +184,7 @@ export function ConnectPanel({
               : "Connecting is unavailable until Shopify is set up on this deployment."}
         </span>
         <Button
-          variant="primary"
+          variant="neon"
           loading={running}
           loadingLabel="Loading your store"
           disabled={!canConnect}
@@ -296,21 +286,8 @@ function ConnectedSyncCard({ connected }: { connected: ConnectedShopState }) {
   return (
     <Card tone={done ? undefined : "accent"} edge={!done}>
       <CardHeader
-        eyebrow={connected.domain}
-        title={
-          done
-            ? "Your store is loaded"
-            : errored
-              ? "We could not finish loading your store"
-              : "Loading your store"
-        }
-        description={
-          done
-            ? "Priceflag keeps this fresh on its own from here — every new order and product change flows in automatically."
-            : errored
-              ? "The details below say what went wrong and what to do about it."
-              : "This runs on our side — you can leave this page and nothing is lost."
-        }
+        title={done ? "Loaded" : errored ? "Error" : "Loading"}
+        description={errored ? undefined : connected.domain}
       />
       <CardBody>
         <SyncProgressPanel
@@ -324,7 +301,7 @@ function ConnectedSyncCard({ connected }: { connected: ConnectedShopState }) {
       {done ? (
         <CardFooter>
           <span>Next: pick the products whose prices you want to test.</span>
-          <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
+          <ButtonLink href="/products" variant="neon" iconRight={<IconArrowRight size={15} />}>
             See your products
           </ButtonLink>
         </CardFooter>

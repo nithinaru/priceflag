@@ -22,7 +22,6 @@ export default function ModelLabPage() {
     <div className="space-y-6">
       <PageHeader
         title="Founder Lab"
-        description="Type in a pricing scenario and watch Priceflag's real forecast and rollout-planning code work through it. Built for Kabir and Nithin to break safely."
         meta={<Badge tone="live" dot>No Shopify writes</Badge>}
       />
       <FounderLab initialInput={initialInput} initialResult={initialResult} />

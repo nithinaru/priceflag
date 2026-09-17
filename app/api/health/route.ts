@@ -9,7 +9,12 @@
 import { NextResponse } from 'next/server';
 
 import { getAdapter } from '@/lib/adapters';
-import { describeEnvironment, getMode } from '@/lib/config';
+import {
+  describeEnvironment,
+  getMode,
+  getShopifyScopes,
+  missingRequiredScopes,
+} from '@/lib/config';
 import { CONTRACT_VERSION } from '@/lib/contracts';
 
 // Never prerender: this exists to report the state of the running process.
@@ -71,6 +76,19 @@ export async function GET(): Promise<NextResponse> {
       adapter,
       contract_version: CONTRACT_VERSION,
       shopify_api_version: environment.shopifyApiVersion,
+      // The scopes this deployment would actually request, resolved the same way
+      // `buildAuthorizeUrl` resolves them.
+      //
+      // Not a secret, and worth reporting precisely because it is overridable:
+      // `SHOPIFY_SCOPES` silently wins over the code default, Vercel will not
+      // show an environment variable's value once it is set, and a stale
+      // override is invisible from every other angle — the install succeeds, the
+      // merchant approves a narrower grant, and the first thing to notice is a
+      // forecast quietly built on less data than the UI claims.
+      shopify_scopes: getShopifyScopes(),
+      // Non-empty means this deployment refuses to start an install, and says
+      // which permission it would have failed to ask for.
+      shopify_scopes_missing: missingRequiredScopes(),
       configured: {
         supabase: environment.supabase,
         shopify: environment.shopify,

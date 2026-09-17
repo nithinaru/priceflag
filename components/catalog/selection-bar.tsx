@@ -4,6 +4,7 @@ import { cn } from "@/components/cn";
 import { Button } from "@/components/ui/button";
 import { IconArrowRight, IconClose } from "@/components/ui/icons";
 import { countOf, formatPct } from "@/components/format";
+import { PresenceEnter } from "@/components/motion/anime-presence";
 
 /**
  * The selection bar. Appears only when something is selected, states exactly
@@ -29,7 +30,7 @@ export function SelectionBar({
   return (
     <div
       className={cn(
-        "fixed inset-x-0 bottom-0 z-40 px-4 pb-4 lg:pl-60",
+        "fixed inset-x-0 bottom-0 z-40 px-4 pb-4 lg:pl-72",
         count === 0 && "pointer-events-none",
       )}
       // The live region is always mounted, otherwise the first selection has
@@ -38,14 +39,15 @@ export function SelectionBar({
       aria-live="polite"
     >
       {count === 0 ? null : (
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-xl border border-border-strong bg-surface px-4 py-3 shadow-lg">
+      <PresenceEnter show className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-xl border border-border-strong bg-surface px-4 py-3 shadow-lg">
         <div className="min-w-0">
           <p className="text-base font-semibold text-ink">
             {countOf(count, "product")} selected
           </p>
+          {blendedMargin !== null || withoutCostCount > 0 ? (
           <p className="text-sm text-ink-muted">
             {blendedMargin !== null ? (
-              <>Together they make {formatPct(blendedMargin, 0)} margin. </>
+              <>{formatPct(blendedMargin, 0)} margin together. </>
             ) : null}
             {withoutCostCount > 0 ? (
               <span className="text-hold">
@@ -53,21 +55,20 @@ export function SelectionBar({
                   ? "1 has no cost, so its profit stays unknown."
                   : `${withoutCostCount} have no cost, so their profit stays unknown.`}
               </span>
-            ) : (
-              <>Every one has a cost, so profit can be worked out.</>
-            )}
+            ) : null}
           </p>
+          ) : null}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
           <Button variant="ghost" onClick={onClear} iconLeft={<IconClose size={15} />}>
             Clear
           </Button>
-          <Button variant="primary" onClick={onContinue} iconRight={<IconArrowRight size={15} />}>
+          <Button variant="neon" onClick={onContinue} iconRight={<IconArrowRight size={15} />}>
             Preview a price change
           </Button>
         </div>
-      </div>
+      </PresenceEnter>
       )}
     </div>
   );

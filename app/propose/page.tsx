@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { PageHeader, TextLink } from "@/components/ui";
 import { ProposeFlow } from "@/components/propose/propose-flow";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 
 export const metadata: Metadata = {
   title: "Propose a price change",
@@ -24,6 +24,7 @@ export default async function ProposePage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   return (
@@ -31,7 +32,6 @@ export default async function ProposePage({
       <PageHeader
         breadcrumb={<TextLink standalone href="/products">← Your products</TextLink>}
         title="Propose a price change"
-        description="See what it could do to profit before anything goes live, then set the limit that pauses the rollout for your decision."
       />
       <ProposeFlow demoMode={ctx.mode === "demo"} />
     </div>

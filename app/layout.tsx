@@ -1,10 +1,25 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { Hedvig_Letters_Serif, Inter } from "next/font/google";
 import "@/app/globals.css";
 import { AppBridgeBoot } from "@/components/lib/app-bridge-boot";
 import { AppShell } from "@/components/shell/app-shell";
 import { ToastProvider } from "@/components/ui/toast";
 import { env, hasShopifyConfig, isDemoMode } from "@/lib/config";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+  weight: ["400", "500", "600"],
+});
+
+const hedvig = Hedvig_Letters_Serif({
+  subsets: ["latin"],
+  variable: "--font-hedvig",
+  display: "swap",
+  weight: "400",
+});
 
 export const metadata: Metadata = {
   title: {
@@ -13,6 +28,10 @@ export const metadata: Metadata = {
   },
   description:
     "Forecast a price change, roll it out gradually, and pause automatically for a merchant decision if performance crosses a safety limit.",
+  icons: {
+    icon: "/ibis.svg",
+    apple: "/ibis.svg",
+  },
 };
 
 export const viewport: Viewport = {
@@ -31,7 +50,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     hasShopifyConfig() && !isDemoMode() ? env("SHOPIFY_API_KEY") : undefined;
 
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      data-theme="light"
+      className={`${inter.variable} ${hedvig.variable} font-sans`}
+    >
       {shopifyApiKey !== undefined ? (
         <head>
           <meta name="shopify-api-key" content={shopifyApiKey} />
@@ -40,7 +63,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js" />
         </head>
       ) : null}
-      <body>
+      <body className="bg-canvas font-sans text-ink antialiased">
         <ToastProvider>
           {shopifyApiKey !== undefined ? <AppBridgeBoot /> : null}
           <AppShell>{children}</AppShell>

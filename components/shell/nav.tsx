@@ -5,12 +5,14 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/components/cn";
 import { Button } from "@/components/ui";
+import { LiquidNav } from "@/components/motion/liquid-nav";
+import { MotionViewTransition } from "@/components/motion/view-transition";
 import {
   IconBeaker,
   IconBook,
   IconClose,
-  IconFlag,
   IconGauge,
+  IconIbis,
   IconLayers,
   IconMenu,
   IconPlus,
@@ -22,54 +24,45 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
-  /** One line of plain language, so the nav itself explains the app. */
-  hint: string;
 };
 
 const ITEMS: NavItem[] = [
   {
     href: "/",
     label: "Overview",
-    icon: <IconGauge size={17} />,
-    hint: "What is live right now",
+    icon: <IconGauge size={24} />,
   },
   {
     href: "/products",
     label: "Products",
-    icon: <IconTag size={17} />,
-    hint: "Prices, costs and profit per product",
+    icon: <IconTag size={24} />,
   },
   {
     href: "/rollouts",
     label: "Price changes",
-    icon: <IconLayers size={17} />,
-    hint: "Changes going out, and ones that finished",
+    icon: <IconLayers size={24} />,
   },
   {
     href: "/journal",
     label: "Price journal",
-    icon: <IconBook size={17} />,
-    hint: "Every price change ever made",
+    icon: <IconBook size={24} />,
   },
   {
     href: "/connect",
     label: "Connect store",
-    icon: <IconPlus size={17} />,
-    hint: "Install or reconnect Shopify",
+    icon: <IconPlus size={24} />,
   },
   {
     href: "/settings",
     label: "Settings",
-    icon: <IconSettings size={17} />,
-    hint: "Which store, and who we email",
+    icon: <IconSettings size={24} />,
   },
 ];
 
 const FOUNDER_LAB_ITEM: NavItem = {
   href: "/model-lab",
   label: "Founder Lab",
-  icon: <IconBeaker size={17} />,
-  hint: "Run pricing scenarios safely",
+  icon: <IconBeaker size={24} />,
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -106,19 +99,17 @@ export function Nav({
   return (
     <>
       {/* Desktop: a permanent rail. */}
-      <div className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-surface lg:flex">
+      <div className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-border bg-surface lg:flex">
         <Brand />
         <NavList pathname={pathname} showFounderLab={showFounderLab} className="flex-1 overflow-y-auto px-3 py-4" />
         <RailFooter statusSlot={statusSlot} storeSlot={storeSlot} />
       </div>
 
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
-      <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 lg:hidden">
-        <Link href="/" className="flex items-center gap-2 rounded-md font-semibold text-ink">
-          <span className="flex size-7 items-center justify-center rounded-md bg-accent text-accent-ink">
-            <IconFlag size={15} />
-          </span>
-          Priceflag
+      <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3 lg:hidden">
+        <Link href="/" className="flex items-center gap-2.5 rounded-md text-ink">
+          <IconIbis size={28} />
+          <span className="font-display text-2xl leading-none">Priceflag</span>
         </Link>
         <button
           type="button"
@@ -126,7 +117,7 @@ export function Nav({
           aria-expanded={drawerOpen}
           aria-controls="pf-mobile-nav"
           className={
-            "inline-flex items-center gap-2 rounded-md border border-border-strong px-2.5 py-1.5 " +
+            "inline-flex cursor-pointer items-center gap-2 rounded-md border border-border-strong px-2.5 py-1.5 " +
             "text-sm font-medium text-ink outline-none hover:bg-surface-muted " +
             "focus-visible:ring-2 focus-visible:ring-focus"
           }
@@ -153,7 +144,7 @@ export function Nav({
                 type="button"
                 onClick={() => setDrawerOpen(false)}
                 aria-label="Close menu"
-                className="rounded-md p-1.5 text-ink-subtle outline-none hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
+                className="cursor-pointer rounded-md p-1.5 text-ink-subtle outline-none hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
               >
                 <IconClose size={18} />
               </button>
@@ -169,14 +160,15 @@ export function Nav({
 
 function Brand() {
   return (
-    <div className="flex items-center gap-2.5 border-b border-border px-4 py-4">
-      <span className="flex size-8 items-center justify-center rounded-md bg-accent text-accent-ink">
-        <IconFlag size={17} />
-      </span>
-      <div className="min-w-0">
-        <div className="text-md font-semibold leading-tight text-ink">Priceflag</div>
-        <div className="text-xs text-ink-subtle">Price changes, safely</div>
-      </div>
+    <div className="flex items-center gap-3 border-b border-border px-4 py-5">
+      <MotionViewTransition name="pf-brand">
+        <div className="flex items-center gap-3">
+          <IconIbis size={32} />
+          <div className="min-w-0">
+            <div className="font-display text-2xl leading-tight text-ink">Priceflag</div>
+          </div>
+        </div>
+      </MotionViewTransition>
     </div>
   );
 }
@@ -211,43 +203,35 @@ function NavList({
   className?: string;
 }) {
   const items = showFounderLab ? [...ITEMS.slice(0, 2), FOUNDER_LAB_ITEM, ...ITEMS.slice(2)] : ITEMS;
+  const activeHref = items.find((item) => isActive(pathname, item.href))?.href ?? "/";
   return (
-    <nav className={className} aria-label="Main">
-      <ul className="space-y-0.5">
-        {items.map((item) => {
-          const active = isActive(pathname, item.href);
-          return (
-            <li key={item.href}>
-              <Link
-                href={item.href}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "group flex items-start gap-2.5 rounded-md px-2.5 py-2 outline-none " +
-                    "focus-visible:ring-2 focus-visible:ring-focus",
-                  active
-                    ? "bg-accent-tint text-accent"
-                    : "text-ink-muted hover:bg-surface-muted hover:text-ink",
-                )}
-              >
-                <span className={cn("mt-0.5 shrink-0", active ? "text-accent" : "text-ink-subtle")}>
-                  {item.icon}
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-base font-medium">{item.label}</span>
-                  <span
-                    className={cn(
-                      "block text-xs",
-                      active ? "text-accent/80" : "text-ink-subtle",
-                    )}
-                  >
-                    {item.hint}
+    <LiquidNav activeKey={activeHref} transition="smooth" className={className}>
+      <nav aria-label="Main">
+        <ul className="space-y-0.5">
+          {items.map((item) => {
+            const active = isActive(pathname, item.href);
+            return (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  data-liquid-nav={item.href}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "group flex items-center gap-3 rounded-md px-3 py-2.5 outline-none " +
+                      "focus-visible:ring-2 focus-visible:ring-focus",
+                    active ? "text-neon-ink" : "text-ink hover:bg-canvas",
+                  )}
+                >
+                  <span className={cn("shrink-0", active ? "text-neon-ink" : "text-ink")}>
+                    {item.icon}
                   </span>
-                </span>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-    </nav>
+                  <span className="block text-lg font-medium leading-tight">{item.label}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </LiquidNav>
   );
 }

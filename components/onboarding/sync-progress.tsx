@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/components/cn";
-import { Button, ButtonLink, Notice } from "@/components/ui";
+import { Button, ButtonLink, LiveMachine, Notice } from "@/components/ui";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf, formatUnits } from "@/components/format";
 import { authenticatedFetch } from "@/components/lib/shopify-fetch";
@@ -24,27 +24,17 @@ export function SyncProgressPanel({
   initial,
   /** Poll the real endpoint. Off in demo mode, which plays a scripted sync. */
   poll = true,
-  onCatalogReady,
   onProgress,
   onRetry,
 }: {
   initial: SyncProgress;
   poll?: boolean;
-  onCatalogReady?: () => void;
   /** Called with each polled update, so a parent can mirror the stage. */
   onProgress?: (progress: SyncProgress) => void;
   /** When set, the error state's retry button calls this instead of reloading. */
   onRetry?: () => void;
 }) {
   const [progress, setProgress] = useState(initial);
-  const announced = useRef(false);
-
-  useEffect(() => {
-    if (progress.catalog.ready && !announced.current) {
-      announced.current = true;
-      onCatalogReady?.();
-    }
-  }, [progress.catalog.ready, onCatalogReady]);
 
   useEffect(() => {
     if (!poll) return;
@@ -104,6 +94,7 @@ export function SyncProgressPanel({
 
   return (
     <div className="space-y-4">
+      <LiveMachine mode={progress.catalog.ready && progress.history.ready ? "draft" : "sync"} />
       <p className="max-w-prose text-base text-ink">{progress.message}</p>
 
       <div className="space-y-3">
@@ -142,21 +133,18 @@ export function SyncProgressPanel({
       {progress.catalog.ready && !progress.history.ready ? (
         <Notice
           tone="info"
-          title="You can start choosing products now"
+          title="Catalog is ready"
           action={
             <ButtonLink
               href="/products"
-              variant="primary"
+              variant="neon"
               size="sm"
               iconRight={<IconArrowRight size={15} />}
             >
               See your products
             </ButtonLink>
           }
-        >
-          Your catalog is ready. Sales history keeps loading in the background — you do not have to
-          wait here, and nothing is lost if you close this tab.
-        </Notice>
+        />
       ) : null}
     </div>
   );

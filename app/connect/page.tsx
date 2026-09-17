@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import { Badge, PageHeader, TextLink } from "@/components/ui";
+import { Badge, PageHeader, PageSection } from "@/components/ui";
 import { ConnectPanel, type ConnectedShopState } from "@/components/onboarding/connect-panel";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getAdapter } from "@/lib/adapters";
 import { describeEnvironment } from "@/lib/config";
 import { syncProgressFromRun } from "@/lib/sync";
@@ -32,6 +32,7 @@ export default async function ConnectPage({
   const shopifyConfigured = environment.shopify || environment.shopifyStaticToken;
 
   const context = await resolveShopForPage(params);
+  maybeBeginShopifyInstall(context);
   let connected: ConnectedShopState | null = null;
   if (context.mode === "real" && context.shop !== null) {
     const run = await getAdapter().getLatestSyncRun(context.shop.id);
@@ -63,7 +64,6 @@ export default async function ConnectPage({
     <div className="space-y-6">
       <PageHeader
         title="Connect your store"
-        description="One install, and Priceflag can show you what a price change would do before you make it."
         meta={
           <Badge tone={badge.tone} size="md" dot>
             {badge.label}
@@ -72,9 +72,11 @@ export default async function ConnectPage({
       />
 
       {!shopifyConfigured && environment.mode !== "demo" ? (
-        <p className="text-base text-ink-muted">
-          Shopify is not configured on this deployment.
-        </p>
+        <PageSection>
+          <p className="text-base text-ink-muted">
+            Shopify is not configured on this deployment.
+          </p>
+        </PageSection>
       ) : null}
 
       <ConnectPanel
@@ -84,11 +86,6 @@ export default async function ConnectPage({
         connected={connected}
         installedNow={installedNow && connected === null}
       />
-
-      <p className="text-base text-ink-muted">
-        Already connected and just want to look around?{" "}
-        <TextLink href="/products">Your products</TextLink> is the place to start.
-      </p>
     </div>
   );
 }

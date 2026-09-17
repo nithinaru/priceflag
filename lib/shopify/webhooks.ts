@@ -95,12 +95,7 @@ const WEBHOOK_SUBSCRIPTIONS_QUERY = /* GraphQL */ `
       nodes {
         id
         topic
-        endpoint {
-          __typename
-          ... on WebhookHttpEndpoint {
-            callbackUrl
-          }
-        }
+        uri
       }
     }
   }
@@ -152,7 +147,12 @@ const WEBHOOK_SUBSCRIPTION_DELETE = /* GraphQL */ `
 interface SubscriptionNode {
   id: string;
   topic: string;
-  endpoint: { __typename: string; callbackUrl?: string } | null;
+  /** HTTPS callback, Pub/Sub URI, or EventBridge ARN. Admin API 2026-07. */
+  uri: string;
+}
+
+function isHttpWebhookUri(uri: string): boolean {
+  return uri.startsWith('https://') || uri.startsWith('http://');
 }
 
 /**
@@ -184,7 +184,7 @@ export async function reconcileWebhooks(
 
   async function deleteDuplicates(nodes: readonly SubscriptionNode[], keepId: string): Promise<void> {
     for (const duplicate of nodes) {
-      if (duplicate.id === keepId || duplicate.endpoint?.__typename !== 'WebhookHttpEndpoint') continue;
+      if (duplicate.id === keepId || !isHttpWebhookUri(duplicate.uri)) continue;
       const deleted = await client.request<{
         webhookSubscriptionDelete: {
           deletedWebhookSubscriptionId: string | null;
@@ -210,9 +210,7 @@ export async function reconcileWebhooks(
     const forTopic = existing.filter((node) => node.topic === required.topic);
 
     // Already pointing at the right place? Done — zero writes.
-    const matching = forTopic.find(
-      (node) => node.endpoint?.__typename === 'WebhookHttpEndpoint' && node.endpoint.callbackUrl === expectedUrl,
-    );
+    const matching = forTopic.find((node) => isHttpWebhookUri(node.uri) && node.uri === expectedUrl);
     if (matching !== undefined) {
       result.ok.push(required.topic);
       await deleteDuplicates(forTopic, matching.id);
@@ -222,7 +220,7 @@ export async function reconcileWebhooks(
     // An HTTP subscription for this topic exists but points elsewhere (an old
     // domain, usually). Repoint it rather than stacking a second subscription —
     // Shopify would happily deliver every event twice.
-    const repointable = forTopic.find((node) => node.endpoint?.__typename === 'WebhookHttpEndpoint');
+    const repointable = forTopic.find((node) => isHttpWebhookUri(node.uri));
     if (repointable !== undefined) {
       const updated = await client.request<{
         webhookSubscriptionUpdate: {
@@ -231,7 +229,7 @@ export async function reconcileWebhooks(
         } | null;
       }>(WEBHOOK_SUBSCRIPTION_UPDATE, {
         id: repointable.id,
-        webhookSubscription: { callbackUrl: expectedUrl },
+        webhookSubscription: { uri: expectedUrl },
       });
       assertNoUserErrors(updated.webhookSubscriptionUpdate?.userErrors, `webhookSubscriptionUpdate(${required.topic})`);
       result.updated.push(required.topic);
@@ -248,7 +246,7 @@ export async function reconcileWebhooks(
       } | null;
     }>(WEBHOOK_SUBSCRIPTION_CREATE, {
       topic: required.topic,
-      webhookSubscription: { callbackUrl: expectedUrl, format: 'JSON' },
+      webhookSubscription: { uri: expectedUrl, format: 'JSON' },
     });
     assertNoUserErrors(created.webhookSubscriptionCreate?.userErrors, `webhookSubscriptionCreate(${required.topic})`);
     result.created.push(required.topic);

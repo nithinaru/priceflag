@@ -134,40 +134,28 @@ async function main(): Promise<void> {
               {
                 id: 'gid://shopify/WebhookSubscription/1',
                 topic: 'ORDERS_CREATE',
-                endpoint: {
-                  __typename: 'WebhookHttpEndpoint',
-                callbackUrl: webhookCallbackUrl(
+                uri: webhookCallbackUrl(
                   'https://app.test',
                   'orders--create',
                   'orders/create',
                   SECRET,
                   DEMO_SHOP_DOMAIN,
                 ),
-                },
               },
               {
                 id: 'gid://shopify/WebhookSubscription/1-duplicate',
                 topic: 'ORDERS_CREATE',
-                endpoint: {
-                  __typename: 'WebhookHttpEndpoint',
-                  callbackUrl: 'https://old.test/api/webhooks/orders--create',
-                },
+                uri: 'https://old.test/api/webhooks/orders--create',
               },
               {
                 id: 'gid://shopify/WebhookSubscription/2',
                 topic: 'PRODUCTS_UPDATE',
-                endpoint: {
-                  __typename: 'WebhookHttpEndpoint',
-                  callbackUrl: 'https://old.test/api/webhooks/products--update',
-                },
+                uri: 'https://old.test/api/webhooks/products--update',
               },
               {
                 id: 'gid://shopify/WebhookSubscription/2-duplicate',
                 topic: 'PRODUCTS_UPDATE',
-                endpoint: {
-                  __typename: 'WebhookHttpEndpoint',
-                  callbackUrl: 'https://older.test/api/webhooks/products--update',
-                },
+                uri: 'https://older.test/api/webhooks/products--update',
               },
             ],
           },
@@ -221,7 +209,7 @@ async function main(): Promise<void> {
   assert.deepEqual(calls[2]?.variables, {
     topic: 'REFUNDS_CREATE',
     webhookSubscription: {
-      callbackUrl: webhookCallbackUrl(
+      uri: webhookCallbackUrl(
         'https://app.test',
         'refunds--create',
         'refunds/create',
@@ -234,7 +222,7 @@ async function main(): Promise<void> {
   assert.deepEqual(calls[3]?.variables, {
     id: 'gid://shopify/WebhookSubscription/2',
     webhookSubscription: {
-      callbackUrl: webhookCallbackUrl(
+      uri: webhookCallbackUrl(
         'https://app.test',
         'products--update',
         'products/update',
@@ -247,7 +235,7 @@ async function main(): Promise<void> {
   assert.deepEqual(calls[5]?.variables, {
     topic: 'APP_UNINSTALLED',
     webhookSubscription: {
-      callbackUrl: webhookCallbackUrl(
+      uri: webhookCallbackUrl(
         'https://app.test',
         'app--uninstalled',
         'app/uninstalled',

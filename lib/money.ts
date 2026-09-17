@@ -13,8 +13,6 @@ export type Cents = number;
 
 export type Rounding = 'none' | 'end_99' | 'end_95' | 'end_00';
 
-export const ROUNDING_MODES: readonly Rounding[] = ['none', 'end_99', 'end_95', 'end_00'];
-
 /** Shopify prices must never be free or negative. */
 export const MIN_STOREFRONT_PRICE_CENTS: Cents = 1;
 
@@ -172,17 +170,4 @@ export function snapToCurrency(cents: Cents, currency?: string): Cents {
   const quantum = currencyQuantumCents(currency);
   if (quantum === 1) return cents;
   return Math.round(cents / quantum) * quantum;
-}
-
-/** Percentage change from `from` to `to`, in percentage points. `null` when undefined. */
-export function pctChange(from: number, to: number): number | null {
-  if (from === 0) return null;
-  return ((to - from) / Math.abs(from)) * 100;
-}
-
-/** Sum with an integer guarantee — aggregates of cents are still cents. */
-export function sumCents(values: readonly Cents[]): Cents {
-  let total = 0;
-  for (const value of values) total += assertCents(value, 'value');
-  return total;
 }

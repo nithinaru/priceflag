@@ -14,25 +14,18 @@ import { IconFlag } from "@/components/ui/icons";
 export function NotConnected() {
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Connect your Shopify store"
-        description="Priceflag needs to know which store to show. If the app is already installed, open it from Apps in Shopify admin. Otherwise connect the store."
-      />
+      <PageHeader title="Connect your store" />
       <Card>
         <EmptyState
           icon={<IconFlag size={19} />}
-          title="No store connected to this session"
-          description="Connecting is how Priceflag knows which catalog to load. It is the next step after signing in, not another password."
+          title="No store connected"
           action={
-            <ButtonLink href="/connect" variant="primary">
+            <ButtonLink href="/connect" variant="neon">
               Connect a store
             </ButtonLink>
           }
         />
       </Card>
-      <p className="text-base text-ink-muted">
-        Already have an email link working? Connecting is the next step, not another password.
-      </p>
     </div>
   );
 }

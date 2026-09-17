@@ -48,6 +48,32 @@ function fail(code: string, message: string, status: number, retryable = false):
   return json({ error: { code, message, retryable, details: null } }, status);
 }
 
+/**
+ * Is this failure "the database is behind the code" rather than "the database
+ * is having a moment"?
+ *
+ * The same test `SupabaseAdapter.ping` uses: PostgREST reports a missing column
+ * or table as PGRST204/PGRST205 through its own client, and as SQLSTATE 42703
+ * (undefined column) / 42P01 (undefined table) when the error arrives from
+ * postgres directly. A thrown `Error` may carry either shape depending on how
+ * deep the call went, so both are checked, plus the message text for the cases
+ * that arrive as a bare string.
+ */
+function isSchemaOutdated(cause: unknown): boolean {
+  const code = (cause as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && ['PGRST204', 'PGRST205', '42703', '42P01'].includes(code)) {
+    return true;
+  }
+  // `unwrap` in lib/db/client.ts flattens the PostgrestError into a message and
+  // appends the code in brackets, so by the time it reaches here the structured
+  // `code` above is usually gone and the text is all there is.
+  const message = cause instanceof Error ? cause.message : String(cause ?? '');
+  return (
+    /schema cache|column .* does not exist|relation .* does not exist/i.test(message) ||
+    /\[(?:PGRST204|PGRST205|42703|42P01)\]/.test(message)
+  );
+}
+
 function projectRef(): string | null {
   const raw = env('SUPABASE_URL');
   if (raw === undefined) return null;
@@ -335,6 +361,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // mapper throws. The raw cause belongs in protected runtime logs; returning
     // it here could expose schema or infrastructure details to the worker log.
     console.error('ML export backend operation failed', cause);
+
+    // A missing table or column is not an outage, and calling it one costs
+    // real time: `retryable: true` told the nightly to come back tomorrow, and
+    // it did that for twelve nights over a column a migration would have added
+    // in a second. Separate the two so the worker log names the actual fix.
+    //
+    // The distinguishing text stays out of the response for the same reason the
+    // cause does — the code is the machine-readable part, and it is enough.
+    if (isSchemaOutdated(cause)) {
+      return fail(
+        'backend_schema_outdated',
+        'The ML export backend is running against a database that is missing required migrations.',
+        503,
+        false,
+      );
+    }
     return fail('backend_unavailable', 'The ML export backend is temporarily unavailable.', 503, true);
   }
 }

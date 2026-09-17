@@ -10,7 +10,8 @@
 
 import { randomBytes } from 'node:crypto';
 
-import { getAppUrl, getShopifyApiVersion, getShopifyScopes, requireEnv } from '../config';
+import { oauthCallbackUrl, sessionOrigin } from '../auth/session-host';
+import { getShopifyApiVersion, getShopifyScopes, requireEnv } from '../config';
 import { safeEqual } from '../crypto';
 
 export class ShopifyAuthError extends Error {
@@ -62,6 +63,46 @@ export function verifyOAuthState(received: string | null, expected: string | und
 }
 
 export const OAUTH_STATE_COOKIE = 'priceflag_oauth_state';
+export const OAUTH_STATE_MAX_AGE_SECONDS = 600;
+
+/**
+ * Host-only on the APP_URL host. Never `AUTH_COOKIE_DOMAIN`: that cookie is for
+ * `pf_user` on sibling subdomains, and widening the OAuth nonce would still
+ * fail if Shopify returns to a different host than the one that started install.
+ */
+export function oauthStateCookieOptions(isHttps = new URL(sessionOrigin()).protocol === 'https:'): {
+  httpOnly: true;
+  sameSite: 'lax';
+  secure: boolean;
+  path: '/';
+  maxAge: number;
+} {
+  return {
+    httpOnly: true,
+    // Lax, not Strict: the cookie has to survive Shopify's top-level redirect back.
+    sameSite: 'lax',
+    secure: isHttps,
+    path: '/',
+    maxAge: OAUTH_STATE_MAX_AGE_SECONDS,
+  };
+}
+
+/**
+ * Shopify's documented authorization-code URL is still
+ * `https://{shop}/admin/oauth/authorize` (Admin API unversioned OAuth; verified
+ * against shopify.dev 2026-07 docs). `admin.shopify.com/admin/oauth/authorize`
+ * is not the install entry — it follows the merchant's last-used shop.
+ */
+export function shouldCanonicalizeOAuthStart(requestUrl: URL, appUrl = sessionOrigin()): boolean {
+  const requestHost = requestUrl.hostname.toLowerCase();
+  if (requestHost === 'localhost' || requestHost === '127.0.0.1') return false;
+  return requestHost !== new URL(appUrl).hostname.toLowerCase();
+}
+
+export function canonicalOAuthStartUrl(requestUrl: URL, appUrl = sessionOrigin()): string {
+  const canonical = new URL(requestUrl.pathname + requestUrl.search, `${appUrl}/`);
+  return canonical.toString();
+}
 
 export function buildAuthorizeUrl(options: {
   shop: string;
@@ -85,7 +126,7 @@ export function buildAuthorizeUrl(options: {
 }
 
 export function defaultRedirectUri(): string {
-  return `${getAppUrl()}/api/auth/callback`;
+  return oauthCallbackUrl();
 }
 
 export interface AccessTokenResponse {
@@ -158,23 +199,6 @@ export function missingScopes(granted: string, required: readonly string[] = get
       .filter(Boolean),
   );
   return required.filter((scope) => !have.has(scope));
-}
-
-/**
- * Where to send the merchant after a successful install.
- *
- * Every successful install lands on the app's Shopify Admin home. Redirecting
- * to our own origin would leave the merchant on a bare top-level page with no
- * App Bridge and no session. Shopify's admin URL uses the configured app
- * handle, not the public client id.
- */
-export function postInstallUrl(shop: string, appHandle = requireEnv('SHOPIFY_APP_HANDLE')): string {
-  const domain = normalizeShopDomain(shop);
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(appHandle)) {
-    throw new Error('SHOPIFY_APP_HANDLE must be the app-home slug from Shopify Dev Dashboard.');
-  }
-  const shopHandle = domain.replace(/\.myshopify\.com$/, '');
-  return `https://admin.shopify.com/store/${shopHandle}/apps/${appHandle}`;
 }
 
 /** The Admin GraphQL endpoint for a shop, at the pinned API version. */

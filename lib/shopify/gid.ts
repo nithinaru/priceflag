@@ -46,7 +46,6 @@ export function isGid(value: unknown, resource?: GidResource): value is string {
 }
 
 export const isVariantGid = (value: unknown): value is string => isGid(value, 'ProductVariant');
-export const isProductGid = (value: unknown): value is string => isGid(value, 'Product');
 
 /**
  * Accepts a GID or a bare numeric id and returns a GID. For hand-typed input in

@@ -34,11 +34,6 @@ export function getServiceClient(): SupabaseClient {
   return cached;
 }
 
-/** Tests only. */
-export function resetServiceClient(): void {
-  cached = null;
-}
-
 export interface PostgrestLikeError {
   message: string;
   details?: string | null;

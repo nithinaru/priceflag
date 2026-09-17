@@ -199,6 +199,26 @@ export const ORDER_LINE_ITEMS_PAGE = /* GraphQL */ `
   }
 `;
 
+/**
+ * The smallest possible "who owns this store" read, for the OAuth callback.
+ *
+ * Deliberately not `SHOP_INFO`: that one is the sync's settings read and pulls
+ * timezone, currency and plan, none of which the sign-up needs. The callback
+ * runs inside the merchant's redirect, so it asks for two fields and gets out.
+ *
+ * `shop.email` is the shop owner's address (`contactEmail` is the public-facing
+ * one customers write to). Neither field requires an access scope of its own —
+ * verified against shopify.dev's Shop object docs, 2026-09.
+ */
+export const SHOP_OWNER = /* GraphQL */ `
+  query PriceflagShopOwner {
+    shop {
+      name
+      email
+    }
+  }
+`;
+
 export const SHOP_INFO = /* GraphQL */ `
   query PriceflagShop {
     shop {

@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { SignInForm } from "@/app/signin/sign-in-form";
+import { sessionOrigin } from "@/lib/auth/session-host";
+import { isDemoMode } from "@/lib/config";
 
 export const metadata: Metadata = {
-  title: "Sign in",
+  title: "Connect your store",
 };
 
 export const dynamic = "force-dynamic";
@@ -21,8 +23,10 @@ export default async function SignInPage({
   const signedOut = first(params.signed_out) === "1";
   return (
     <SignInForm
+      appUrl={sessionOrigin()}
+      demoMode={isDemoMode()}
       error={first(params.error) ?? (signedOut ? "signed_out" : undefined)}
-      next={first(params.next)}
+      shop={first(params.shop)}
     />
   );
 }

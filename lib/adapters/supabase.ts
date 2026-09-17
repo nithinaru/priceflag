@@ -107,6 +107,17 @@ export class SupabaseAdapter implements StoreAdapter {
         this.db.from('rollouts').select('id,creation_sequence').limit(1),
         this.db.from('model_runs').select('id,recommendations_written').limit(1),
         this.db.from('recommendations').select('id').limit(1),
+        // `journal_entries.creation_sequence` (20260804112000). Every journal
+        // read orders by it, so without this column the ML export's
+        // price_history surface fails and the nightly goes red — which is how
+        // its absence was eventually found, twelve nights later, because
+        // nothing above touches the journal.
+        this.db.from('journal_entries').select('id,creation_sequence').limit(1),
+        // `compliance_audit` (20260804043733). The same migration carries
+        // `pf_purge_shop_for_compliance`, so a database missing this table
+        // cannot honour a `shop/redact` request at all. Probed as the cheapest
+        // observable stand-in for that function's existence.
+        this.db.from('compliance_audit').select('id').limit(1),
       ]);
       const failed = probes.find((probe) => probe.error !== null);
       if (failed?.error) {

@@ -64,7 +64,7 @@ export function THead({
   return (
     <thead
       className={cn(
-        "border-y border-border bg-surface-muted",
+        "border-y border-border bg-surface",
         sticky && "sticky top-0 z-10",
         className,
       )}
@@ -93,10 +93,10 @@ export function TR({
   return (
     <tr
       className={cn(
-        interactive && "transition-colors hover:bg-surface-muted",
-        tone === "live" && "bg-live-tint/40",
-        tone === "hold" && "bg-hold-tint/40",
-        tone === "breach" && "bg-breach-tint/40",
+        interactive && "transition-colors hover:bg-canvas",
+        tone === "live" && "shadow-[inset_3px_0_0_0_var(--pf-neon)]",
+        tone === "hold" && "shadow-[inset_3px_0_0_0_var(--pf-accent)]",
+        tone === "breach" && "shadow-[inset_3px_0_0_0_var(--pf-accent)]",
         className,
       )}
     >

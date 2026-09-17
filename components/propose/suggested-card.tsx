@@ -43,10 +43,7 @@ export function SuggestedCard({
 
   return (
     <Card>
-      <CardHeader
-        title="Suggested"
-        description="Based on your store's own price history. You decide — nothing changes without your approval."
-      />
+      <CardHeader title="Suggested" description="Nothing writes without your approval." />
       <CardBody flush>
         <ul className="divide-y divide-border">
           {visible.map((suggestion) => (
@@ -93,10 +90,6 @@ export function SuggestedCard({
         ) : null}
       </CardBody>
       <CardFooter>
-        <span>
-          Using a suggestion only fills in the change above — it still goes through the same
-          forecast, draft, and confirmation as a change you type yourself.
-        </span>
         <span>Worked out by {suggestions[0]!.model_version}.</span>
       </CardFooter>
     </Card>

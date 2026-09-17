@@ -4,18 +4,18 @@ import { IconAlert, IconInfo, IconPause } from "@/components/ui/icons";
 
 export type NoticeTone = "info" | "hold" | "breach";
 
-const TONES: Record<NoticeTone, { box: string; icon: ReactNode }> = {
+const MARKS: Record<NoticeTone, { mark: string; icon: ReactNode }> = {
   info: {
-    box: "border-accent-border bg-accent-tint text-ink",
+    mark: "bg-accent",
     icon: <IconInfo size={17} className="text-accent" />,
   },
   hold: {
-    box: "border-hold-border bg-hold-tint text-ink",
-    icon: <IconPause size={17} className="text-hold" />,
+    mark: "bg-accent",
+    icon: <IconPause size={17} className="text-ink" />,
   },
   breach: {
-    box: "border-breach-border bg-breach-tint text-ink",
-    icon: <IconAlert size={17} className="text-breach" />,
+    mark: "bg-neon",
+    icon: <IconAlert size={17} className="text-ink" />,
   },
 };
 
@@ -37,15 +37,18 @@ export function Notice({
   action?: ReactNode;
   className?: string;
 }) {
+  const { mark, icon } = MARKS[tone];
   return (
     <div
       className={cn(
-        "flex flex-wrap items-start gap-x-3 gap-y-3 rounded-lg border px-4 py-3",
-        TONES[tone].box,
+        "flex flex-wrap items-start gap-x-3 gap-y-3 rounded-lg border border-border bg-surface px-4 py-3 text-ink",
         className,
       )}
     >
-      <div className="mt-0.5 shrink-0">{TONES[tone].icon}</div>
+      <div className="mt-1.5 flex shrink-0 items-center gap-2">
+        <span className={cn("size-1.5 rounded-full", mark)} aria-hidden="true" />
+        {icon}
+      </div>
       <div className="min-w-[16rem] flex-1 space-y-1">
         <p className="text-base font-semibold">{title}</p>
         {children ? <div className="max-w-prose text-base text-ink-muted">{children}</div> : null}

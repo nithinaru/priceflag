@@ -40,6 +40,13 @@ import {
 } from "@/lib/types";
 import type { LiveResponse, RolloutBundle } from "@/components/demo/rollouts";
 import type { StoreReadiness } from "@/components/onboarding/first-run";
+import {
+  TRADING_WINDOW_DAYS,
+  aggregateDailyTrading,
+  tradingTotals,
+  type DailyTrading,
+  type TradingTotals,
+} from "@/components/charts/aggregate-trading";
 
 const PAGE_SIZE = 1000;
 
@@ -292,16 +299,23 @@ export type OverviewData = {
   journal: JournalEntry[];
   upcoming: Rollout[];
   readiness: StoreReadiness;
+  /** Last ~30 days of store trading. Null when there were no unit sales. */
+  trading: { days: DailyTrading[]; totals: TradingTotals } | null;
 };
 
 export async function getRealOverview(shop: Shop): Promise<OverviewData> {
   const adapter = getAdapter();
-  const [products, orderDays, bundles, journalPage] = await Promise.all([
+  const endDay = yesterday(shop.timezone);
+  const fromDay = addDays(endDay, -(TRADING_WINDOW_DAYS - 1));
+  const [products, orderDays, tradingRows, bundles, journalPage] = await Promise.all([
     allProducts(adapter, shop.id),
     adapter.getOrderDays(shop.id),
+    adapter.getOrderDays(shop.id, { from_day: fromDay, to_day: endDay }),
     getRealRolloutBundles(shop),
     adapter.listJournalEntries(shop.id, { limit: 4 }),
   ]);
+  const tradingDays = aggregateDailyTrading(tradingRows, products);
+  const totals = tradingTotals(tradingDays);
 
   const rollouts = bundles.map((bundle) => bundle.rollout);
   const repriceable = products.filter((product) => exclusionReasonFor(product) === null);
@@ -325,6 +339,7 @@ export async function getRealOverview(shop: Shop): Promise<OverviewData> {
       daysWithSales: new Set(orderDays.filter((day) => day.units > 0).map((day) => day.day)).size,
       hasAnyRollout: rollouts.length > 0,
     },
+    trading: totals.units > 0 ? { days: tradingDays, totals } : null,
   };
 }
 

@@ -16,14 +16,59 @@ export const DEFAULT_SHOPIFY_API_VERSION = '2026-07';
 /**
  * Scopes requested during OAuth.
  *
+ * One consent screen is the whole sign-up (`app/api/auth/callback`), so this
+ * list is the entire permission conversation Priceflag ever has with a
+ * merchant. It is scoped to what the product actually writes — a price, and the
+ * inventory and price-rule objects a staged price change has to move with it —
+ * rather than to what might be useful later. Every extra scope is another line
+ * the merchant reads before deciding, and a scope with no code path behind it
+ * buys nothing but hesitation.
+ *
  * The invite-only beta uses Partner custom distribution, so `read_all_orders`
  * is mandatory. Shopify must approve that scope before a beta store is invited;
  * without it the Admin API silently caps history at 60 days and a 180-day
  * forecast would be misleading. Admin-created static-token apps remain a local
  * development path only and do not use this OAuth scope list.
+ *
+ * Scope spellings verified against shopify.dev access-scopes docs, 2026-09.
  */
 export const DEFAULT_SHOPIFY_SCOPES =
-  'read_products,write_products,read_orders,read_all_orders';
+  'read_products,write_products,' +
+  'read_orders,read_all_orders,' +
+  'read_inventory,write_inventory,' +
+  'read_price_rules,write_price_rules';
+
+/**
+ * The scopes without which Priceflag cannot honestly do its job.
+ *
+ * `SHOPIFY_SCOPES` exists so a deployment can widen or narrow the request, and
+ * that flexibility has one edge that must not be flexible. Narrowing below this
+ * floor does not produce an error anywhere: OAuth succeeds, the merchant
+ * approves, `missingScopes` compares the grant against the same shortened list
+ * and finds nothing missing, and the app runs. What changes is invisible —
+ * without `read_all_orders` the Admin API silently returns 60 days of order
+ * history instead of 180, so every elasticity fit and every forecast is built
+ * on a third of the data while the UI goes on claiming the full window.
+ *
+ * A forecast that is quietly wrong is the one failure this product cannot have,
+ * so a deployment configured that way refuses to start an install at all
+ * (`app/api/auth`) and says so on `/api/health`. Found in production on
+ * 2026-09-10, where `SHOPIFY_SCOPES` had been set to a list that omitted it.
+ */
+export const REQUIRED_SHOPIFY_SCOPES = [
+  'read_products',
+  'write_products',
+  'read_orders',
+  'read_all_orders',
+] as const;
+
+/**
+ * Which required scopes this deployment would fail to ask for. Empty is healthy.
+ */
+export function missingRequiredScopes(): string[] {
+  const requested = new Set(getShopifyScopes());
+  return REQUIRED_SHOPIFY_SCOPES.filter((scope) => !requested.has(scope));
+}
 
 export function env(name: string): string | undefined {
   const value = process.env[name];
@@ -63,13 +108,17 @@ export function hasSupabaseConfig(): boolean {
   return env('SUPABASE_URL') !== undefined && env('SUPABASE_SERVICE_ROLE_KEY') !== undefined;
 }
 
-/** Path B: OAuth credentials for a Partner-Dashboard app. */
+/**
+ * Path B: OAuth credentials for a Partner-Dashboard app.
+ *
+ * `SHOPIFY_APP_HANDLE` is deliberately not required. It used to be, because
+ * every install ended by redirecting to the app's home inside the Shopify admin
+ * and that URL is built from the handle. Installs now land on Priceflag's own
+ * dashboard with a session, so the handle buys nothing — and requiring it would
+ * refuse to start an OAuth flow that would otherwise work.
+ */
 export function hasShopifyConfig(): boolean {
-  return (
-    env('SHOPIFY_API_KEY') !== undefined &&
-    env('SHOPIFY_API_SECRET') !== undefined &&
-    env('SHOPIFY_APP_HANDLE') !== undefined
-  );
+  return env('SHOPIFY_API_KEY') !== undefined && env('SHOPIFY_API_SECRET') !== undefined;
 }
 
 /** Path A: a static Admin API token from an admin-created custom app. */
@@ -92,11 +141,40 @@ export function getShopifyScopes(): string[] {
     .filter(Boolean);
 }
 
-/** Public origin, no trailing slash. */
-export function getAppUrl(): string {
-  const raw = env('APP_URL') ?? env('VERCEL_PROJECT_PRODUCTION_URL') ?? 'http://localhost:3000';
+/**
+ * Hostnames that must never be the public app origin. OAuth `redirect_uri`,
+ * OAuth callbacks and webhook URLs bind to `getAppUrl()`; using the
+ * Vercel project host (or the retired company-homepage host) sends Shopify
+ * back to a different site than the cookie was set on.
+ */
+const FORBIDDEN_APP_HOSTS = new Set([
+  'priceflag.vercel.app',
+  'priceflagv1.vercel.app',
+  'priceflag-app.vercel.app',
+]);
+
+function originFromEnvValue(raw: string): string | undefined {
+  if (raw === '') return undefined;
   const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
-  return withScheme.replace(/\/+$/, '');
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return undefined;
+  }
+  if (url.username || url.password) return undefined;
+  if (FORBIDDEN_APP_HOSTS.has(url.hostname.toLowerCase())) return undefined;
+  return url.origin;
+}
+
+/** Public origin, no trailing slash. Never a forbidden vercel.app project host. */
+export function getAppUrl(): string {
+  return (
+    originFromEnvValue(env('APP_URL') ?? '') ??
+    originFromEnvValue(env('VERCEL_PROJECT_PRODUCTION_URL') ?? '') ??
+    originFromEnvValue(env('VERCEL_URL') ?? '') ??
+    'http://localhost:3000'
+  );
 }
 
 export function getDemoStatePath(): string {

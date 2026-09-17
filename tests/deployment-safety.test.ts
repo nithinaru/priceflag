@@ -53,14 +53,21 @@ assert.equal(isVerifiedRollback(cleanUndo, { mismatched: [{}] }), false);
 passed += 5;
 
 const setup = readFileSync(resolve(process.cwd(), 'scripts/vercel-setup.sh'), 'utf8');
-assert.match(setup, /SHOPIFY_APP_HANDLE/);
+// The app handle used to be required because every install ended by
+// redirecting into the Shopify admin. Installs now land on Priceflag with a
+// session, so demanding it would block a setup that would otherwise work.
+assert.doesNotMatch(setup, /SHOPIFY_APP_HANDLE/);
 assert.doesNotMatch(setup, /deploy --prod/);
 assert.match(setup, /SHOPIFY_ADMIN_ACCESS_TOKEN SHOPIFY_SHOP_DOMAIN/);
 assert.match(setup, /ENV_FILE="\.env\.preview\.local"/);
 assert.doesNotMatch(setup, /for target in preview production/);
 assert.match(setup, /PRICEFLAG_SHOP_ALLOWLIST/);
 assert.match(setup, /AUTH_SESSION_SECRET/);
-assert.match(setup, /SUPABASE_PUBLISHABLE_KEY/);
+// Supabase Auth is gone with the magic link; the publishable key had no other
+// reader, and a required variable nothing reads is a setup that fails for a
+// reason the operator cannot act on.
+assert.doesNotMatch(setup, /SUPABASE_PUBLISHABLE_KEY/);
+assert.doesNotMatch(setup, /APP_ACCESS_SECRET/);
 assert.match(setup, /https origin/);
 assert.doesNotMatch(setup, /until B5/);
 passed += 10;
@@ -72,9 +79,10 @@ assert.doesNotMatch(stage, /"\$\{VC\[@\]\}" promote/);
 assert.match(stage, /ENV_FILE="\.env\.production\.local"/);
 assert.match(stage, /PRICEFLAG_SHOP_ALLOWLIST/);
 assert.match(stage, /dashboard\.priceflag\.org/);
-assert.match(stage, /product\.priceflag\.org/);
+assert.match(readFileSync(resolve(process.cwd(), 'next.config.ts'), 'utf8'), /product\.priceflag\.org/);
 assert.match(stage, /AUTH_SESSION_SECRET/);
-assert.match(stage, /SUPABASE_PUBLISHABLE_KEY/);
+assert.doesNotMatch(stage, /SUPABASE_PUBLISHABLE_KEY/);
+assert.doesNotMatch(stage, /APP_ACCESS_SECRET/);
 assert.doesNotMatch(stage, /APP_URL" != "https:\/\/priceflag-app\.vercel\.app"/);
 assert.doesNotMatch(stage, /production APP_URL must be https:\/\/priceflag-app\.vercel\.app/);
 passed += 11;
@@ -99,19 +107,14 @@ assert.doesNotMatch(runbook, /vercel deploy --prod --yes/);
 assert.doesNotMatch(runbook, /^vercel env (?:rm|add)/m);
 assert.match(runbook, /-d '\{"confirm":true,"reason":"Support request"\}'/);
 assert.match(runbook, /-d '\{"confirm":true\}'/);
-assert.match(runbook, /scripts\/vercel-demo-access\.sh revoke/);
+// No shared preview secret and no reviewer password survive: a runbook that
+// still documents them documents a door that is not there.
+assert.doesNotMatch(runbook, /APP_ACCESS_SECRET|DEMO_PASSWORD|pf_access/);
+assert.match(runbook, /POST \/api\/auth\/demo/);
 assert.match(runbook, /never receives a PostgreSQL login/);
 assert.match(runbook, /hosted staging gate calls[\s\S]*pf_attest_ml_database_role_retired\(\)/);
 passed += 7;
 
-const demoAccess = readFileSync(resolve(process.cwd(), 'scripts/vercel-demo-access.sh'), 'utf8');
-assert.match(demoAccess, /PROJECT_ID="prj_RU8NlBDoR7t89BNqn5BagOpmpnmm"/);
-assert.match(demoAccess, /TEAM_SCOPE="team_AqaBD6YaOf9DIJ7NzbytTZTW"/);
-assert.match(demoAccess, /api\.vercel\.com\/v9\/projects/);
-assert.match(demoAccess, /_DEMO_ACCESS:\$COMMIT/);
-assert.doesNotMatch(demoAccess, /deploy --prod|alias set|"\$\{VC\[@\]\}" promote/);
-assert.ok(demoAccess.indexOf('api.vercel.com/v9/projects') < demoAccess.indexOf('env rm'));
-passed += 6;
 
 const stagingEnv = {
   STAGING_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',

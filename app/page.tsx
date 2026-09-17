@@ -9,7 +9,11 @@ import {
   DetailRow,
   EmptyState,
   Notice,
+  LiveMachine,
+  liveMachineModeForRollout,
+  liveMachineStage,
   PageHeader,
+  PageSection,
   Stat,
   StatGroup,
   TBody,
@@ -32,15 +36,21 @@ import {
   GuardrailSummary,
   changeWords,
   countOf,
-  rolloutStatusMeta,
 } from "@/components/domain/status";
-import { formatDateTime, formatDay, formatUnits } from "@/components/format";
-import { readingSentence } from "@/lib/engine/readings";
-import { getDemoStore } from "@/components/demo/store";
+import { formatDateTime, formatDay, formatMoney, formatUnits } from "@/components/format";
+import { readingSentence, type RolloutHealth } from "@/lib/engine/readings";
+import { getDemoStore, DEMO_END_DAY } from "@/components/demo/store";
 import { getJournal, getLive, getRolloutBundles, getRollouts } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealOverview, type OverviewData } from "@/app/lib/store-data";
+import { StoreSeries } from "@/components/charts/store-series";
+import {
+  TRADING_WINDOW_DAYS,
+  aggregateDailyTrading,
+  tradingTotals,
+} from "@/components/charts/aggregate-trading";
+import { addDays } from "@/lib/dates";
 
 export const metadata: Metadata = {
   title: "Overview",
@@ -61,6 +71,7 @@ export default async function OverviewPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const demoMode = ctx.mode === "demo";
@@ -71,39 +82,95 @@ export default async function OverviewPage({
   const paused = live.rollouts.filter((rollout) => rollout.status === "paused");
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Overview"
-        description={`What Priceflag has live on ${data.shopDomain} right now, and how to undo it.`}
-      />
+    <div className="space-y-4">
+      <PageHeader title="Overview" />
 
       {/* First on the page while the store is still being set up: a young store
           has nothing live, so "what is live right now" is not yet the question
           the merchant is asking (R24). */}
       <FirstRunGuide readiness={readiness} />
 
+      {data.trading ? (
+        <PageSection title="Last 30 days">
+          <p className="max-w-prose text-base text-ink-muted">
+            Store totals. Every visitor saw the same price on a given day.
+          </p>
+          <StatGroup columns={3}>
+            <Stat
+              label="Revenue"
+              value={formatMoney(data.trading.totals.revenue_cents, {
+                currency: data.currency,
+                showCents: false,
+              })}
+            />
+            <Stat
+              label="Profit"
+              value={
+                data.trading.totals.profit_cents === null
+                  ? "Unknown"
+                  : formatMoney(data.trading.totals.profit_cents, {
+                      currency: data.currency,
+                      showCents: false,
+                    })
+              }
+              note={
+                data.trading.totals.profit_cents === null
+                  ? "A selling product is missing a cost, so profit is not a number."
+                  : undefined
+              }
+            />
+            <Stat label="Units sold" value={formatUnits(data.trading.totals.units)} />
+          </StatGroup>
+          <StoreSeries days={data.trading.days} currency={data.currency} />
+          <Table caption="Daily store totals for the last 30 days">
+            <THead>
+              <TR>
+                <TH>Day</TH>
+                <TH numeric>Units</TH>
+                <TH numeric>Revenue</TH>
+                <TH numeric>Profit</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {data.trading.days
+                .slice()
+                .reverse()
+                .map((day) => (
+                  <TR key={day.day}>
+                    <TD className="whitespace-nowrap">{formatDay(day.day)}</TD>
+                    <TD numeric>{formatUnits(day.units)}</TD>
+                    <TD numeric>
+                      {formatMoney(day.revenue_cents, { currency: data.currency, showCents: false })}
+                    </TD>
+                    <TD numeric>
+                      {day.profit_cents === null ? (
+                        <span className="text-ink-muted">Unknown</span>
+                      ) : (
+                        formatMoney(day.profit_cents, { currency: data.currency, showCents: false })
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+            </TBody>
+          </Table>
+        </PageSection>
+      ) : null}
+
+
       {paused.map((rollout) => {
-        // The demo's one paused rollout is an external change; a real pause
-        // carries its own recorded reason, and that is the honest thing to show.
-        const reason = demoMode ? null : (bundles.get(rollout.id)?.rollout.paused_reason ?? null);
+        const reason = bundles.get(rollout.id)?.rollout.paused_reason ?? null;
         return (
           <Notice
             key={rollout.id}
             tone="hold"
-            title="One price change is paused and needs you"
+            title={rollout.name || "Paused"}
             action={
               <ButtonLink href={`/rollouts/${rollout.id}`} variant="secondary" size="sm">
                 Take a look
               </ButtonLink>
             }
           >
-            {reason ?? (
-              <>
-                A price in <strong className="font-medium text-ink">{rollout.name}</strong> was
-                changed in Shopify, outside Priceflag. We stopped rather than guess, so nothing else
-                will move until you decide.
-              </>
-            )}
+            {reason}
           </Notice>
         );
       })}
@@ -112,10 +179,9 @@ export default async function OverviewPage({
         <Card>
           <EmptyState
             icon={<IconFlag size={19} />}
-            title="No prices are changing right now"
-            description="Nothing Priceflag set is live on your storefront. When you are ready, pick the products you want to reprice and we will show you what the change should do before anything goes out."
+            title="Nothing live"
             action={
-              <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
+              <ButtonLink href="/products" variant="neon" iconRight={<IconArrowRight size={15} />}>
                 Go to your products
               </ButtonLink>
             }
@@ -133,11 +199,10 @@ export default async function OverviewPage({
             key={summary.id}
             tone={summary.health === "breaching" ? "breach" : summary.status === "paused" ? "hold" : "live"}
             edge
+            runningPulse={summary.status === "running"}
           >
             <CardHeader
-              eyebrow={index === 0 ? "Live on your storefront" : "Also on your storefront"}
               title={summary.name}
-              description={rolloutStatusMeta(summary.status).sentence}
               action={
                 <>
                   <RollbackButton
@@ -147,10 +212,9 @@ export default async function OverviewPage({
                     variant="secondary"
                     demoMode={demoMode}
                   />
-                  {/* One primary action per screen: only the first card gets it. */}
                   <ButtonLink
                     href={`/rollouts/${summary.id}`}
-                    variant={index === 0 ? "primary" : "secondary"}
+                    variant={index === 0 ? "neon" : "secondary"}
                     iconRight={<IconArrowRight size={15} />}
                   >
                     Open this change
@@ -158,33 +222,27 @@ export default async function OverviewPage({
                 </>
               }
             >
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <LiveMachine
+                  mode={liveMachineModeForRollout(summary.status)}
+                  stage={liveMachineStage(summary.stage_index)}
+                />
                 <RolloutStatusBadge status={summary.status} />
                 <HealthBadge health={summary.health} size="sm" />
               </div>
             </CardHeader>
 
-            <CardBody className="space-y-4">
+            <CardBody className="space-y-3">
               <StatGroup columns={3}>
                 <Stat
-                  label="Products on a new price"
+                  label="Live"
                   value={`${summary.variants_live} of ${summary.variants_total}`}
                   // Green means healthy-and-live. A paused rollout is neither.
                   tone={summary.status === "running" && summary.variants_live > 0 ? "live" : "default"}
-                  note={`Everything selected is being set ${changeWords(bundle.rollout, data.currency)}.`}
                 />
                 <Stat
                   label="Step"
                   value={`${Math.max(summary.stage_index + 1, 1)} of ${summary.stage_count}`}
-                  note={
-                    summary.status === "paused"
-                      ? "Nothing is scheduled while this is paused."
-                      : summary.status === "completed"
-                        ? "All stages finished; monitoring has ended."
-                      : summary.next_decision_day
-                        ? `We look at the numbers again on ${formatDay(summary.next_decision_day)}.`
-                        : "Waiting for a full day of unit sales."
-                  }
                 />
                 {latest ? (
                   <Stat
@@ -194,11 +252,7 @@ export default async function OverviewPage({
                     note={readingSentence(latest)}
                   />
                 ) : (
-                  <Stat
-                    label="Unit sales so far"
-                    value="Not yet"
-                    note="We compare units sold once a full day has passed."
-                  />
+                  <Stat label="Yesterday" value="Not yet" />
                 )}
               </StatGroup>
 
@@ -217,25 +271,15 @@ export default async function OverviewPage({
             </CardBody>
 
             <CardFooter>
-              {summary.status === "completed" ? (
-                <p className="max-w-prose">
-                  <span className="font-medium text-ink">Monitoring ended: </span>
-                  this rollout finished every stage. Its prices remain live, and you can still put them back manually.
-                </p>
-              ) : (
-                <GuardrailSummary guardrails={bundle.rollout.guardrails} />
-              )}
+              <GuardrailSummary guardrails={bundle.rollout.guardrails} />
             </CardFooter>
           </Card>
         );
       })}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader
-            title="Recent price changes"
-            description="Every change to a price, whoever made it."
-          />
+          <CardHeader title="Recent price changes" />
           <CardBody flush>
             <Table caption="The four most recent price changes">
               <THead>
@@ -269,18 +313,15 @@ export default async function OverviewPage({
             </Table>
           </CardBody>
           <CardFooter>
-            <span>Showing the {countOf(journal.length, "most recent change")}.</span>
             <TextLink standalone href="/journal">Open the price journal</TextLink>
           </CardFooter>
         </Card>
 
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-4">
           {live.products_missing_cost > 0 ? (
             <Card tone="hold" edge>
               <CardHeader
-                eyebrow="Worth fixing"
                 title={`${countOf(live.products_missing_cost, "product")} without a cost`}
-                description="We can show you revenue for these, but not profit — so a forecast for them would be a guess. Add what each one costs you and the profit numbers appear."
                 action={
                   <ButtonLink href="/products" variant="secondary" size="sm">
                     Add costs
@@ -291,10 +332,7 @@ export default async function OverviewPage({
           ) : null}
 
           <Card>
-            <CardHeader
-              title="Not started yet"
-              description="Changes you have set up that are not touching your storefront."
-            />
+            <CardHeader title="Not started yet" />
             {upcoming.length > 0 ? (
               <CardBody>
                 <DetailList>
@@ -312,14 +350,9 @@ export default async function OverviewPage({
                 </DetailList>
               </CardBody>
             ) : (
-              <EmptyState
-                icon={<IconTag size={18} />}
-                title="Nothing waiting"
-                description="Changes you set up but have not started will show here."
-              />
+              <EmptyState icon={<IconTag size={18} />} title="Nothing waiting" />
             )}
             <CardFooter>
-              <span>Nothing here is live.</span>
               <TextLink standalone href="/rollouts">See all price changes</TextLink>
             </CardFooter>
           </Card>
@@ -342,6 +375,10 @@ function demoOverview(): OverviewData {
   const store = getDemoStore();
   const rollouts = getRollouts();
   const repriceable = store.products.filter((product) => exclusionReasonFor(product) === null);
+  const fromDay = addDays(DEMO_END_DAY, -(TRADING_WINDOW_DAYS - 1));
+  const windowed = store.orderDays.filter((row) => row.day >= fromDay && row.day <= DEMO_END_DAY);
+  const tradingDays = aggregateDailyTrading(windowed, store.products);
+  const totals = tradingTotals(tradingDays);
 
   return {
     shopDomain: store.shop.domain,
@@ -363,20 +400,26 @@ function demoOverview(): OverviewData {
       ).size,
       hasAnyRollout: rollouts.length > 0,
     },
+    trading: totals.units > 0 ? { days: tradingDays, totals } : null,
   };
 }
 
-function healthTitle(health: string): string {
+function healthTitle(health: RolloutHealth): string {
   switch (health) {
     case "breaching":
-      return "This change needs your attention";
+      return "Breach";
     case "watching":
-      return "Worth keeping an eye on";
+      return "Watching";
     case "too_early":
-      return "Nothing to compare yet";
+      return "Too early";
     case "monitoring_ended":
-      return "Monitoring is finished";
-    default:
-      return "Unit sales are holding up";
+      return "Ended";
+    case "healthy":
+    case "not_live":
+      return "Holding";
+    default: {
+      const _exhaustive: never = health;
+      return _exhaustive;
+    }
   }
 }

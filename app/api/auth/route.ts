@@ -1,25 +1,29 @@
 /**
- * `GET /api/auth?shop=<domain>` — start the OAuth install.
+ * `GET /api/auth?shop=<domain>` — start the OAuth install, which is also the
+ * entire sign-up.
  *
  * Validates the shop domain, mints a single-use nonce into an HttpOnly cookie, and
  * redirects to Shopify's authorize screen. The nonce is what makes the callback
  * unforgeable: without it, anyone could replay a callback URL at us.
+ *
+ * Nothing here needs the visitor to already be somebody. A stranger typing their
+ * store address is the expected caller — `/api/auth/callback` is what creates the
+ * account, from the install itself.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
 
-import { getMode, hasShopifyConfig } from '@/lib/config';
-import { USER_COOKIE, verifyUserCookie } from '@/lib/auth/account';
-import {
-  INSTALL_INITIATOR_COOKIE,
-  installInitiatorCookieOptions,
-} from '@/lib/auth/link-binding';
+import { sessionOrigin } from '@/lib/auth/session-host';
+import { getMode, hasShopifyConfig, missingRequiredScopes } from '@/lib/config';
 import {
   buildAuthorizeUrl,
+  canonicalOAuthStartUrl,
   createOAuthState,
   normalizeShopDomain,
   OAUTH_STATE_COOKIE,
+  oauthStateCookieOptions,
   ShopifyAuthError,
+  shouldCanonicalizeOAuthStart,
 } from '@/lib/shopify/oauth';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +37,32 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           code: 'shopify_not_configured',
           message:
             'This deployment has no Shopify credentials. Set SHOPIFY_API_KEY and SHOPIFY_API_SECRET, or use demo mode.',
+          retryable: false,
+          details: null,
+        },
+      },
+      { status: 503 },
+    );
+  }
+
+  // Refuse to start an install this deployment could not honour.
+  //
+  // Checked here, at the door, rather than at the callback: by the callback the
+  // merchant has already read and approved a consent screen, and the scope they
+  // approved would be the wrong one. Better to never show it.
+  const missingRequired = missingRequiredScopes();
+  if (missingRequired.length > 0) {
+    console.error(
+      `[install] refused: SHOPIFY_SCOPES omits ${missingRequired.join(', ')}. ` +
+        'Fix the environment variable before inviting a store.',
+    );
+    return NextResponse.json(
+      {
+        error: {
+          code: 'scopes_misconfigured',
+          message:
+            'This deployment is not configured to request every permission Priceflag needs, ' +
+            `so it will not start an install. Missing: ${missingRequired.join(', ')}.`,
           retryable: false,
           details: null,
         },
@@ -88,32 +118,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  // Cookies are host-only. If this request landed on the Vercel project host
+  // (or any host other than APP_URL), Shopify's redirect_uri would come back
+  // to dashboard.priceflag.org without the nonce cookie → state_mismatch.
+  if (shouldCanonicalizeOAuthStart(request.nextUrl)) {
+    return NextResponse.redirect(canonicalOAuthStartUrl(request.nextUrl));
+  }
+
   const state = createOAuthState();
+  const secure = new URL(sessionOrigin()).protocol === 'https:';
   const response = NextResponse.redirect(buildAuthorizeUrl({ shop, state }));
 
-  response.cookies.set(OAUTH_STATE_COOKIE, state, {
-    httpOnly: true,
-    // Lax, not Strict: the cookie has to survive Shopify's top-level redirect back.
-    sameSite: 'lax',
-    secure: request.nextUrl.protocol === 'https:',
-    path: '/',
-    maxAge: 600,
-  });
-
-  // If a signed-in account is starting this install, record it here — at the
-  // start, where the intent is. The callback links the store to this value
-  // rather than to whatever session cookie happens to be present when Shopify
-  // redirects back, so the ownership row reflects somebody having *asked* to
-  // connect a store rather than merely having been signed in at the time.
-  const accountCookie = request.cookies.get(USER_COOKIE)?.value;
-  const account = accountCookie === undefined ? null : verifyUserCookie(accountCookie);
-  if (account !== null) {
-    response.cookies.set(
-      INSTALL_INITIATOR_COOKIE,
-      account.userId,
-      installInitiatorCookieOptions(request.nextUrl.protocol === 'https:'),
-    );
-  }
+  response.cookies.set(OAUTH_STATE_COOKIE, state, oauthStateCookieOptions(secure));
 
   return response;
 }

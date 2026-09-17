@@ -45,10 +45,6 @@ export function rollbackIdempotencyKey(
   return `rollback:${rolloutId}:${variantGid}:${baselinePriceCents}`;
 }
 
-export function killSwitchIdempotencyKey(variantGid: string, baselinePriceCents: Cents, day: string): string {
-  return `kill_switch:${day}:${variantGid}:${baselinePriceCents}`;
-}
-
 export interface PriceWriteRecord {
   variant_gid: string;
   product_gid: string;

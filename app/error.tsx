@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { Button, ButtonLink, Card, EmptyState } from "@/components/ui";
+import { Button, ButtonLink, EmptyState, PageSection } from "@/components/ui";
 import { IconAlert } from "@/components/ui/icons";
 
 /**
@@ -22,7 +22,7 @@ export default function ErrorState({
   }, [error]);
 
   return (
-    <Card tone="breach" edge>
+    <PageSection>
       <EmptyState
         tone="breach"
         icon={<IconAlert size={19} />}
@@ -40,8 +40,8 @@ export default function ErrorState({
         }
       />
       {error.digest ? (
-        <p className="pb-5 text-center text-xs text-ink-subtle">Reference: {error.digest}</p>
+        <p className="text-center text-xs text-ink-subtle">Reference: {error.digest}</p>
       ) : null}
-    </Card>
+    </PageSection>
   );
 }

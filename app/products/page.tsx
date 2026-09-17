@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Badge, PageHeader, TextLink } from "@/components/ui";
+import { Badge, PageHeader } from "@/components/ui";
 import { CatalogTable } from "@/components/catalog/catalog-table";
 import { countOf } from "@/components/format";
 import {
@@ -9,7 +9,7 @@ import {
 } from "@/components/demo/store";
 import { getLiveVariantGids } from "@/components/demo/rollouts";
 import { NotConnected } from "@/components/shell/not-connected";
-import { resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
+import { maybeBeginShopifyInstall, resolveShopForPage, type PageSearchParams } from "@/app/lib/shop-context";
 import { getRealCatalog, type CatalogData } from "@/app/lib/store-data";
 
 export const metadata: Metadata = {
@@ -31,6 +31,7 @@ export default async function ProductsPage({
   searchParams: Promise<PageSearchParams>;
 }) {
   const ctx = await resolveShopForPage(await searchParams);
+  maybeBeginShopifyInstall(ctx);
   if (ctx.mode === "real" && ctx.shop === null) return <NotConnected />;
 
   const demoMode = ctx.mode === "demo";
@@ -40,7 +41,7 @@ export default async function ProductsPage({
     <div className="space-y-6">
       <PageHeader
         title="Products"
-        description="What each product sells for, what it costs you, and what you make on it. Tick the ones you want to reprice."
+        description={`${countOf(data.products.length, "product")}`}
         meta={
           data.liveGids.length > 0 ? (
             <Badge tone="live" size="md" dot>
@@ -58,12 +59,6 @@ export default async function ProductsPage({
         currency={data.currency}
         demoMode={demoMode}
       />
-
-      <p className="text-base text-ink-muted">
-        Want to see what is already changing?{" "}
-        <TextLink href="/rollouts">Your price changes</TextLink> shows everything going out,
-        waiting, and finished.
-      </p>
     </div>
   );
 }

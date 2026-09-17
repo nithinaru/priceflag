@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 import { Nav } from "@/components/shell/nav";
 import { LiveStatus, StoreCard } from "@/components/shell/live-status";
 import { ConditionalShell } from "@/components/shell/conditional-shell";
+import { SiteFooter } from "@/components/shell/site-footer";
 import { isDemoMode } from "@/lib/config";
+import { resolveShopForSession } from "@/app/lib/shop-context";
+import { getDemoStore } from "@/components/demo/store";
 
 /**
  * App frame: a permanent nav rail on desktop, a sticky bar plus drawer on
@@ -12,10 +15,17 @@ import { isDemoMode } from "@/lib/config";
  *
  * `/signin` skips the nav so an unsigned visitor does not see merchant chrome.
  */
-export function AppShell({ children }: { children: ReactNode }) {
+export async function AppShell({ children }: { children: ReactNode }) {
+  const ctx = await resolveShopForSession();
+  const shopDomain =
+    ctx.mode === "demo"
+      ? getDemoStore().shop.domain
+      : (ctx.shop?.shop_domain ?? undefined);
+
   return (
     <ConditionalShell
       nav={<Nav statusSlot={<LiveStatus />} storeSlot={<StoreCard />} showFounderLab={isDemoMode()} />}
+      footer={<SiteFooter shopDomain={shopDomain} />}
     >
       {children}
     </ConditionalShell>

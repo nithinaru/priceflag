@@ -1,4 +1,5 @@
 import { Card, Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui";
+import { DotsLoading } from "@/components/motion/anime-presence";
 
 /**
  * Shape-matched loading, so nothing jumps when the real page arrives. A route
@@ -7,9 +8,12 @@ import { Card, Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui";
 export default function Loading() {
   return (
     <div className="space-y-6" role="status" aria-label="Loading">
-      <div className="space-y-3">
-        <Skeleton className="h-7 w-48" />
-        <Skeleton className="h-4 w-full max-w-xl" />
+      <div className="flex items-center gap-3">
+        <DotsLoading className="text-ink-muted" />
+        <div className="space-y-3 flex-1">
+          <Skeleton className="h-7 w-48" />
+          <Skeleton className="h-4 w-full max-w-xl" />
+        </div>
       </div>
       <SkeletonCard />
       <Card>

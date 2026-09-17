@@ -1,54 +1,41 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { LiveCardOutline } from "@/components/motion/anime-presence";
 
 export type CardTone = "default" | "live" | "hold" | "breach" | "accent";
 
-const TONES: Record<CardTone, string> = {
-  default: "border-border bg-surface",
-  live: "border-live-border bg-surface",
-  hold: "border-hold-border bg-surface",
-  breach: "border-breach-border bg-surface",
-  accent: "border-accent-border bg-surface",
-};
-
-/** A left edge in the status colour, so state is readable before any text is. */
-const EDGES: Record<CardTone, string> = {
-  default: "",
-  live: "before:bg-live",
-  hold: "before:bg-hold",
-  breach: "before:bg-breach",
-  accent: "before:bg-accent",
-};
-
+/**
+ * Cards are white with a 1px hairline. Tone is kept for call-site compatibility
+ * but must not paint tinted panels or coloured edge bars.
+ */
 export function Card({
-  tone = "default",
-  edge = false,
+  tone: _tone = "default",
+  edge: _edge = false,
+  runningPulse = false,
   className,
   children,
   ...props
 }: {
   tone?: CardTone;
-  /** Draw the status edge. Only meaningful with a non-default tone. */
+  /** Ignored. Status is words + a small mark, not a coloured bar. */
   edge?: boolean;
+  /** Spring outline while a rollout is running. */
+  runningPulse?: boolean;
 } & HTMLAttributes<HTMLElement>) {
   return (
-    <section
-      className={cn(
-        // `min-w-0` so a card that is a grid or flex child can shrink below its
-        // content width; without it a wide table pushes the whole page sideways.
-        "relative min-w-0 overflow-hidden rounded-lg border shadow-sm",
-        TONES[tone],
-        edge &&
-          cn(
-            "before:absolute before:inset-y-0 before:left-0 before:w-1 before:content-['']",
-            EDGES[tone],
-          ),
-        className,
-      )}
-      {...props}
-    >
-      {children}
-    </section>
+    <LiveCardOutline active={runningPulse}>
+      <section
+        className={cn(
+          // `min-w-0` so a card that is a grid or flex child can shrink below its
+          // content width; without it a wide table pushes the whole page sideways.
+          "relative min-w-0 overflow-hidden rounded-lg border border-border bg-surface shadow-sm",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </section>
+    </LiveCardOutline>
   );
 }
 
@@ -79,7 +66,7 @@ export function CardHeader({
         {eyebrow ? (
           <div className="text-2xs font-semibold uppercase text-ink-subtle">{eyebrow}</div>
         ) : null}
-        {title ? <h2 className="text-md font-semibold text-ink">{title}</h2> : null}
+        {title ? <h2 className="font-display text-md text-ink">{title}</h2> : null}
         {description ? <p className="max-w-prose text-base text-ink-muted">{description}</p> : null}
         {children}
       </div>
@@ -110,16 +97,11 @@ export function CardFooter({ className, children }: { className?: string; childr
     <div
       className={cn(
         "flex flex-wrap items-center justify-between gap-3 border-t border-border " +
-          "bg-surface-muted px-4 py-3 text-sm text-ink-muted sm:px-5",
+          "bg-surface px-4 py-3 text-sm text-ink-muted sm:px-5",
         className,
       )}
     >
       {children}
     </div>
   );
-}
-
-/** A horizontal rule that lines up with card padding. */
-export function CardDivider() {
-  return <div className="border-t border-border" role="presentation" />;
 }

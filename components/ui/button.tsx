@@ -1,8 +1,20 @@
+"use client";
+
 import Link from "next/link";
 import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from "react";
 import { cn } from "@/components/cn";
+import { DotsLoading } from "@/components/motion/anime-presence";
+import { MetalCta } from "@/components/motion/metal-cta";
+import { PressShell } from "@/components/motion/press-shell";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-quiet";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "danger"
+  | "danger-quiet"
+  | "neon"
+  | "neonDark";
 export type ButtonSize = "sm" | "md" | "lg";
 
 /**
@@ -16,19 +28,32 @@ export type ButtonSize = "sm" | "md" | "lg";
  */
 
 const BASE =
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md border font-medium " +
-  "whitespace-nowrap transition-[background-color,border-color,color] duration-100 " +
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border font-medium " +
+  "whitespace-nowrap transition-[background-color,border-color,color,box-shadow] duration-200 " +
+  "ease-[cubic-bezier(0.22,1,0.36,1)] " +
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 " +
   "focus-visible:ring-offset-canvas disabled:pointer-events-none disabled:opacity-50";
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "border-transparent bg-accent text-accent-ink hover:bg-accent-hover active:bg-accent-active",
+    "border-transparent bg-accent text-accent-ink hover:bg-accent-hover " +
+    "hover:shadow-[0_6px_16px_-8px_rgb(30_46_222_/_0.55)]",
   secondary:
-    "border-border-strong bg-surface text-ink hover:bg-surface-muted active:bg-surface-inset",
+    "border-border-strong bg-surface text-ink hover:bg-surface-muted " +
+    "hover:border-border hover:shadow-[0_6px_14px_-8px_rgb(13_33_104_/_0.28)]",
   ghost: "border-transparent bg-transparent text-ink-muted hover:bg-surface-muted hover:text-ink",
   danger: "border-breach-border bg-breach-tint text-breach hover:bg-breach hover:text-white",
   "danger-quiet": "border-transparent bg-transparent text-breach hover:bg-breach-tint",
+  neon:
+    "relative overflow-hidden rounded-full border-transparent bg-[#d8f24b] text-[#13200a] " +
+    "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.45),0_0_18px_rgba(216,242,75,0.5)] " +
+    "hover:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),0_0_28px_rgba(216,242,75,0.65),0_8px_18px_rgba(19,32,10,0.12)] " +
+    "after:pointer-events-none after:absolute after:inset-y-0 after:w-1/3 after:-skew-x-12 after:bg-gradient-to-r after:from-transparent after:via-white/35 after:to-transparent " +
+    "after:-translate-x-[250%] hover:after:translate-x-[350%] after:transition-transform after:duration-700 after:ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:after:hidden",
+  neonDark:
+    "rounded-full border-transparent bg-[#030818] text-[#d8f24b] " +
+    "shadow-[inset_0_1px_0_0_rgba(216,242,75,0.1)] hover:bg-[#0a1020] " +
+    "hover:shadow-[0_0_22px_rgba(216,242,75,0.22)]",
 };
 
 const SIZES: Record<ButtonSize, string> = {
@@ -57,6 +82,10 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   fullWidth?: boolean;
 };
 
+function isMetalVariant(variant: ButtonVariant): boolean {
+  return variant === "neon" || variant === "neonDark";
+}
+
 export function Button({
   variant = "secondary",
   size = "md",
@@ -71,15 +100,16 @@ export function Button({
   type = "button",
   ...props
 }: ButtonProps) {
-  return (
+  const blocked = Boolean(disabled || loading);
+  const button = (
     <button
       type={type}
-      disabled={disabled || loading}
+      disabled={blocked}
       aria-busy={loading || undefined}
       className={buttonClasses(variant, size, cn(fullWidth && "w-full", className))}
       {...props}
     >
-      {loading ? <Spinner /> : iconLeft}
+      {loading ? <DotsLoading /> : iconLeft}
       <span>{children}</span>
       {loading ? null : iconRight}
       {loading && loadingLabel ? (
@@ -88,6 +118,24 @@ export function Button({
         </span>
       ) : null}
     </button>
+  );
+
+  const framed = isMetalVariant(variant) ? (
+    <MetalCta
+      paused={loading}
+      theme={variant === "neonDark" ? "dark" : "light"}
+      className={fullWidth ? "w-full" : undefined}
+    >
+      {button}
+    </MetalCta>
+  ) : (
+    button
+  );
+
+  return (
+    <PressShell disabled={blocked} className={fullWidth ? "w-full" : undefined}>
+      {framed}
+    </PressShell>
   );
 }
 
@@ -110,7 +158,7 @@ export function ButtonLink({
   children,
   ...props
 }: ButtonLinkProps) {
-  return (
+  const link = (
     <Link
       className={buttonClasses(variant, size, cn(fullWidth && "w-full", className))}
       {...props}
@@ -119,6 +167,20 @@ export function ButtonLink({
       <span>{children}</span>
       {iconRight}
     </Link>
+  );
+
+  const framed = isMetalVariant(variant) ? (
+    <MetalCta theme={variant === "neonDark" ? "dark" : "light"} className={fullWidth ? "w-full" : undefined}>
+      {link}
+    </MetalCta>
+  ) : (
+    link
+  );
+
+  return (
+    <PressShell className={fullWidth ? "w-full" : undefined}>
+      {framed}
+    </PressShell>
   );
 }
 
@@ -143,7 +205,7 @@ export function TextLink({
   return (
     <Link
       className={cn(
-        "rounded-sm font-medium text-accent underline decoration-accent-border decoration-1 " +
+        "cursor-pointer rounded-sm font-medium text-accent underline decoration-accent-border decoration-1 " +
           "underline-offset-2 hover:decoration-accent focus-visible:outline-2 " +
           "focus-visible:outline-offset-2 focus-visible:outline-focus",
         standalone && "inline-flex min-h-6 items-center",
@@ -156,24 +218,3 @@ export function TextLink({
   );
 }
 
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin"
-      width={14}
-      height={14}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}

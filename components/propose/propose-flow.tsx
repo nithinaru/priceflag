@@ -170,7 +170,6 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
         <EmptyState
           icon={<IconTag size={19} />}
           title="Nothing is selected"
-          description="Pick the products you want to reprice in your catalog and they will show up here with the arithmetic worked out. Selections are not kept once you close the tab."
           action={
             <ButtonLink href="/products" variant="primary" iconRight={<IconArrowRight size={15} />}>
               Go to your products
@@ -193,7 +192,6 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
       <Card>
         <CardHeader
           title="The change"
-          description="Everything below updates as you edit this. Nothing here touches your storefront."
           action={
             <TextLink standalone href="/products">Change the selection</TextLink>
           }
@@ -299,14 +297,7 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
       {/* 4. Create the reviewable draft. This still performs no Shopify write. */}
       {forecast !== null && included.length > 0 ? (
         <Card tone={created ? "live" : "default"} edge={created !== null}>
-          <CardHeader
-            title={created ? "Draft created" : "Ready to create a draft"}
-            description={
-              created
-                ? undefined
-                : "Priceflag will freeze today's baselines and prepare a staged plan. You review it once more before anything changes."
-            }
-          />
+          <CardHeader title={created ? "Draft created" : "Ready to create a draft"} />
           <CardBody className="space-y-5">
             {created ? (
               <p className="max-w-prose text-base text-ink">{created.message}</p>
@@ -367,9 +358,7 @@ export function ProposeFlow({ demoMode = true }: { demoMode?: boolean }) {
               </>
             ) : (
               <>
-                <span>
-                  Creating this draft does not write to Shopify. Starting it requires a separate confirmation.
-                </span>
+                <span>Does not write to Shopify. Starting it needs a separate confirmation.</span>
                 <Button
                   variant="primary"
                   loading={creating}
