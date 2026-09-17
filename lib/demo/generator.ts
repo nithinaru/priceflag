@@ -104,7 +104,7 @@ function negativeBinomial(rng: () => number, mean: number, k: number): number {
   return poisson(rng, gamma(rng, k) * (mean / k));
 }
 
-interface DemoProductSpec {
+export interface DemoProductSpec {
   handle: string;
   title: string;
   variantTitle: string | null;
@@ -340,10 +340,49 @@ const DOW_MULTIPLIER: Record<number, number> = {
 /** Overdispersion range for the negative-binomial noise, per Lane C's request 7. */
 export const DISPERSION_K_RANGE: readonly [number, number] = [4, 12];
 
+/** Store-wide promo days: each day independently, so a sale lifts the whole catalog. */
+export const PROMO_PROBABILITY = 0.07;
+/** A promo is this much off list price. The regressor stays list price. */
+export const PROMO_DISCOUNT_PCT = -15;
+/** Non-price promo lift on units. */
+export const PROMO_LIFT = 1.55;
+/** Slow growth: ~17% over 180 days. */
+export const DAILY_TREND = 0.0009;
+
+/**
+ * Mean daily units for a SKU on `day`, `offset` days after its history began.
+ *
+ * This is the simulator's demand truth: base × weekday shape × slow trend ×
+ * (price / initial price)^elasticity × promo lift. Exported so the rollout
+ * simulator can keep generating days after the seeded window with exactly the
+ * demand model the history came from; it never reaches a forecast.
+ */
+export function expectedUnits(
+  spec: Pick<DemoProductSpec, 'baseUnitsPerDay' | 'trueElasticity'>,
+  day: DayString,
+  offset: number,
+  priceRatio: number,
+  onPromo: boolean,
+): number {
+  const dow = ((new Date(`${day}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
+  const seasonal = DOW_MULTIPLIER[dow] ?? 1;
+  const trend = 1 + DAILY_TREND * offset;
+  const priceResponse = Math.pow(priceRatio, spec.trueElasticity);
+  const promoLift = onPromo ? PROMO_LIFT : 1;
+  return spec.baseUnitsPerDay * seasonal * trend * priceResponse * promoLift;
+}
+
+/** Seeded noise, exported for the rollout simulator. */
+export { mulberry32, negativeBinomial };
+
 export interface DemoTruth {
   variant_gid: string;
   title: string;
   true_elasticity: number;
+  /** Mean daily units at the initial price, before weekday/trend/promo effects. */
+  base_units_per_day: number;
+  /** The price the elasticity curve is anchored on (first price in the window). */
+  initial_price_cents: Cents;
   /** Negative-binomial dispersion used for this SKU: `var = mu + mu²/k`. */
   dispersion_k: number;
   /** Distinct list prices actually observed — the ceiling on what any fit can know. */
@@ -377,6 +416,10 @@ export interface GenerateOptions {
   /** Last day of generated history. Defaults to yesterday in the shop's timezone. */
   endDay?: DayString;
   now?: Date;
+  /** A different catalog through the same demand model. Defaults to the 14-product demo. */
+  catalog?: readonly DemoProductSpec[];
+  shopDomain?: string;
+  shopName?: string;
 }
 
 export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
@@ -389,9 +432,10 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
   const rng = mulberry32(seed);
   const nowIso = now.toISOString();
 
+  const catalog = options.catalog ?? CATALOG;
   const shop: ShopUpsert = {
-    shop_domain: DEMO_SHOP_DOMAIN,
-    name: 'Northline Goods (demo)',
+    shop_domain: options.shopDomain ?? DEMO_SHOP_DOMAIN,
+    name: options.shopName ?? 'Northline Goods (demo)',
     email: 'demo@priceflag.app',
     currency: DEMO_CURRENCY,
     timezone: DEMO_TIMEZONE,
@@ -413,10 +457,10 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
   // real sale does. Lane C needs this as a control, not as noise.
   const promoDays = new Set<DayString>();
   for (let i = 0; i < historyDays; i += 1) {
-    if (rng() < 0.07) promoDays.add(addDays(startDay, i));
+    if (rng() < PROMO_PROBABILITY) promoDays.add(addDays(startDay, i));
   }
 
-  CATALOG.forEach((spec, index) => {
+  catalog.forEach((spec, index) => {
     const productId = 8_400_000_000 + index * 17;
     const variantId = 46_100_000_000 + index * 23;
     const productGid = toGid('Product', productId);
@@ -510,21 +554,20 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
       const hadStockout = stockouts.has(day);
 
       // Demand = base × weekday shape × slow trend × price response × promo lift.
-      const dow = ((new Date(`${day}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
-      const seasonal = DOW_MULTIPLIER[dow] ?? 1;
-      const trend = 1 + 0.0009 * offset; // ~17% growth over 180 days
-      const priceRatio = listPrice / initialPriceCents;
-      const priceResponse = Math.pow(priceRatio, spec.trueElasticity);
-      const promoLift = onPromo ? 1.55 : 1;
-
-      const lambda = spec.baseUnitsPerDay * seasonal * trend * priceResponse * promoLift;
+      const lambda = expectedUnits(
+        { baseUnitsPerDay: spec.baseUnitsPerDay, trueElasticity: spec.trueElasticity },
+        day,
+        offset,
+        listPrice / initialPriceCents,
+        onPromo,
+      );
       const units = hadStockout ? 0 : negativeBinomial(rng, lambda, dispersionK);
 
       if (units > 0) priceLevels.add(listPrice);
 
       // A promo is a discount off the list price, which is exactly why the
       // regressor is list price and the realized price is recorded separately.
-      const effectivePrice = onPromo ? applyPercent(listPrice, -15) : listPrice;
+      const effectivePrice = onPromo ? applyPercent(listPrice, PROMO_DISCOUNT_PCT) : listPrice;
       const gross = units * listPrice;
       const discount = units * (listPrice - effectivePrice);
       // Occasional refund, a few days after the fact in a real store; here it is
@@ -557,6 +600,8 @@ export function generateDemoStore(options: GenerateOptions = {}): DemoStore {
       variant_gid: variantGid,
       title: spec.variantTitle ? `${spec.title} — ${spec.variantTitle}` : spec.title,
       true_elasticity: spec.trueElasticity,
+      base_units_per_day: spec.baseUnitsPerDay,
+      initial_price_cents: initialPriceCents,
       dispersion_k: Number(dispersionK.toFixed(4)),
       price_levels: levels,
       // What an honest estimator can claim: two price levels and real volume is
