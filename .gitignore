@@ -35,3 +35,6 @@ __pycache__/
 
 # agent worktrees
 .claude/worktrees/
+
+# Local dev-server launch config (holds a local session secret)
+.claude/launch.json
