@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ButtonLink, Card, CardBody, CardHeader } from "@/components/ui";
+import { ButtonLink, Card, CardBody, CardHeader, Notice } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
