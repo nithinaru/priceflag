@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ButtonLink, Card, CardBody, CardHeader } from "@/components/ui";
+import { ButtonLink, Card, CardBody, CardHeader, Notice } from "@/components/ui";
 import { cn } from "@/components/cn";
 import { IconArrowRight, IconCheck } from "@/components/ui/icons";
 import { countOf } from "@/components/format";
@@ -90,6 +90,12 @@ export function FirstRunGuide({ readiness }: { readiness: StoreReadiness }) {
             }
           />
         </ol>
+        <Notice tone="info" title="Every customer sees the same price">
+          <p className="max-w-prose">
+            PriceFlag never shows different prices to different visitors. Every customer sees the
+            same price at all times — we stage changes by product and time, not by audience.
+          </p>
+        </Notice>
 
         {noSales && catalogDone ? (
           <p className="text-sm text-ink-muted">No orders yet — no forecast until there are.</p>

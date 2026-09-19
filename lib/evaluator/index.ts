@@ -19,6 +19,7 @@
  *     stage, always.
  */
 
+import { getAppUrl } from '../config';
 import { MAX_BAND_AGE_DAYS } from '../contracts';
 import type { StoreAdapter } from '../adapters/types';
 import { addDays, dayInTimeZone, diffDays, nowIso, yesterday, type DayString } from '../dates';
@@ -50,7 +51,23 @@ import type {
   RolloutVariant,
   Shop,
 } from '../types';
-import { notify, type Notifier } from '../notify';
+import { notify, type NotificationProduct, type Notifier } from '../notify';
+
+/** Where the merchant acts on an alert. */
+function rolloutLink(rolloutId: string): string {
+  return `${getAppUrl()}/rollouts/${rolloutId}`;
+}
+
+/** The products an alert is about: what Shopify charges now, and what it was. */
+function notificationProducts(variants: readonly RolloutVariant[]): NotificationProduct[] {
+  return variants
+    .filter((variant) => !variant.excluded)
+    .map((variant) => ({
+      title: variant.title,
+      live_price_cents: variant.applied_price_cents ?? variant.target_price_cents,
+      original_price_cents: variant.baseline_price_cents,
+    }));
+}
 
 export interface EvaluateOptions {
   /** Defaults to yesterday in shop time — the last complete day. */
@@ -759,7 +776,17 @@ export async function evaluateRollout(
           'Paused: a price in this rollout was changed outside Priceflag, so the results would no longer mean what we predicted.',
         data: { external_changes: apply.external_changes },
       });
-      await notifier({ kind: 'paused_external', shop, rollout, detail: apply.external_changes.length });
+      const changed = new Set(apply.external_changes.map((change) => change.variant_gid));
+      await notifier({
+        kind: 'paused_external',
+        shop,
+        rollout,
+        detail: apply.external_changes.length,
+        products: notificationProducts(
+          (await adapter.getRolloutVariants(rollout.id)).filter((variant) => changed.has(variant.variant_gid)),
+        ),
+        link: rolloutLink(rollout.id),
+      });
       return { ...base, decision: 'pause', reason: 'External price change.', apply };
     }
 
@@ -892,7 +919,14 @@ export async function evaluateRollout(
           message: decision.reason,
           data: {},
         });
-        await notifier({ kind: 'breach', shop, rollout, reason: decision.reason });
+        await notifier({
+          kind: 'breach',
+          shop,
+          rollout,
+          reason: decision.reason,
+          products: notificationProducts(variants),
+          link: rolloutLink(rollout.id),
+        });
         break;
       }
 
@@ -1316,7 +1350,16 @@ export async function startRollout(
         unverified: verified.mismatched,
       },
     });
-    await (options.notifier ?? notify)({ kind: 'breach', shop, rollout: started, reason: START_ATTENTION_REASON });
+    await (options.notifier ?? notify)({
+      kind: 'breach',
+      shop,
+      rollout: started,
+      reason: START_ATTENTION_REASON,
+      products: notificationProducts(
+        (await adapter.getRolloutVariants(rollout.id)).filter((variant) => variant.cohort_stage === 0),
+      ),
+      link: rolloutLink(rollout.id),
+    });
     return applied;
   }
 

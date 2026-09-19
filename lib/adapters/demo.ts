@@ -514,12 +514,21 @@ export class DemoAdapter implements StoreAdapter {
 
   async upsertOrderDays(shopId: string, rows: readonly OrderDayUpsert[]): Promise<number> {
     const now = nowIso();
+    // One pass to index, then O(1) per row: a per-row scan is quadratic, and the
+    // rollout simulator upserts a day at a time into a 300-SKU, 180-day store.
+    const index = new Map<string, OrderDay>();
+    for (const row of this.state.orderDays) {
+      if (row.shop_id === shopId) index.set(`${row.variant_gid}\u0000${row.day}`, row);
+    }
     for (const input of rows) {
-      const existing = this.state.orderDays.find(
-        (row) => row.shop_id === shopId && row.variant_gid === input.variant_gid && row.day === input.day,
-      );
+      const key = `${input.variant_gid}\u0000${input.day}`;
+      const existing = index.get(key);
       if (existing) Object.assign(existing, input, { shop_id: shopId, updated_at: now });
-      else this.state.orderDays.push({ ...input, shop_id: shopId, created_at: now, updated_at: now });
+      else {
+        const created: OrderDay = { ...input, shop_id: shopId, created_at: now, updated_at: now };
+        this.state.orderDays.push(created);
+        index.set(key, created);
+      }
     }
     this.save();
     return rows.length;
@@ -1442,9 +1451,22 @@ export class DemoAdapter implements StoreAdapter {
  * the very tier this exists to show.
  */
 function demoFits(shopId: string): ElasticityFitRow[] {
-  const now = nowIso();
-  return (DEMO_FITS as unknown as Record<string, unknown>[]).map((fit, index) => ({
-    id: `demo-fit-${index}`,
+  return fitRowsFromContract(shopId, DEMO_FITS as unknown as Record<string, unknown>[], 'demo-fit');
+}
+
+/**
+ * Contract-shaped fit rows (what Lane C's `fits_contract_rows` emits) as adapter
+ * rows. Shared by the built-in demo fixture and the founder lab's store presets.
+ */
+export function fitRowsFromContract(
+  shopId: string,
+  contractRows: readonly Record<string, unknown>[],
+  idPrefix: string,
+  fittedAt: string = nowIso(),
+): ElasticityFitRow[] {
+  const now = fittedAt;
+  return contractRows.map((fit, index) => ({
+    id: `${idPrefix}-${index}`,
     shop_id: shopId,
     variant_gid: String(fit.variant_gid),
     elasticity: Number(fit.elasticity),

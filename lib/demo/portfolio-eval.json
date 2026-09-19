@@ -1,0 +1,675 @@
+{
+  "overall": {
+    "generated_at": "2026-09-17T01:11:37.591Z",
+    "sim_start_day": "2026-09-16",
+    "seeds_per_cell": 5,
+    "runs": 150,
+    "healthy_in_range_rate": 0.9333333333333332,
+    "healthy_units_error_median_abs": 4.676357254663017,
+    "no_fit_in_range_rate": 0.9666666666666667,
+    "no_fit_units_error_median_abs": 1.6625731868018683,
+    "false_pause_rate": 0.06666666666666667,
+    "shock_detection_rate": 0.8166666666666668,
+    "shock_days_to_pause_median": 5.75,
+    "rollback_restored_rate": 1,
+    "elasticity_within_0_3": 0.2867684964179956,
+    "elasticity_mae": 0.5777974603798253,
+    "elasticity_ci80_coverage": 0.871173507627736
+  },
+  "stores": {
+    "morning-root": {
+      "sku_count": 16,
+      "repriceable": 14,
+      "units_per_day": 41.1,
+      "history_days": 180,
+      "elasticity": {
+        "n": 14,
+        "n_estimated": 10,
+        "mae": 0.8360539056400285,
+        "within_0_3": 0.1,
+        "ci80_covers_truth": 1,
+        "tiers": {
+          "fitted": 0,
+          "partial": 10,
+          "assumption": 4
+        }
+      }
+    },
+    "fenwick-leather": {
+      "sku_count": 19,
+      "repriceable": 18,
+      "units_per_day": 63.6,
+      "history_days": 180,
+      "elasticity": {
+        "n": 18,
+        "n_estimated": 11,
+        "mae": 0.5399467846009057,
+        "within_0_3": 0.18181818181818182,
+        "ci80_covers_truth": 0.9090909090909091,
+        "tiers": {
+          "fitted": 0,
+          "partial": 11,
+          "assumption": 7
+        }
+      }
+    },
+    "northline-apparel": {
+      "sku_count": 73,
+      "repriceable": 72,
+      "units_per_day": 241,
+      "history_days": 180,
+      "elasticity": {
+        "n": 72,
+        "n_estimated": 38,
+        "mae": 0.9370754428088103,
+        "within_0_3": 0.05263157894736842,
+        "ci80_covers_truth": 0.5263157894736842,
+        "tiers": {
+          "fitted": 0,
+          "partial": 38,
+          "assumption": 34
+        }
+      }
+    },
+    "kilnworks-home": {
+      "sku_count": 65,
+      "repriceable": 64,
+      "units_per_day": 237.2,
+      "history_days": 180,
+      "elasticity": {
+        "n": 64,
+        "n_estimated": 39,
+        "mae": 0.38493376774502663,
+        "within_0_3": 0.46153846153846156,
+        "ci80_covers_truth": 0.9487179487179487,
+        "tiers": {
+          "fitted": 0,
+          "partial": 39,
+          "assumption": 25
+        }
+      }
+    },
+    "ridgeline-supply": {
+      "sku_count": 282,
+      "repriceable": 280,
+      "units_per_day": 1006.5,
+      "history_days": 180,
+      "elasticity": {
+        "n": 280,
+        "n_estimated": 158,
+        "mae": 0.41132209184063523,
+        "within_0_3": 0.45569620253164556,
+        "ci80_covers_truth": 0.9050632911392406,
+        "tiers": {
+          "fitted": 0,
+          "partial": 158,
+          "assumption": 122
+        }
+      }
+    },
+    "atlas-beauty": {
+      "sku_count": 322,
+      "repriceable": 320,
+      "units_per_day": 1321.8,
+      "history_days": 180,
+      "elasticity": {
+        "n": 320,
+        "n_estimated": 177,
+        "mae": 0.35745276964354544,
+        "within_0_3": 0.4689265536723164,
+        "ci80_covers_truth": 0.9378531073446328,
+        "tiers": {
+          "fitted": 0,
+          "partial": 177,
+          "assumption": 143
+        }
+      }
+    }
+  },
+  "cells": [
+    {
+      "preset": "morning-root",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 4,
+        "partial": 1
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 5.72422960002215,
+      "units_error_median_abs": 5.460042468194578,
+      "revenue_error_median_abs_pct": 66.63329603674694,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "morning-root",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 4,
+        "partial": 1
+      },
+      "in_range_rate": 0.8,
+      "units_error_mae": 12.798825428778276,
+      "units_error_median_abs": 10.280244841559643,
+      "revenue_error_median_abs_pct": 47.19862826642329,
+      "false_pause_rate": 0.2,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 0.8,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "morning-root",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.3265485387701084,
+      "units_error_median_abs": 1.3519762117135254,
+      "revenue_error_median_abs_pct": 36.01165254237288,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "morning-root",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 4,
+        "partial": 1
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.6,
+      "days_to_pause_median": 10,
+      "completed_rate": 0.4,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "morning-root",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 4,
+        "partial": 1
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.6,
+      "days_to_pause_median": 8,
+      "completed_rate": 0.4,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "fenwick-leather",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 0.6,
+      "units_error_mae": 11.528855926187125,
+      "units_error_median_abs": 4.413575843716656,
+      "revenue_error_median_abs_pct": 49.27528867957946,
+      "false_pause_rate": 0.4,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 0.6,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "fenwick-leather",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 4.273378687094082,
+      "units_error_median_abs": 5.031002742021075,
+      "revenue_error_median_abs_pct": 91.02559719490682,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "fenwick-leather",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 0.8,
+      "units_error_mae": 3.6173658387017995,
+      "units_error_median_abs": 0.9928419020493706,
+      "revenue_error_median_abs_pct": 53.68648758024121,
+      "false_pause_rate": 0.2,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 0.8,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "fenwick-leather",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.6,
+      "days_to_pause_median": 7,
+      "completed_rate": 0.4,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "fenwick-leather",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 8,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "northline-apparel",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 0.8,
+      "units_error_mae": 5.81329967465499,
+      "units_error_median_abs": 5.21573936497633,
+      "revenue_error_median_abs_pct": 322.90701352835003,
+      "false_pause_rate": 0.2,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 0.8,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "northline-apparel",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 7.592653785351642,
+      "units_error_median_abs": 9.342642416957876,
+      "revenue_error_median_abs_pct": 359.70360430007145,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "northline-apparel",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.133753950500362,
+      "units_error_median_abs": 1.4656796362215,
+      "revenue_error_median_abs_pct": 80.23824417647675,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "northline-apparel",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 3,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "northline-apparel",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 9,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "kilnworks-home",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 3.1389590273752317,
+      "units_error_median_abs": 3.3004787009400705,
+      "revenue_error_median_abs_pct": 105.8083348149375,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "kilnworks-home",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 4.641674184990375,
+      "units_error_median_abs": 4.939138665609377,
+      "revenue_error_median_abs_pct": 50.98974877063856,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "kilnworks-home",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.191641017178127,
+      "units_error_median_abs": 2.611514024506395,
+      "revenue_error_median_abs_pct": 36.84701131385448,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "kilnworks-home",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.4,
+      "days_to_pause_median": 8,
+      "completed_rate": 0.6,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "kilnworks-home",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 4,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "ridgeline-supply",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 1.5717310214774378,
+      "units_error_median_abs": 1.325950149394746,
+      "revenue_error_median_abs_pct": 55.64281607939512,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "ridgeline-supply",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.1715663041965634,
+      "units_error_median_abs": 1.2959957802124968,
+      "revenue_error_median_abs_pct": 32.2912380970111,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "ridgeline-supply",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.263485390423999,
+      "units_error_median_abs": 1.8594667373822364,
+      "revenue_error_median_abs_pct": 18.52826302983666,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "ridgeline-supply",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 4,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "ridgeline-supply",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 1,
+      "days_to_pause_median": 2,
+      "completed_rate": 0,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "atlas-beauty",
+      "scenario": "raise_8",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.2482451772718655,
+      "units_error_median_abs": 1.7099233615232166,
+      "revenue_error_median_abs_pct": 50.049357028928476,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "atlas-beauty",
+      "scenario": "cut_10",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.6917210575874377,
+      "units_error_median_abs": 2.085580885340871,
+      "revenue_error_median_abs_pct": 53.784833156799564,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "atlas-beauty",
+      "scenario": "raise_8_no_fit",
+      "kind": "healthy",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": 1,
+      "units_error_mae": 2.952025587255919,
+      "units_error_median_abs": 3.270534129798369,
+      "revenue_error_median_abs_pct": 125.32694870872965,
+      "false_pause_rate": 0,
+      "detection_rate": null,
+      "days_to_pause_median": null,
+      "completed_rate": 1,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "atlas-beauty",
+      "scenario": "shock_moderate",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.8,
+      "days_to_pause_median": 4.5,
+      "completed_rate": 0.2,
+      "rollback_restored_rate": 1
+    },
+    {
+      "preset": "atlas-beauty",
+      "scenario": "shock_severe",
+      "kind": "shock",
+      "runs": 5,
+      "forecast_confidence": {
+        "assumption": 5
+      },
+      "in_range_rate": null,
+      "units_error_mae": null,
+      "units_error_median_abs": null,
+      "revenue_error_median_abs_pct": null,
+      "false_pause_rate": null,
+      "detection_rate": 0.8,
+      "days_to_pause_median": 1,
+      "completed_rate": 0.2,
+      "rollback_restored_rate": 1
+    }
+  ]
+}

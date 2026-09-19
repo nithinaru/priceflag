@@ -93,6 +93,7 @@ npm run test:optimizer
 npm run test:webhooks
 npm run test:deployment-safety
 npm run test:founder-lab
+npm run test:simulator
 npm run test:shopify-journey
 npx tsx tests/integration/run.ts --demo
 npm run build
