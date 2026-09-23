@@ -51,7 +51,7 @@ jobs:
       # test:shopify-journey stubs global fetch with a fake Shopify boundary
       # and generates its own credentials. No network, database, or secrets.
       - name: Run account-auth, founder-lab, and Shopify journey suites
-        run: npm run test:auth && npm run test:founder-lab && npm run test:shopify-journey
+        run: npm run test:auth && npm run test:founder-lab && npm run test:simulator && npm run test:shopify-journey
 
       - name: Run price-write, ML-ingest, and Shopify-webhook safety suites
         run: npm run test:pricing-safety && npm run test:ml-ingest && npm run test:optimizer && npm run test:webhooks && npm run test:deployment-safety

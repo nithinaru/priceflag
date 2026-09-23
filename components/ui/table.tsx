@@ -30,7 +30,10 @@ export function Table({
   children: ReactNode;
 }) {
   return (
-    <div className="pf-scroll-x w-full min-w-0">
+    // `relative` so absolutely positioned descendants (the sr-only text inside
+    // a cell, for one) are clipped by this scroller instead of escaping it and
+    // widening the whole page on a phone.
+    <div className="pf-scroll-x relative w-full min-w-0">
       <table
         className={cn(
           "w-full border-collapse text-base",

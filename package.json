@@ -22,6 +22,8 @@
     "test:webhooks": "tsx tests/webhooks.test.ts",
     "test:deployment-safety": "tsx tests/deployment-safety.test.ts && tsx tests/supabase-readiness.test.ts && tsx tests/health-api.test.ts",
     "test:founder-lab": "tsx tests/founder-lab.test.ts",
+    "test:simulator": "tsx tests/rollout-simulator.test.ts",
+    "simulate:portfolio": "tsx scripts/simulate-portfolio.ts",
     "test:shopify-journey": "tsx tests/shopify-journey.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
@@ -39,12 +41,12 @@
     "animejs": "^4.5.0",
     "liquid-gooey": "^0.2.1",
     "metal-fx": "^1.0.4",
-    "next": "15.5.22",
+    "next": "15.5.25",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "overrides": {
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.7",
     "sharp": "^0.35.3",
     "postcss": "^8.5.25"
   },
