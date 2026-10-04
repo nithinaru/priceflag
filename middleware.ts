@@ -392,5 +392,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|robots.txt).*)'],
+  // Brand files are public: the sign-in page and the browser tab need them
+  // before anyone is signed in.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|favicon.svg|favicon.png|apple-touch-icon.png|mark.svg|robots.txt).*)'],
 };
