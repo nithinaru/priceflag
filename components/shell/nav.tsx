@@ -12,7 +12,7 @@ import {
   IconBook,
   IconClose,
   IconGauge,
-  IconIbis,
+  IconMark,
   IconLayers,
   IconMenu,
   IconPlus,
@@ -108,7 +108,7 @@ export function Nav({
       {/* Mobile: a sticky bar. Merchants check rollouts from phones (PRD R27). */}
       <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3 lg:hidden">
         <Link href="/" className="flex items-center gap-2.5 rounded-md text-ink">
-          <IconIbis size={28} />
+          <IconMark size={28} />
           <span className="font-display text-2xl leading-none">Priceflag</span>
         </Link>
         <button
@@ -163,7 +163,7 @@ function Brand() {
     <div className="flex items-center gap-3 border-b border-border px-4 py-5">
       <MotionViewTransition name="pf-brand">
         <div className="flex items-center gap-3">
-          <IconIbis size={32} />
+          <IconMark size={32} />
           <div className="min-w-0">
             <div className="font-display text-2xl leading-tight text-ink">Priceflag</div>
           </div>

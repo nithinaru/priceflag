@@ -9,7 +9,7 @@ import {
   PageHeader,
   PageSection,
 } from "@/components/ui";
-import { IconArrowRight, IconIbis } from "@/components/ui/icons";
+import { IconArrowRight, IconMark } from "@/components/ui/icons";
 import { normalizeStoreAddress } from "@/lib/shopify/store-address";
 
 /**
@@ -111,7 +111,7 @@ export function SignInForm({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2.5 text-ink">
-        <IconIbis size={22} />
+        <IconMark size={22} />
         <span className="font-display text-md tracking-[-0.01em]">Priceflag</span>
       </div>
 
