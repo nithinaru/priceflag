@@ -4,7 +4,7 @@ import { FREEHAND_GLYPHS } from "@/components/ui/freehand-glyphs";
 
 /**
  * Chrome icons are Streamline Freehand (CC BY 4.0). Attribution lives in the
- * app footer. Ibis stays the logo only — never a nav glyph.
+ * app footer. The climber mark stays the logo only — never a nav glyph.
  *
  * Decorative by default: `aria-hidden` unless a `title` is passed.
  */
@@ -38,10 +38,10 @@ function FreehandIcon({
 }
 
 /**
- * The Priceflag ibis, from priceflag.org/ibis.svg. Logo only — nav tools stay
+ * The Priceflag climber, from priceflag.org/mark.svg. Logo only — nav tools stay
  * Freehand. `currentColor` so white chrome is navy and the lime footer is ink.
  */
-export function IconIbis({
+export function IconMark({
   size = 22,
   title,
   className,
@@ -51,7 +51,7 @@ export function IconIbis({
   className?: string;
 }) {
   const height = size;
-  const width = Math.round((size * 621) / 402);
+  const width = Math.round((size * 698) / 1296);
   return (
     <span
       role={title ? "img" : undefined}
@@ -61,8 +61,8 @@ export function IconIbis({
       style={{
         width,
         height,
-        WebkitMaskImage: "url(/ibis.svg)",
-        maskImage: "url(/ibis.svg)",
+        WebkitMaskImage: "url(/mark.svg)",
+        maskImage: "url(/mark.svg)",
         WebkitMaskRepeat: "no-repeat",
         maskRepeat: "no-repeat",
         WebkitMaskPosition: "center",
